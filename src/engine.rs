@@ -55,6 +55,15 @@ impl Engine {
 
     pub fn reload(&mut self) -> Result<()> {
         self.app.tickets = self.db.list_tickets(self.app.project.id)?;
+        // Rehydrate the auto-review provenance cache from the persisted column so
+        // it survives restarts (the move back from Needs attention depends on it).
+        self.auto_review_ids = self
+            .app
+            .tickets
+            .iter()
+            .filter(|t| t.auto_reviewed)
+            .map(|t| t.id)
+            .collect();
         self.app.reclamp();
         Ok(())
     }
@@ -92,7 +101,8 @@ impl Engine {
         );
         // For Claude, inject hook settings that maintain the idle marker, and
         // clear any stale marker so the session baselines as Active.
-        let argv = if self.config.auto_review.enabled && ticket.agent == Agent::Claude {
+        let instrumented = self.config.auto_review.enabled && ticket.agent == Agent::Claude;
+        let argv = if instrumented {
             let marker = detect::marker_path(&self.state_dir, &name);
             let _ = std::fs::create_dir_all(&self.state_dir);
             let _ = std::fs::remove_file(&marker);
@@ -110,6 +120,7 @@ impl Engine {
         let layout_path = self.layout_file(&name, &kdl)?;
         self.db
             .set_ticket_session(ticket.id, &name, &worktree.to_string_lossy(), &name)?;
+        self.db.set_ticket_instrumented(ticket.id, instrumented)?;
         self.db.set_ticket_status(ticket.id, Status::InProgress)?;
         self.reload()?;
         Ok(Effect::RunSession { name, layout_path })
@@ -135,6 +146,9 @@ impl Engine {
     }
 
     fn apply_move(&mut self, ticket: Ticket, target: Status) -> Result<Effect> {
+        // A manual move overrides auto-review provenance (so a card a human
+        // places in Needs attention is not dragged back when its agent resumes).
+        self.db.set_ticket_auto_reviewed(ticket.id, false)?;
         self.auto_review_ids.remove(&ticket.id);
         if target == Status::InProgress {
             return match ticket.session_name.clone() {
@@ -228,11 +242,13 @@ impl Engine {
                 self.db.set_ticket_status(id, target)?;
                 match target {
                     Status::Review => {
+                        self.db.set_ticket_auto_reviewed(id, true)?;
                         self.auto_review_ids.insert(id);
                         self.app.status_message =
                             Some(format!("#{id} → Needs attention (agent idle)"));
                     }
                     Status::InProgress => {
+                        self.db.set_ticket_auto_reviewed(id, false)?;
                         self.auto_review_ids.remove(&id);
                         self.app.status_message =
                             Some(format!("#{id} → In Progress (agent active)"));
@@ -254,19 +270,41 @@ impl Engine {
     /// Read the current signal level for every live, in-progress/review ticket.
     fn gather_levels(&mut self) -> HashMap<i64, SignalLevel> {
         // Snapshot first so we don't borrow `app` while mutating scrape state.
-        let live: Vec<(i64, Agent, String)> = self
+        let live: Vec<(i64, Agent, String, bool)> = self
             .app
             .tickets
             .iter()
             .filter(|t| matches!(t.status, Status::InProgress | Status::Review))
-            .filter_map(|t| t.session_name.clone().map(|s| (t.id, t.agent, s)))
+            .filter_map(|t| {
+                t.session_name
+                    .clone()
+                    .map(|s| (t.id, t.agent, s, t.instrumented))
+            })
             .collect();
 
+        // One session listing per tick, used to drop signals from exited
+        // (resurrectable) sessions whose agent is no longer running. `None`
+        // (couldn't ask) leaves detection untouched, like reconcile.
+        let sessions = zellij::list_sessions();
+
         let mut out = HashMap::new();
-        for (id, agent, session) in live {
+        for (id, agent, session, instrumented) in live {
+            // An exited session's agent is gone, so no signal is trustworthy.
+            if let Some(list) = &sessions {
+                if zellij::session_exited(list, &session) {
+                    out.insert(id, SignalLevel::Unknown);
+                    continue;
+                }
+            }
             let level = match agent {
                 Agent::Claude => {
-                    detect::marker_level(&detect::marker_path(&self.state_dir, &session))
+                    // The marker only means "active when absent" if kamaji
+                    // installed the idle hooks; otherwise we can't tell.
+                    if instrumented {
+                        detect::marker_level(&detect::marker_path(&self.state_dir, &session))
+                    } else {
+                        SignalLevel::Unknown
+                    }
                 }
                 Agent::Codex | Agent::Copilot => {
                     let patterns: Vec<String> = self.config.auto_review_patterns(agent).to_vec();
@@ -636,6 +674,37 @@ mod tests {
         assert!(!e.auto_review_ids.contains(&id));
     }
 
+    /// The move back from Needs attention must survive a kamaji restart, which
+    /// wipes all in-memory detection state. Provenance is persisted on the
+    /// ticket, so after rehydrating from the DB the resumed agent still returns
+    /// to In Progress.
+    #[test]
+    fn move_back_survives_lost_in_memory_provenance() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e);
+        // Auto-move to Needs attention (Active -> Idle).
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
+        // Provenance is persisted, not just held in memory.
+        assert!(e.db.get_ticket(id).unwrap().unwrap().auto_reviewed);
+
+        // Simulate a restart: drop all in-memory detection state, reload from DB.
+        e.auto_review_ids.clear();
+        e.last_level.clear();
+        e.reload().unwrap();
+
+        // Resume the agent: re-baseline as Idle, then it becomes Active.
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
+        assert_eq!(
+            e.db.get_ticket(id).unwrap().unwrap().status,
+            Status::InProgress
+        );
+    }
+
     #[test]
     fn manual_drag_back_is_not_re_moved() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
@@ -700,6 +769,8 @@ mod tests {
         e.db.set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
             .unwrap();
         e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
+        // The session carries the idle hooks, so its marker signal is trusted.
+        e.db.set_ticket_instrumented(t.id, true).unwrap();
         e.reload().unwrap();
 
         // No marker yet => Active baseline; no move.
@@ -716,6 +787,47 @@ mod tests {
             e.db.get_ticket(t.id).unwrap().unwrap().status,
             Status::Review
         );
+    }
+
+    /// A Claude session started without the idle hooks (e.g. a session from
+    /// before instrumentation existed) has no trustworthy marker: an absent
+    /// marker must NOT be read as "active". Such a session never auto-moves and
+    /// never reports an Active level (so its bullet is never shown as working).
+    #[test]
+    fn non_instrumented_claude_signal_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.state_dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(&e.state_dir).unwrap();
+
+        let t =
+            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+                .unwrap();
+        e.db.set_ticket_session(t.id, "kamaji-noinstr", "/wt", "kamaji-noinstr")
+            .unwrap();
+        e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
+        // instrumented stays false (no hooks were injected).
+        e.reload().unwrap();
+
+        // Baseline (marker absent), then the agent "stops" (marker present).
+        e.detect_tick().unwrap();
+        std::fs::write(
+            crate::detect::marker_path(&e.state_dir, "kamaji-noinstr"),
+            "",
+        )
+        .unwrap();
+        e.detect_tick().unwrap();
+
+        // An instrumented session would now be in Needs attention; this one must
+        // stay In Progress, and must not have been recorded as Active/Idle.
+        assert_eq!(
+            e.db.get_ticket(t.id).unwrap().unwrap().status,
+            Status::InProgress
+        );
+        assert!(!matches!(
+            e.last_level.get(&t.id),
+            Some(SignalLevel::Active) | Some(SignalLevel::Idle)
+        ));
     }
 
     /// A `zellij_bar = "compact"` override must produce a compact-bar layout

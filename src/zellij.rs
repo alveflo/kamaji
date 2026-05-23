@@ -12,6 +12,16 @@ pub fn session_in_list(list_output: &str, name: &str) -> bool {
         .any(|l| l.split_whitespace().next() == Some(name))
 }
 
+/// True if `name` appears in the list AND is marked as exited (zellij keeps
+/// exited sessions as "resurrectable"). An exited session's agent is gone, so
+/// its detection signal can't be trusted. A session that is absent entirely
+/// returns `false` here (handled by reconcile instead).
+pub fn session_exited(list_output: &str, name: &str) -> bool {
+    list_output
+        .lines()
+        .any(|l| l.split_whitespace().next() == Some(name) && l.contains("EXITED"))
+}
+
 /// Raw `zellij list-sessions` output, or `None` if the command failed (so
 /// callers can distinguish "no sessions" from "couldn't ask").
 pub fn list_sessions() -> Option<String> {
@@ -77,5 +87,17 @@ mod tests {
         assert!(session_in_list(out, "kamaji-1-foo"));
         assert!(session_in_list(out, "other-session"));
         assert!(!session_in_list(out, "kamaji-2-bar"));
+    }
+
+    #[test]
+    fn session_exited_detects_resurrectable_sessions() {
+        let out = "kamaji-1-foo [Created 2h ago]\n\
+                   kamaji-2-bar [Created 1h ago] (EXITED - attach to resurrect)\n";
+        // Live session: not exited.
+        assert!(!session_exited(out, "kamaji-1-foo"));
+        // Resurrectable session: exited.
+        assert!(session_exited(out, "kamaji-2-bar"));
+        // Absent session: not reported as exited (reconcile handles removal).
+        assert!(!session_exited(out, "kamaji-3-baz"));
     }
 }
