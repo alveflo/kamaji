@@ -181,9 +181,9 @@ pub fn render_help(frame: &mut Frame) {
 ↑/↓ j/k   select ticket
 ←/→ h/l   change column
 c         create ticket
-o / Enter open / edit ticket
+e         edit ticket
+Enter     attach / start session
 m         move ticket (then ←/→, Enter)
-a         attach to session
 d         delete ticket
 p         switch project
 ?         this help

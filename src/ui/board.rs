@@ -31,7 +31,7 @@ pub fn render_board(frame: &mut Frame, app: &App) {
         );
     }
 
-    let hints = " [c]reate [m]ove [a]ttach [o]pen [d]elete [p]roject [?]help [q]uit";
+    let hints = " [↵]attach [e]dit [c]reate [m]ove [d]elete [p]roject [?]help [q]uit";
     let left = format!(" project: {} ", app.project.name);
     let msg = app.status_message.clone().unwrap_or_default();
     let status_line = Paragraph::new(Line::from(vec![
