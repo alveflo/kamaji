@@ -6,6 +6,7 @@ mod engine;
 mod git;
 mod layout;
 mod models;
+mod picker;
 mod slug;
 mod ui;
 mod zellij;
