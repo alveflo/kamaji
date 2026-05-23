@@ -6,7 +6,7 @@ use crate::app::{App, FormField, Modal, TicketForm};
 use crate::config::Config;
 use crate::db::Db;
 use crate::models::{Status, Ticket};
-use crate::{agent, git, layout, slug, zellij};
+use crate::{agent, git, layout, slug, zellij, zellij_config};
 
 /// Side effect the main loop must run by releasing the terminal.
 #[derive(Debug, PartialEq)]
@@ -68,7 +68,13 @@ impl Engine {
             self.config.commands_for(ticket.agent),
             ticket.initial_prompt.as_deref(),
         );
-        let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv);
+        // Resolve the bar style: config override (compact/default/none) else
+        // auto-detect from the user's zellij default_layout.
+        let bar = zellij_config::resolve_bar_style(
+            &self.config.zellij_bar,
+            zellij_config::detect_default_layout().as_deref(),
+        );
+        let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv, bar);
         let layout_path = self.layout_file(&name, &kdl)?;
         self.db
             .set_ticket_session(ticket.id, &name, &worktree.to_string_lossy(), &name)?;
@@ -347,6 +353,25 @@ mod tests {
         Engine::new(db, Config::default(), app)
     }
 
+    /// Initialize a real git repo with one commit at `root` so `start_session`
+    /// can add a worktree against it.
+    fn init_repo(root: &std::path::Path) {
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "t@t.t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(root.join("f"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "i"]);
+    }
+
     #[test]
     fn create_ticket_via_form() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
@@ -386,20 +411,7 @@ mod tests {
         // Build a real repo so start_session can add a worktree.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
-        let run = |args: &[&str]| {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-        };
-        run(&["init", "-b", "main"]);
-        run(&["config", "user.email", "t@t.t"]);
-        run(&["config", "user.name", "t"]);
-        std::fs::write(root.join("f"), "x").unwrap();
-        run(&["add", "."]);
-        run(&["commit", "-m", "i"]);
+        init_repo(&root);
 
         let mut e = engine_with_project(root.clone());
         // Point worktrees somewhere isolated under tempdir.
@@ -433,5 +445,35 @@ mod tests {
         assert_eq!(cleaned.worktree_path, None);
         assert_eq!(cleaned.branch, None);
         assert!(!dir.path().join("wts").join(&name).join("f").exists());
+    }
+
+    /// A `zellij_bar = "compact"` override must produce a compact-bar layout
+    /// regardless of the user's zellij config.
+    #[test]
+    fn start_session_honors_compact_bar_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        init_repo(&root);
+
+        let mut e = engine_with_project(root.clone());
+        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.config.zellij_bar = "compact".to_string();
+        e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
+            .unwrap();
+        e.reload().unwrap();
+
+        let effect = e.move_selected(Status::InProgress).unwrap();
+        let Effect::RunSession { layout_path, .. } = effect else {
+            panic!("expected RunSession, got {effect:?}");
+        };
+        let kdl = std::fs::read_to_string(&layout_path).unwrap();
+        assert!(
+            kdl.contains("compact-bar"),
+            "compact override should render compact-bar:\n{kdl}"
+        );
+        assert!(
+            !kdl.contains("status-bar"),
+            "compact override must drop the status-bar:\n{kdl}"
+        );
     }
 }
