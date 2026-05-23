@@ -19,8 +19,43 @@ pub struct Agents {
     pub copilot: AgentCommands,
 }
 
+fn default_true() -> bool {
+    true
+}
+fn default_poll_interval() -> u64 {
+    5
+}
+
 fn default_zellij_bar() -> String {
     "auto".to_string()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScrapePatterns {
+    #[serde(default)]
+    pub codex: Vec<String>,
+    #[serde(default)]
+    pub copilot: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoReview {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_secs: u64,
+    #[serde(default)]
+    pub patterns: ScrapePatterns,
+}
+
+impl Default for AutoReview {
+    fn default() -> Self {
+        AutoReview {
+            enabled: true,
+            poll_interval_secs: 5,
+            patterns: ScrapePatterns::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +69,8 @@ pub struct Config {
     #[serde(default = "default_zellij_bar")]
     pub zellij_bar: String,
     pub agents: Agents,
+    #[serde(default)]
+    pub auto_review: AutoReview,
 }
 
 impl Default for Config {
@@ -52,6 +89,7 @@ impl Default for Config {
                 codex: cmd("codex"),
                 copilot: cmd("copilot"),
             },
+            auto_review: AutoReview::default(),
         }
     }
 }
@@ -67,6 +105,21 @@ impl Config {
 
     pub fn default_agent(&self) -> Agent {
         self.default_agent.parse().unwrap_or(Agent::Claude)
+    }
+
+    /// Scrape idle-substrings for `agent`. Claude uses launch-injected hooks
+    /// instead of scraping, so it has none.
+    pub fn auto_review_patterns(&self, agent: Agent) -> &[String] {
+        match agent {
+            Agent::Codex => &self.auto_review.patterns.codex,
+            Agent::Copilot => &self.auto_review.patterns.copilot,
+            Agent::Claude => &[],
+        }
+    }
+
+    /// Detection cadence; clamped to at least 1s so it can never busy-loop.
+    pub fn poll_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.auto_review.poll_interval_secs.max(1))
     }
 
     /// Absolute worktree directory for `name`, with `{root}` expanded.
@@ -161,5 +214,41 @@ mod tests {
         fs::write(&path, text).unwrap();
         let loaded = load_from(&path).unwrap();
         assert_eq!(loaded.zellij_bar, "auto");
+    }
+
+    #[test]
+    fn auto_review_defaults_on() {
+        let c = Config::default();
+        assert!(c.auto_review.enabled);
+        assert_eq!(c.auto_review.poll_interval_secs, 5);
+        assert!(c.auto_review.patterns.codex.is_empty());
+        assert!(c.auto_review.patterns.copilot.is_empty());
+        assert_eq!(c.poll_interval(), std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn patterns_lookup_by_agent() {
+        let mut c = Config::default();
+        c.auto_review.patterns.codex = vec!["▌".into()];
+        assert_eq!(c.auto_review_patterns(Agent::Codex), &["▌".to_string()]);
+        assert!(c.auto_review_patterns(Agent::Claude).is_empty());
+        assert!(c.auto_review_patterns(Agent::Copilot).is_empty());
+    }
+
+    #[test]
+    fn config_without_auto_review_section_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "default_agent = \"claude\"\nworktree_base = \"{root}/../wt\"\nbase_branch = \"auto\"\n\
+             [agents.claude]\nwith_prompt = [\"claude\", \"{prompt}\"]\nno_prompt = [\"claude\"]\n\
+             [agents.codex]\nwith_prompt = [\"codex\", \"{prompt}\"]\nno_prompt = [\"codex\"]\n\
+             [agents.copilot]\nwith_prompt = [\"copilot\", \"{prompt}\"]\nno_prompt = [\"copilot\"]\n",
+        )
+        .unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert!(loaded.auto_review.enabled);
+        assert_eq!(loaded.auto_review.poll_interval_secs, 5);
     }
 }

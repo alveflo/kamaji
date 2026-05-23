@@ -1,11 +1,13 @@
 use anyhow::{bail, Result};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::app::{App, FormField, Modal, TicketForm};
 use crate::config::Config;
 use crate::db::Db;
-use crate::models::{Status, Ticket};
+use crate::detect::{self, SignalLevel};
+use crate::models::{Agent, Status, Ticket};
 use crate::{agent, git, layout, slug, zellij, zellij_config};
 
 /// Side effect the main loop must run by releasing the terminal.
@@ -27,11 +29,27 @@ pub struct Engine {
     pub db: Db,
     pub config: Config,
     pub app: App,
+    /// Last observed signal level per ticket id (in-memory; re-baselined on restart).
+    pub last_level: HashMap<i64, SignalLevel>,
+    /// Tickets kamaji auto-moved to Review (provenance gate for the move back).
+    pub auto_review_ids: HashSet<i64>,
+    /// Per-ticket scrape screen hash for the stability guard.
+    pub scrape_hash: HashMap<i64, Option<u64>>,
+    /// Where per-session idle markers live.
+    pub state_dir: std::path::PathBuf,
 }
 
 impl Engine {
     pub fn new(db: Db, config: Config, app: App) -> Self {
-        Engine { db, config, app }
+        Engine {
+            db,
+            config,
+            app,
+            last_level: HashMap::new(),
+            auto_review_ids: HashSet::new(),
+            scrape_hash: HashMap::new(),
+            state_dir: detect::default_state_dir(),
+        }
     }
 
     pub fn reload(&mut self) -> Result<()> {
@@ -68,6 +86,16 @@ impl Engine {
             self.config.commands_for(ticket.agent),
             ticket.initial_prompt.as_deref(),
         );
+        // For Claude, inject hook settings that maintain the idle marker, and
+        // clear any stale marker so the session baselines as Active.
+        let argv = if self.config.auto_review.enabled && ticket.agent == Agent::Claude {
+            let marker = detect::marker_path(&self.state_dir, &name);
+            let _ = std::fs::create_dir_all(&self.state_dir);
+            let _ = std::fs::remove_file(&marker);
+            detect::inject_claude_settings(argv, &marker.to_string_lossy())
+        } else {
+            argv
+        };
         // Resolve the bar style: config override (compact/default/none) else
         // auto-detect from the user's zellij default_layout.
         let bar = zellij_config::resolve_bar_style(
@@ -103,6 +131,7 @@ impl Engine {
     }
 
     fn apply_move(&mut self, ticket: Ticket, target: Status) -> Result<Effect> {
+        self.auto_review_ids.remove(&ticket.id);
         if target == Status::InProgress {
             return match ticket.session_name.clone() {
                 Some(name) => {
@@ -124,6 +153,7 @@ impl Engine {
         if let Some(t) = self.db.get_ticket(ticket_id)? {
             if let Some(name) = &t.session_name {
                 zellij::terminate_session(name);
+                let _ = std::fs::remove_file(detect::marker_path(&self.state_dir, name));
             }
             let root = &self.app.project.root_dir;
             if let Some(wt) = &t.worktree_path {
@@ -133,6 +163,7 @@ impl Engine {
                 let _ = git::delete_branch(root, b);
             }
             self.db.clear_ticket_session(ticket_id)?;
+            self.forget_ticket_state(ticket_id);
         }
         Ok(())
     }
@@ -146,21 +177,111 @@ impl Engine {
         let Some(list) = zellij::list_sessions() else {
             return Ok(());
         };
-        let stale: Vec<i64> = self
+        let stale: Vec<(i64, String)> = self
             .app
             .tickets
             .iter()
-            .filter(|t| {
+            .filter_map(|t| {
                 t.session_name
                     .as_deref()
-                    .is_some_and(|n| !zellij::session_in_list(&list, n))
+                    .filter(|n| !zellij::session_in_list(&list, n))
+                    .map(|n| (t.id, n.to_string()))
             })
-            .map(|t| t.id)
             .collect();
-        for id in stale {
+        for (id, name) in stale {
             self.db.clear_ticket_session(id)?;
+            let _ = std::fs::remove_file(detect::marker_path(&self.state_dir, &name));
+            self.forget_ticket_state(id);
         }
         self.reload()
+    }
+
+    /// Forget all in-memory detection state for a ticket (on teardown/vanish).
+    fn forget_ticket_state(&mut self, id: i64) {
+        self.last_level.remove(&id);
+        self.auto_review_ids.remove(&id);
+        self.scrape_hash.remove(&id);
+    }
+
+    /// Apply move decisions given already-gathered signal levels. Split out from
+    /// the IO so it can be unit-tested with crafted levels.
+    fn detect_tick_with(&mut self, levels: &HashMap<i64, SignalLevel>) -> Result<()> {
+        let mut changed = false;
+        for (&id, &level) in levels {
+            // Copy out the status so we don't hold an app borrow across the db write.
+            let Some(status) = self
+                .app
+                .tickets
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.status)
+            else {
+                continue;
+            };
+            let last = self.last_level.get(&id).copied();
+            let was_auto = self.auto_review_ids.contains(&id);
+            if let Some(target) = detect::decide(last, level, status, was_auto) {
+                self.db.set_ticket_status(id, target)?;
+                match target {
+                    Status::Review => {
+                        self.auto_review_ids.insert(id);
+                        self.app.status_message = Some(format!("#{id} → Review (agent idle)"));
+                    }
+                    Status::InProgress => {
+                        self.auto_review_ids.remove(&id);
+                        self.app.status_message =
+                            Some(format!("#{id} → In Progress (agent active)"));
+                    }
+                    _ => {}
+                }
+                changed = true;
+            }
+            if level != SignalLevel::Unknown {
+                self.last_level.insert(id, level);
+            }
+        }
+        if changed {
+            self.reload()?;
+        }
+        Ok(())
+    }
+
+    /// Read the current signal level for every live, in-progress/review ticket.
+    fn gather_levels(&mut self) -> HashMap<i64, SignalLevel> {
+        // Snapshot first so we don't borrow `app` while mutating scrape state.
+        let live: Vec<(i64, Agent, String)> = self
+            .app
+            .tickets
+            .iter()
+            .filter(|t| matches!(t.status, Status::InProgress | Status::Review))
+            .filter_map(|t| t.session_name.clone().map(|s| (t.id, t.agent, s)))
+            .collect();
+
+        let mut out = HashMap::new();
+        for (id, agent, session) in live {
+            let level = match agent {
+                Agent::Claude => {
+                    detect::marker_level(&detect::marker_path(&self.state_dir, &session))
+                }
+                Agent::Codex | Agent::Copilot => {
+                    let patterns: Vec<String> = self.config.auto_review_patterns(agent).to_vec();
+                    if patterns.is_empty() {
+                        continue; // detector disabled for this agent
+                    }
+                    let screen = zellij::dump_screen(&session);
+                    let hash = self.scrape_hash.entry(id).or_insert(None);
+                    detect::scrape_level(screen.as_deref(), &patterns, hash)
+                }
+            };
+            out.insert(id, level);
+        }
+        out
+    }
+
+    /// One detection pass: gather levels, then apply move decisions.
+    pub fn detect_tick(&mut self) -> Result<()> {
+        let levels = self.gather_levels();
+        self.detect_tick_with(&levels)
     }
 
     fn submit_form(&mut self, form: &TicketForm) -> Result<()> {
@@ -342,8 +463,10 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::SignalLevel;
     use crate::models::Agent;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+    use std::collections::HashMap;
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -419,6 +542,7 @@ mod tests {
         let mut e = engine_with_project(root.clone());
         // Point worktrees somewhere isolated under tempdir.
         e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.state_dir = dir.path().join("state");
         let t =
             e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
                 .unwrap();
@@ -433,6 +557,11 @@ mod tests {
             } => {
                 assert_eq!(n, name);
                 assert!(layout_path.exists());
+                let layout = std::fs::read_to_string(&layout_path).unwrap();
+                assert!(
+                    layout.contains("--settings"),
+                    "claude layout must inject --settings: {layout}"
+                );
             }
             other => panic!("expected RunSession, got {other:?}"),
         }
@@ -448,6 +577,133 @@ mod tests {
         assert_eq!(cleaned.worktree_path, None);
         assert_eq!(cleaned.branch, None);
         assert!(!dir.path().join("wts").join(&name).join("f").exists());
+    }
+
+    /// Helper: an in-progress ticket with a recorded session, returns its id.
+    fn in_progress_ticket(e: &mut Engine) -> i64 {
+        let t =
+            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+                .unwrap();
+        e.db.set_ticket_session(t.id, "kamaji-x", "/wt", "kamaji-x")
+            .unwrap();
+        e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
+        e.reload().unwrap();
+        t.id
+    }
+
+    fn levels(id: i64, level: SignalLevel) -> HashMap<i64, SignalLevel> {
+        let mut m = HashMap::new();
+        m.insert(id, level);
+        m
+    }
+
+    #[test]
+    fn idle_after_active_moves_in_progress_to_review() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e);
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
+        assert!(e.auto_review_ids.contains(&id));
+    }
+
+    #[test]
+    fn resumed_auto_reviewed_card_returns_to_in_progress() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e);
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
+        assert_eq!(
+            e.db.get_ticket(id).unwrap().unwrap().status,
+            Status::InProgress
+        );
+        assert!(!e.auto_review_ids.contains(&id));
+    }
+
+    #[test]
+    fn manual_drag_back_is_not_re_moved() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e);
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        e.move_ticket(id, Status::InProgress).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        assert_eq!(
+            e.db.get_ticket(id).unwrap().unwrap().status,
+            Status::InProgress
+        );
+    }
+
+    #[test]
+    fn never_drags_manually_placed_review_card() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e);
+        e.move_ticket(id, Status::Review).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
+        assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
+    }
+
+    #[test]
+    fn cleanup_removes_marker_and_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.state_dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(&e.state_dir).unwrap();
+
+        let t =
+            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+                .unwrap();
+        e.db.set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
+            .unwrap();
+        e.reload().unwrap();
+        let marker = crate::detect::marker_path(&e.state_dir, "kamaji-sess");
+        std::fs::write(&marker, "").unwrap();
+        e.auto_review_ids.insert(t.id);
+        e.last_level.insert(t.id, SignalLevel::Idle);
+
+        e.cleanup_ticket(t.id).unwrap();
+
+        assert!(!marker.exists());
+        assert!(!e.auto_review_ids.contains(&t.id));
+        assert!(!e.last_level.contains_key(&t.id));
+    }
+
+    #[test]
+    fn detect_tick_reads_claude_marker_and_moves_to_review() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.state_dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(&e.state_dir).unwrap();
+
+        let t =
+            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+                .unwrap();
+        e.db.set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
+            .unwrap();
+        e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
+        e.reload().unwrap();
+
+        // No marker yet => Active baseline; no move.
+        e.detect_tick().unwrap();
+        assert_eq!(
+            e.db.get_ticket(t.id).unwrap().unwrap().status,
+            Status::InProgress
+        );
+
+        // Agent's Stop hook would create the marker => Idle => Review.
+        std::fs::write(crate::detect::marker_path(&e.state_dir, "kamaji-sess"), "").unwrap();
+        e.detect_tick().unwrap();
+        assert_eq!(
+            e.db.get_ticket(t.id).unwrap().unwrap().status,
+            Status::Review
+        );
     }
 
     /// A `zellij_bar = "compact"` override must produce a compact-bar layout
