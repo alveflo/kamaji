@@ -54,10 +54,13 @@ Whenever a GitHub issue is created (by you, for a side quest), immediately:
 
    ```sh
    slay tasks create "<issue title>" \
+     --project kamaji \
      --description "<issue body + link to the GitHub issue>" \
      --external-provider github \
      --external-id "<issue number>"
    ```
+
+   The slay project is always **kamaji** (`--project kamaji`).
 
    `--external-id` makes this idempotent: if a ticket for that issue already
    exists, slay skips creating a duplicate. **Always pass it**, and check for an
@@ -97,7 +100,26 @@ gh pr merge --squash --auto --delete-branch
   git worktree remove ../kamaji-worktrees/<branch>
   git branch -d <branch>   # if not already deleted by --delete-branch
   ```
-- Mark the corresponding slay ticket done: `slay tasks done <id>`.
+
+### 5. When the PR merges and the issue closes, mark the slay task done
+
+Squash-merging with `--delete-branch` closes the linked GitHub issue. Whenever
+an issue's PR is merged, mark its slay task done so the board stays in sync:
+
+```sh
+slay tasks done <task-id> --close
+```
+
+If you don't have the task id handy, look it up by the GitHub issue number it
+was created with (`--external-provider github --external-id <n>`):
+
+```sh
+slay tasks list --project kamaji --json \
+  | jq -r '.[] | select(.externalProvider=="github" and .externalId=="<n>") | .id'
+```
+
+(Confirm the exact JSON field names with `slay tasks list --json` once; adjust
+the filter if they differ.) Then `slay tasks done <id> --close`.
 
 ---
 
@@ -107,9 +129,9 @@ gh pr merge --squash --auto --delete-branch
 |------------------------------------|-----------------------------------------------------|
 | Starting any task                  | New worktree + branch off `main`                    |
 | Noticed separate work              | `gh issue create` (only if genuinely out of scope)  |
-| Issue created                      | slay ticket (`--external-id`) → worktree → launch Claude |
+| Issue created                      | slay ticket (`--project kamaji --external-id`) → worktree → launch Claude |
 | Work finished                      | `gh pr create` → `gh pr merge --squash --auto`      |
-| Merged                             | Remove worktree + branch, `slay tasks done`         |
+| Merged / issue closed              | Remove worktree + branch; `slay tasks done <id> --close` |
 
 ## Project conventions
 
