@@ -378,6 +378,16 @@ impl Engine {
                         form.cycle_agent(true);
                         self.app.modal = Modal::Form(form);
                     }
+                    KeyCode::Left | KeyCode::Right
+                        if form.field == FormField::Background =>
+                    {
+                        form.toggle_background();
+                        self.app.modal = Modal::Form(form);
+                    }
+                    KeyCode::Char(' ') if form.field == FormField::Background => {
+                        form.toggle_background();
+                        self.app.modal = Modal::Form(form);
+                    }
                     KeyCode::Backspace => {
                         form.backspace();
                         self.app.modal = Modal::Form(form);
@@ -920,6 +930,27 @@ mod tests {
         assert_eq!(stored.session_name.as_deref(), Some(name.as_str()));
 
         e.cleanup_ticket(t.id).unwrap();
+    }
+
+    #[test]
+    fn space_toggles_background_field_in_form() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('c')).unwrap();
+        // Walk to the Background field via Tab (Title→Desc→Prompt→Agent→Background).
+        for _ in 0..4 {
+            e.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)).unwrap();
+        }
+        match &e.app.modal {
+            Modal::Form(f) => assert_eq!(f.field, FormField::Background),
+            other => panic!("expected form, got {other:?}"),
+        }
+        // Space flips it off.
+        e.on_key(key(' ')).unwrap();
+        match &e.app.modal {
+            Modal::Form(f) => assert!(!f.start_in_background),
+            other => panic!("expected form, got {other:?}"),
+        }
     }
 
     /// `e` opens the edit form for the selected ticket (edit moved off Enter).
