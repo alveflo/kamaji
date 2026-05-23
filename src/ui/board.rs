@@ -4,15 +4,32 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph};
 use ratatui::Frame;
 
+use std::collections::HashMap;
+
 use crate::app::App;
+use crate::detect::SignalLevel;
 use crate::models::{Status, Ticket};
 
 /// A card occupies its border lines plus one content line.
 const CARD_HEIGHT: u16 = 3;
 /// Blank line between stacked cards.
 const CARD_GAP: u16 = 1;
+/// Bullet color for the "Needs attention" column (true orange; truecolor).
+const ORANGE: Color = Color::Rgb(255, 165, 0);
 
-pub fn render_board(frame: &mut Frame, app: &App) {
+/// The fg color to apply to a ticket's bullet, or `None` to inherit the card's
+/// existing text style (the default appearance). Needs-attention tickets are
+/// always orange; an In Progress ticket whose agent is actively working is
+/// green, and otherwise (idle/unknown/no signal) keeps its default color.
+fn bullet_color(status: Status, level: Option<SignalLevel>) -> Option<Color> {
+    match status {
+        Status::Review => Some(ORANGE),
+        Status::InProgress if level == Some(SignalLevel::Active) => Some(Color::Green),
+        _ => None,
+    }
+}
+
+pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) {
     let [board_area, status_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
 
@@ -28,6 +45,7 @@ pub fn render_board(frame: &mut Frame, app: &App) {
             &tickets,
             focused,
             app.selected_row,
+            levels,
         );
     }
 
@@ -51,6 +69,7 @@ fn render_column(
     tickets: &[&Ticket],
     focused: bool,
     selected_row: usize,
+    levels: &HashMap<i64, SignalLevel>,
 ) {
     let border_style = if focused {
         Style::new().fg(Color::Cyan)
@@ -93,7 +112,8 @@ fn render_column(
             height,
         };
         let selected = focused && i == selected_row;
-        render_card(frame, card, ticket, selected);
+        let level = levels.get(&ticket.id).copied();
+        render_card(frame, card, ticket, selected, level);
     }
 }
 
@@ -125,7 +145,13 @@ fn first_visible(selected: usize, visible: usize, total: usize) -> usize {
 
 /// Render a single ticket as a bordered, padded card. The selected card gets a
 /// filled accent background and a bold accent border.
-fn render_card(frame: &mut Frame, area: Rect, ticket: &Ticket, selected: bool) {
+fn render_card(
+    frame: &mut Frame,
+    area: Rect,
+    ticket: &Ticket,
+    selected: bool,
+    level: Option<SignalLevel>,
+) {
     let marker = if ticket.session_name.is_some() {
         "●"
     } else {
@@ -154,8 +180,16 @@ fn render_card(frame: &mut Frame, area: Rect, ticket: &Ticket, selected: bool) {
         .style(fill)
         .padding(Padding::horizontal(1));
 
+    // The bullet carries the ticket's status/activity color (patched over the
+    // card's text style, so a selected card keeps its background and bold);
+    // everything else inherits the card's text style unchanged.
+    let marker_span = match bullet_color(ticket.status, level) {
+        Some(c) => Span::styled(marker, Style::new().fg(c)),
+        None => Span::raw(marker),
+    };
+
     let line = Line::from(vec![
-        Span::raw(marker),
+        marker_span,
         Span::raw(format!(" #{} ", ticket.id)),
         Span::raw(ticket.title.clone()),
     ])
@@ -174,6 +208,34 @@ mod tests {
     use ratatui::layout::Position;
     use ratatui::Terminal;
     use std::path::PathBuf;
+
+    #[test]
+    fn bullet_color_maps_status_and_activity() {
+        // Needs attention (Review) is always orange, regardless of activity.
+        assert_eq!(bullet_color(Status::Review, None), Some(ORANGE));
+        assert_eq!(
+            bullet_color(Status::Review, Some(SignalLevel::Active)),
+            Some(ORANGE)
+        );
+        // In Progress is green only while the agent is actively working.
+        assert_eq!(
+            bullet_color(Status::InProgress, Some(SignalLevel::Active)),
+            Some(Color::Green)
+        );
+        // Stale In Progress: idle, unknown, or no signal => default color.
+        assert_eq!(
+            bullet_color(Status::InProgress, Some(SignalLevel::Idle)),
+            None
+        );
+        assert_eq!(
+            bullet_color(Status::InProgress, Some(SignalLevel::Unknown)),
+            None
+        );
+        assert_eq!(bullet_color(Status::InProgress, None), None);
+        // Other columns keep their default color.
+        assert_eq!(bullet_color(Status::Todo, Some(SignalLevel::Active)), None);
+        assert_eq!(bullet_color(Status::Done, None), None);
+    }
 
     #[test]
     fn first_visible_keeps_selection_on_screen() {
@@ -223,11 +285,29 @@ mod tests {
         }
     }
 
-    fn render(app: &App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    fn render(
+        app: &App,
+        levels: &HashMap<i64, SignalLevel>,
+        w: u16,
+        h: u16,
+    ) -> ratatui::buffer::Buffer {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render_board(f, app)).unwrap();
+        terminal.draw(|f| render_board(f, app, levels)).unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    /// fg color of the first bullet cell (`●`/`○`) found in the buffer.
+    fn bullet_fg(buf: &ratatui::buffer::Buffer) -> Option<Color> {
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let sym = buf[Position::new(x, y)].symbol();
+                if sym == "●" || sym == "○" {
+                    return Some(buf[Position::new(x, y)].fg);
+                }
+            }
+        }
+        None
     }
 
     fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
@@ -244,7 +324,7 @@ mod tests {
     #[test]
     fn renders_tickets_as_cards_with_borders() {
         let app = App::new(project(), vec![ticket(1, Status::Todo)]);
-        let buf = render(&app, 80, 20);
+        let buf = render(&app, &HashMap::new(), 80, 20);
         let text = buffer_text(&buf);
         // Card content present.
         assert!(text.contains("#1"), "expected ticket id in:\n{text}");
@@ -259,13 +339,46 @@ mod tests {
     #[test]
     fn selected_card_has_filled_background() {
         let app = App::new(project(), vec![ticket(1, Status::Todo)]);
-        let buf = render(&app, 80, 20);
+        let buf = render(&app, &HashMap::new(), 80, 20);
         let has_cyan_bg = (0..buf.area.height)
             .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].bg == Color::Cyan));
         assert!(
             has_cyan_bg,
             "selected card should have a colored background"
         );
+    }
+
+    /// A ticket with a recorded session in the given column.
+    fn live_ticket(id: i64, status: Status) -> Ticket {
+        let mut t = ticket(id, status);
+        t.session_name = Some(format!("sess{id}"));
+        t
+    }
+
+    #[test]
+    fn needs_attention_bullet_is_orange() {
+        let app = App::new(project(), vec![live_ticket(1, Status::Review)]);
+        let buf = render(&app, &HashMap::new(), 80, 20);
+        assert_eq!(bullet_fg(&buf), Some(ORANGE));
+    }
+
+    #[test]
+    fn in_progress_active_bullet_is_green() {
+        let app = App::new(project(), vec![live_ticket(1, Status::InProgress)]);
+        let mut levels = HashMap::new();
+        levels.insert(1, SignalLevel::Active);
+        let buf = render(&app, &levels, 80, 20);
+        assert_eq!(bullet_fg(&buf), Some(Color::Green));
+    }
+
+    #[test]
+    fn in_progress_idle_bullet_keeps_default_color() {
+        let app = App::new(project(), vec![live_ticket(1, Status::InProgress)]);
+        let mut levels = HashMap::new();
+        levels.insert(1, SignalLevel::Idle);
+        let buf = render(&app, &levels, 80, 20);
+        // Stale: the bullet keeps the default unselected card color, not green.
+        assert_eq!(bullet_fg(&buf), Some(Color::Gray));
     }
 
     #[test]
@@ -276,7 +389,7 @@ mod tests {
 
         // Small height forces scrolling; should not panic and the selected
         // ticket must be on screen.
-        let buf = render(&app, 80, 12);
+        let buf = render(&app, &HashMap::new(), 80, 12);
         let text = buffer_text(&buf);
         assert!(
             text.contains("#20"),
