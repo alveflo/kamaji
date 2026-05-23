@@ -229,7 +229,8 @@ impl Engine {
                 match target {
                     Status::Review => {
                         self.auto_review_ids.insert(id);
-                        self.app.status_message = Some(format!("#{id} → Review (agent idle)"));
+                        self.app.status_message =
+                            Some(format!("#{id} → Needs attention (agent idle)"));
                     }
                     Status::InProgress => {
                         self.auto_review_ids.remove(&id);
@@ -610,6 +611,13 @@ mod tests {
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
         assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
         assert!(e.auto_review_ids.contains(&id));
+        // The toast names the column as the user sees it ("Needs attention").
+        assert!(e
+            .app
+            .status_message
+            .as_deref()
+            .unwrap()
+            .contains("Needs attention"));
     }
 
     #[test]

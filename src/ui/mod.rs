@@ -1,15 +1,18 @@
 mod board;
 mod modals;
 
+use std::collections::HashMap;
+
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::Frame;
 
 use crate::app::{App, Modal};
+use crate::detect::SignalLevel;
 
 pub(crate) use modals::render_field_modal;
 
-pub fn render(frame: &mut Frame, app: &App) {
-    board::render_board(frame, app);
+pub fn render(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) {
+    board::render_board(frame, app, levels);
     match &app.modal {
         Modal::None => {}
         Modal::Form(form) => modals::render_form(frame, form),

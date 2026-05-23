@@ -73,7 +73,7 @@ fn run_board(terminal: &mut DefaultTerminal, engine: &mut Engine) -> Result<bool
             engine.detect_tick()?;
             last_tick = Instant::now();
         }
-        terminal.draw(|frame| ui::render(frame, &engine.app))?;
+        terminal.draw(|frame| ui::render(frame, &engine.app, &engine.last_level))?;
 
         if !event::poll(Duration::from_millis(200))? {
             continue;

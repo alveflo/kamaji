@@ -61,7 +61,7 @@ impl Status {
         match self {
             Status::Todo => "Todo",
             Status::InProgress => "In Progress",
-            Status::Review => "Review",
+            Status::Review => "Needs attention",
             Status::Done => "Done",
         }
     }
@@ -135,6 +135,11 @@ mod tests {
     fn status_roundtrips_and_has_titles() {
         assert_eq!(Status::from_str("in_progress").unwrap(), Status::InProgress);
         assert_eq!(Status::InProgress.title(), "In Progress");
+        // The Review column is displayed as "Needs attention" but its DB key
+        // stays "review" so persisted tickets keep round-tripping.
+        assert_eq!(Status::Review.title(), "Needs attention");
+        assert_eq!(Status::Review.as_str(), "review");
+        assert_eq!(Status::from_str("review").unwrap(), Status::Review);
         assert!(Status::from_str("bogus").is_err());
     }
 }
