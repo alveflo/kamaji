@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+mod cli;
 mod config;
 mod db;
 mod detect;
@@ -31,9 +32,26 @@ fn db_path() -> Result<PathBuf> {
 }
 
 fn main() -> Result<()> {
+    match cli::parse(std::env::args().skip(1))? {
+        cli::Command::Tui => run_tui(),
+        cli::Command::Help => {
+            print!("{}", cli::usage());
+            Ok(())
+        }
+        cli::Command::CreateTicket(args) => {
+            let config = config::load_or_init()?;
+            let db = Db::open(&db_path()?)?;
+            let cwd = std::env::current_dir().context("determining current directory")?;
+            let message = cli::run_create_ticket(&db, &config, &args, &cwd)?;
+            println!("{message}");
+            Ok(())
+        }
+    }
+}
+
+fn run_tui() -> Result<()> {
     let config = config::load_or_init()?;
     let db = Db::open(&db_path()?)?;
-
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, db, config);
     ratatui::restore();
