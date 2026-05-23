@@ -1,5 +1,6 @@
 use crate::models::Status;
 use directories::ProjectDirs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// What a detector believes about an agent session right now.
@@ -58,6 +59,33 @@ pub fn marker_path(state_dir: &Path, session: &str) -> PathBuf {
 /// meaningful (the agent is working), so this never returns Unknown.
 pub fn marker_level(path: &Path) -> SignalLevel {
     if path.exists() {
+        SignalLevel::Idle
+    } else {
+        SignalLevel::Active
+    }
+}
+
+/// Scrape detector. `Idle` only when the buffer matches a configured idle
+/// substring AND is unchanged since the previous poll (stability guard).
+/// `None` screen (dump failed) => Unknown. Empty patterns => never Idle.
+/// `last_hash` is updated in place so the next poll can detect change.
+pub fn scrape_level(
+    screen: Option<&str>,
+    idle_substrings: &[String],
+    last_hash: &mut Option<u64>,
+) -> SignalLevel {
+    let Some(screen) = screen else {
+        return SignalLevel::Unknown;
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    screen.hash(&mut hasher);
+    let hash = hasher.finish();
+    let stable = *last_hash == Some(hash);
+    *last_hash = Some(hash);
+
+    let matches = !idle_substrings.is_empty()
+        && idle_substrings.iter().any(|p| screen.contains(p.as_str()));
+    if matches && stable {
         SignalLevel::Idle
     } else {
         SignalLevel::Active
@@ -141,5 +169,47 @@ mod tests {
         assert_eq!(marker_level(&p), SignalLevel::Active); // absent
         std::fs::write(&p, "").unwrap();
         assert_eq!(marker_level(&p), SignalLevel::Idle); // present
+    }
+
+    #[test]
+    fn scrape_idle_requires_match_and_stability() {
+        let pats = vec!["waiting for input".to_string()];
+        let mut h: Option<u64> = None;
+        let screen = "...\nwaiting for input\n";
+        // First sight of a matching screen: not yet stable => Active.
+        assert_eq!(scrape_level(Some(screen), &pats, &mut h), SignalLevel::Active);
+        // Unchanged + still matching => Idle.
+        assert_eq!(scrape_level(Some(screen), &pats, &mut h), SignalLevel::Idle);
+    }
+
+    #[test]
+    fn scrape_changed_screen_is_active() {
+        let pats = vec!["waiting".to_string()];
+        let mut h: Option<u64> = None;
+        assert_eq!(scrape_level(Some("waiting a"), &pats, &mut h), SignalLevel::Active);
+        assert_eq!(scrape_level(Some("waiting b"), &pats, &mut h), SignalLevel::Active);
+    }
+
+    #[test]
+    fn scrape_no_match_is_active() {
+        let pats = vec!["waiting".to_string()];
+        let mut h: Option<u64> = None;
+        assert_eq!(scrape_level(Some("nvim"), &pats, &mut h), SignalLevel::Active);
+        assert_eq!(scrape_level(Some("nvim"), &pats, &mut h), SignalLevel::Active);
+    }
+
+    #[test]
+    fn scrape_empty_patterns_never_idle() {
+        let pats: Vec<String> = vec![];
+        let mut h: Option<u64> = None;
+        assert_eq!(scrape_level(Some("anything"), &pats, &mut h), SignalLevel::Active);
+        assert_eq!(scrape_level(Some("anything"), &pats, &mut h), SignalLevel::Active);
+    }
+
+    #[test]
+    fn scrape_failed_dump_is_unknown() {
+        let pats = vec!["x".to_string()];
+        let mut h: Option<u64> = None;
+        assert_eq!(scrape_level(None, &pats, &mut h), SignalLevel::Unknown);
     }
 }
