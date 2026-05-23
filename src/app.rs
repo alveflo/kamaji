@@ -6,6 +6,7 @@ pub enum FormField {
     Description,
     InitialPrompt,
     Agent,
+    Background,
 }
 
 #[derive(Debug, Clone)]
@@ -15,6 +16,7 @@ pub struct TicketForm {
     pub description: String,
     pub initial_prompt: String,
     pub agent: Agent,
+    pub start_in_background: bool,
     pub field: FormField,
 }
 
@@ -26,6 +28,7 @@ impl TicketForm {
             description: String::new(),
             initial_prompt: String::new(),
             agent: default_agent,
+            start_in_background: true,
             field: FormField::Title,
         }
     }
@@ -37,6 +40,7 @@ impl TicketForm {
             description: t.description.clone(),
             initial_prompt: t.initial_prompt.clone().unwrap_or_default(),
             agent: t.agent,
+            start_in_background: false,
             field: FormField::Title,
         }
     }
@@ -52,6 +56,7 @@ impl TicketForm {
                 FormField::Description,
                 FormField::InitialPrompt,
                 FormField::Agent,
+                FormField::Background,
             ]
         }
     }
@@ -73,7 +78,7 @@ impl TicketForm {
             FormField::Title => self.title.push(c),
             FormField::Description => self.description.push(c),
             FormField::InitialPrompt => self.initial_prompt.push(c),
-            FormField::Agent => {}
+            FormField::Agent | FormField::Background => {}
         }
     }
 
@@ -82,8 +87,12 @@ impl TicketForm {
             FormField::Title => self.title.pop(),
             FormField::Description => self.description.pop(),
             FormField::InitialPrompt => self.initial_prompt.pop(),
-            FormField::Agent => None,
+            FormField::Agent | FormField::Background => None,
         };
+    }
+
+    pub fn toggle_background(&mut self) {
+        self.start_in_background = !self.start_in_background;
     }
 
     pub fn cycle_agent(&mut self, forward: bool) {
@@ -271,5 +280,27 @@ mod tests {
         f.cycle_agent(true);
         assert_eq!(f.agent, Agent::Codex);
         assert_eq!(f.prompt_opt(), None);
+    }
+
+    #[test]
+    fn create_form_has_background_toggle_on_by_default() {
+        let mut f = TicketForm::new_create(Agent::Claude);
+        assert!(f.start_in_background, "background toggle defaults on");
+        // Background is reachable by tabbing in create mode.
+        f.field = FormField::Background;
+        f.toggle_background();
+        assert!(!f.start_in_background);
+        f.toggle_background();
+        assert!(f.start_in_background);
+    }
+
+    #[test]
+    fn edit_form_omits_background_field() {
+        let mut f = TicketForm::from_ticket(&ticket(5, Status::Todo));
+        // Cycle through every field; Background must never appear in edit mode.
+        for _ in 0..4 {
+            assert_ne!(f.field, FormField::Background);
+            f.next_field();
+        }
     }
 }
