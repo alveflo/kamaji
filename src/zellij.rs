@@ -38,6 +38,25 @@ pub fn attach_session(name: &str) -> Result<ExitStatus> {
     Ok(Command::new("zellij").args(["attach", name]).status()?)
 }
 
+/// Capture the focused pane of a (possibly background) session. Returns `None`
+/// if zellij isn't reachable or the dump fails, so callers treat it as "no
+/// information". `dump-screen` writes to a file, which we read then delete.
+pub fn dump_screen(session: &str) -> Option<String> {
+    let tmp = std::env::temp_dir().join(format!("kamaji-dump-{session}.txt"));
+    let status = Command::new("zellij")
+        .args(["--session", session, "action", "dump-screen"])
+        .arg(&tmp)
+        .status()
+        .ok()?;
+    let result = if status.success() {
+        std::fs::read_to_string(&tmp).ok()
+    } else {
+        None
+    };
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
 /// Kill and delete a session; errors are ignored (it may already be gone).
 pub fn terminate_session(name: &str) {
     let _ = Command::new("zellij").args(["kill-session", name]).output();
