@@ -38,3 +38,26 @@ pub fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
         .areas(area);
     area
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn centered_rect_centers_requested_percentage() {
+        let area = Rect::new(0, 0, 100, 40);
+
+        let rect = centered_rect(60, 50, area);
+
+        assert_eq!(rect, Rect::new(20, 10, 60, 20));
+    }
+
+    #[test]
+    fn centered_rect_respects_area_origin() {
+        let area = Rect::new(10, 5, 80, 20);
+
+        let rect = centered_rect(50, 50, area);
+
+        assert_eq!(rect, Rect::new(30, 10, 40, 10));
+    }
+}
