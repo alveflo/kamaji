@@ -130,6 +130,33 @@ pressing `p`.
    deletes the branch. `n` moves the ticket to Done and leaves everything
    intact.
 
+### Command line
+
+Create a Todo ticket without opening the TUI:
+
+```bash
+kamaji ticket create --prompt "Start working on GitHub issue #123"
+```
+
+By default, kamaji infers the project from the current directory. This works
+inside a registered project root and inside worktrees recorded on existing
+tickets, so a running agent can create follow-up tickets from its zellij
+session. Use `--project <id-or-name>` when inference is ambiguous.
+
+Useful options:
+
+```bash
+kamaji ticket create \
+  --project kamaji \
+  --title "GitHub issue #123" \
+  --description "Optional context shown on the ticket" \
+  --agent claude \
+  --prompt "Start working on GitHub issue #123"
+```
+
+If `--title` is omitted, the ticket title defaults to the first line of the
+prompt.
+
 ### Notes on session state
 
 - Moving a ticket *backward* (e.g. In Progress → Todo) leaves the worktree and
