@@ -113,6 +113,14 @@ pub struct Ticket {
     pub session_name: Option<String>,
     pub worktree_path: Option<PathBuf>,
     pub branch: Option<String>,
+    /// kamaji auto-moved this ticket to "Needs attention" (Review) because its
+    /// agent went idle. Persisted so the move back to In Progress survives a
+    /// restart; cleared on a manual move or when the session is torn down.
+    pub auto_reviewed: bool,
+    /// The session was started with the idle-detection hooks (Claude
+    /// `--settings`). Without it, an absent marker does not imply "active", so
+    /// the agent's activity (and the green bullet) must not be trusted.
+    pub instrumented: bool,
     #[allow(dead_code)]
     pub created_at: String,
     #[allow(dead_code)]

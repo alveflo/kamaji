@@ -24,10 +24,44 @@ CREATE TABLE IF NOT EXISTS tickets (
     session_name   TEXT,
     worktree_path  TEXT,
     branch         TEXT,
+    auto_reviewed  INTEGER NOT NULL DEFAULT 0,
+    instrumented   INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 ";
+
+/// Add a column to `table` if it isn't already present. SQLite has no
+/// `ADD COLUMN IF NOT EXISTS`, so we check `PRAGMA table_info` first. This keeps
+/// databases created by older kamaji versions forward-compatible.
+fn add_column_if_missing(conn: &Connection, table: &str, col: &str, decl: &str) -> Result<()> {
+    let present = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(std::result::Result::ok)
+        .any(|name| name == col);
+    if !present {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])?;
+    }
+    Ok(())
+}
+
+/// Bring an existing database up to the current schema (idempotent).
+fn migrate(conn: &Connection) -> Result<()> {
+    add_column_if_missing(
+        conn,
+        "tickets",
+        "auto_reviewed",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        conn,
+        "tickets",
+        "instrumented",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    Ok(())
+}
 
 pub struct Db {
     conn: Connection,
@@ -79,6 +113,8 @@ fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         session_name: row.get("session_name")?,
         worktree_path: worktree.map(PathBuf::from),
         branch: row.get("branch")?,
+        auto_reviewed: row.get::<_, i64>("auto_reviewed")? != 0,
+        instrumented: row.get::<_, i64>("instrumented")? != 0,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -92,6 +128,7 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Db { conn })
     }
 
@@ -99,6 +136,7 @@ impl Db {
     pub fn open_in_memory() -> Result<Db> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Db { conn })
     }
 
@@ -202,12 +240,33 @@ impl Db {
         Ok(())
     }
 
+    /// Mark (or unmark) a ticket as auto-moved to Review by kamaji. Persisted so
+    /// the move back to In Progress survives a restart.
+    pub fn set_ticket_auto_reviewed(&self, id: i64, value: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tickets SET auto_reviewed = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, value as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Record whether a ticket's session was started with the idle-detection
+    /// hooks. Only an instrumented session's activity signal is trustworthy.
+    pub fn set_ticket_instrumented(&self, id: i64, value: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tickets SET instrumented = ?2, updated_at = datetime('now') WHERE id = ?1",
+            params![id, value as i64],
+        )?;
+        Ok(())
+    }
+
     /// Clear the session/worktree/branch columns (e.g. after cleanup or when a
-    /// session no longer exists).
+    /// session no longer exists). Also resets the per-session detection flags,
+    /// since they describe a session that no longer exists.
     pub fn clear_ticket_session(&self, id: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE tickets SET session_name = NULL, worktree_path = NULL, branch = NULL,
-             updated_at = datetime('now') WHERE id = ?1",
+             auto_reviewed = 0, instrumented = 0, updated_at = datetime('now') WHERE id = ?1",
             [id],
         )?;
         Ok(())
@@ -289,5 +348,67 @@ mod tests {
         assert_eq!(got.session_name, None);
         assert_eq!(got.worktree_path, None);
         assert_eq!(got.branch, None);
+    }
+
+    #[test]
+    fn detection_flags_default_false_and_round_trip() {
+        let db = db();
+        let p = db
+            .create_project("p", &PathBuf::from("/tmp/p"), None)
+            .unwrap();
+        let t = db
+            .create_ticket(p.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        assert!(!t.auto_reviewed);
+        assert!(!t.instrumented);
+
+        db.set_ticket_auto_reviewed(t.id, true).unwrap();
+        db.set_ticket_instrumented(t.id, true).unwrap();
+        let got = db.get_ticket(t.id).unwrap().unwrap();
+        assert!(got.auto_reviewed);
+        assert!(got.instrumented);
+    }
+
+    #[test]
+    fn clear_ticket_session_resets_detection_flags() {
+        let db = db();
+        let p = db
+            .create_project("p", &PathBuf::from("/tmp/p"), None)
+            .unwrap();
+        let t = db
+            .create_ticket(p.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        db.set_ticket_session(t.id, "s", "/wt", "s").unwrap();
+        db.set_ticket_auto_reviewed(t.id, true).unwrap();
+        db.set_ticket_instrumented(t.id, true).unwrap();
+        db.clear_ticket_session(t.id).unwrap();
+        let got = db.get_ticket(t.id).unwrap().unwrap();
+        assert!(!got.auto_reviewed);
+        assert!(!got.instrumented);
+    }
+
+    #[test]
+    fn migrate_adds_missing_columns_and_is_idempotent() {
+        // A pre-migration tickets table (no auto_reviewed / instrumented).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tickets (
+                id INTEGER PRIMARY KEY, project_id INTEGER, title TEXT, description TEXT,
+                initial_prompt TEXT, agent TEXT, status TEXT, position INTEGER,
+                session_name TEXT, worktree_path TEXT, branch TEXT,
+                created_at TEXT, updated_at TEXT);",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap(); // idempotent: second run must not error
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(tickets)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .collect();
+        assert!(cols.contains(&"auto_reviewed".to_string()));
+        assert!(cols.contains(&"instrumented".to_string()));
     }
 }

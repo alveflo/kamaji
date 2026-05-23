@@ -280,6 +280,8 @@ mod tests {
             session_name: None,
             worktree_path: None,
             branch: None,
+            auto_reviewed: false,
+            instrumented: false,
             created_at: String::new(),
             updated_at: String::new(),
         }
