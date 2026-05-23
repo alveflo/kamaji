@@ -1,3 +1,4 @@
+mod agent;
 mod config;
 mod models;
 mod slug;
