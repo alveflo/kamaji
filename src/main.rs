@@ -1,4 +1,5 @@
 mod agent;
+mod app;
 mod config;
 mod db;
 mod git;
