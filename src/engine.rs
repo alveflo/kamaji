@@ -203,7 +203,12 @@ impl Engine {
         let mut changed = false;
         for (&id, &level) in levels {
             // Copy out the status so we don't hold an app borrow across the db write.
-            let Some(status) = self.app.tickets.iter().find(|t| t.id == id).map(|t| t.status)
+            let Some(status) = self
+                .app
+                .tickets
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| t.status)
             else {
                 continue;
             };
@@ -561,12 +566,10 @@ mod tests {
 
     /// Helper: an in-progress ticket with a recorded session, returns its id.
     fn in_progress_ticket(e: &mut Engine) -> i64 {
-        let t = e
-            .db
-            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
-            .unwrap();
-        e.db
-            .set_ticket_session(t.id, "kamaji-x", "/wt", "kamaji-x")
+        let t =
+            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+                .unwrap();
+        e.db.set_ticket_session(t.id, "kamaji-x", "/wt", "kamaji-x")
             .unwrap();
         e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
         e.reload().unwrap();
@@ -583,7 +586,8 @@ mod tests {
     fn idle_after_active_moves_in_progress_to_review() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         let id = in_progress_ticket(&mut e);
-        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
         assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
         assert!(e.auto_review_ids.contains(&id));
@@ -593,9 +597,11 @@ mod tests {
     fn resumed_auto_reviewed_card_returns_to_in_progress() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         let id = in_progress_ticket(&mut e);
-        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
         assert_eq!(
             e.db.get_ticket(id).unwrap().unwrap().status,
             Status::InProgress
@@ -607,7 +613,8 @@ mod tests {
     fn manual_drag_back_is_not_re_moved() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         let id = in_progress_ticket(&mut e);
-        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
         e.move_ticket(id, Status::InProgress).unwrap();
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
@@ -623,7 +630,8 @@ mod tests {
         let id = in_progress_ticket(&mut e);
         e.move_ticket(id, Status::Review).unwrap();
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
         assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
     }
 
@@ -634,12 +642,10 @@ mod tests {
         e.state_dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(&e.state_dir).unwrap();
 
-        let t = e
-            .db
-            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
-            .unwrap();
-        e.db
-            .set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
+        let t =
+            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+                .unwrap();
+        e.db.set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
             .unwrap();
         e.reload().unwrap();
         let marker = crate::detect::marker_path(&e.state_dir, "kamaji-sess");
@@ -661,23 +667,27 @@ mod tests {
         e.state_dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(&e.state_dir).unwrap();
 
-        let t = e
-            .db
-            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
-            .unwrap();
-        e.db
-            .set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
+        let t =
+            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+                .unwrap();
+        e.db.set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
             .unwrap();
         e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
         e.reload().unwrap();
 
         // No marker yet => Active baseline; no move.
         e.detect_tick().unwrap();
-        assert_eq!(e.db.get_ticket(t.id).unwrap().unwrap().status, Status::InProgress);
+        assert_eq!(
+            e.db.get_ticket(t.id).unwrap().unwrap().status,
+            Status::InProgress
+        );
 
         // Agent's Stop hook would create the marker => Idle => Review.
         std::fs::write(crate::detect::marker_path(&e.state_dir, "kamaji-sess"), "").unwrap();
         e.detect_tick().unwrap();
-        assert_eq!(e.db.get_ticket(t.id).unwrap().unwrap().status, Status::Review);
+        assert_eq!(
+            e.db.get_ticket(t.id).unwrap().unwrap().status,
+            Status::Review
+        );
     }
 }

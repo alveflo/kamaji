@@ -17,7 +17,7 @@ use directories::ProjectDirs;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use app::App;
 use db::Db;
@@ -65,7 +65,13 @@ fn run(terminal: &mut DefaultTerminal, mut db: Db, mut config: config::Config) -
 /// Run the board event loop for one project. Returns `true` if the user asked to
 /// switch projects (return to the picker), `false` to quit the app.
 fn run_board(terminal: &mut DefaultTerminal, engine: &mut Engine) -> Result<bool> {
+    let mut last_tick = Instant::now();
     loop {
+        if engine.config.auto_review.enabled && last_tick.elapsed() >= engine.config.poll_interval()
+        {
+            engine.detect_tick()?;
+            last_tick = Instant::now();
+        }
         terminal.draw(|frame| ui::render(frame, &engine.app))?;
 
         if !event::poll(Duration::from_millis(200))? {

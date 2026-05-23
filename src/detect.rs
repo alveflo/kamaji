@@ -83,8 +83,8 @@ pub fn scrape_level(
     let stable = *last_hash == Some(hash);
     *last_hash = Some(hash);
 
-    let matches = !idle_substrings.is_empty()
-        && idle_substrings.iter().any(|p| screen.contains(p.as_str()));
+    let matches =
+        !idle_substrings.is_empty() && idle_substrings.iter().any(|p| screen.contains(p.as_str()));
     if matches && stable {
         SignalLevel::Idle
     } else {
@@ -153,7 +153,12 @@ mod tests {
     #[test]
     fn finished_in_progress_moves_to_review() {
         assert_eq!(
-            decide(Some(SignalLevel::Active), SignalLevel::Idle, Status::InProgress, false),
+            decide(
+                Some(SignalLevel::Active),
+                SignalLevel::Idle,
+                Status::InProgress,
+                false
+            ),
             Some(Status::Review)
         );
     }
@@ -161,7 +166,12 @@ mod tests {
     #[test]
     fn resumed_auto_reviewed_card_moves_back() {
         assert_eq!(
-            decide(Some(SignalLevel::Idle), SignalLevel::Active, Status::Review, true),
+            decide(
+                Some(SignalLevel::Idle),
+                SignalLevel::Active,
+                Status::Review,
+                true
+            ),
             Some(Status::InProgress)
         );
     }
@@ -169,7 +179,12 @@ mod tests {
     #[test]
     fn never_drags_manually_placed_review_card() {
         assert_eq!(
-            decide(Some(SignalLevel::Idle), SignalLevel::Active, Status::Review, false),
+            decide(
+                Some(SignalLevel::Idle),
+                SignalLevel::Active,
+                Status::Review,
+                false
+            ),
             None
         );
     }
@@ -177,11 +192,21 @@ mod tests {
     #[test]
     fn no_move_without_a_transition() {
         assert_eq!(
-            decide(Some(SignalLevel::Idle), SignalLevel::Idle, Status::InProgress, false),
+            decide(
+                Some(SignalLevel::Idle),
+                SignalLevel::Idle,
+                Status::InProgress,
+                false
+            ),
             None
         );
         assert_eq!(
-            decide(Some(SignalLevel::Active), SignalLevel::Active, Status::Review, true),
+            decide(
+                Some(SignalLevel::Active),
+                SignalLevel::Active,
+                Status::Review,
+                true
+            ),
             None
         );
     }
@@ -189,7 +214,12 @@ mod tests {
     #[test]
     fn unknown_never_moves() {
         assert_eq!(
-            decide(Some(SignalLevel::Active), SignalLevel::Unknown, Status::InProgress, false),
+            decide(
+                Some(SignalLevel::Active),
+                SignalLevel::Unknown,
+                Status::InProgress,
+                false
+            ),
             None
         );
     }
@@ -197,7 +227,12 @@ mod tests {
     #[test]
     fn idle_while_already_in_review_does_not_move() {
         assert_eq!(
-            decide(Some(SignalLevel::Active), SignalLevel::Idle, Status::Review, true),
+            decide(
+                Some(SignalLevel::Active),
+                SignalLevel::Idle,
+                Status::Review,
+                true
+            ),
             None
         );
     }
@@ -223,7 +258,10 @@ mod tests {
         let mut h: Option<u64> = None;
         let screen = "...\nwaiting for input\n";
         // First sight of a matching screen: not yet stable => Active.
-        assert_eq!(scrape_level(Some(screen), &pats, &mut h), SignalLevel::Active);
+        assert_eq!(
+            scrape_level(Some(screen), &pats, &mut h),
+            SignalLevel::Active
+        );
         // Unchanged + still matching => Idle.
         assert_eq!(scrape_level(Some(screen), &pats, &mut h), SignalLevel::Idle);
     }
@@ -232,24 +270,42 @@ mod tests {
     fn scrape_changed_screen_is_active() {
         let pats = vec!["waiting".to_string()];
         let mut h: Option<u64> = None;
-        assert_eq!(scrape_level(Some("waiting a"), &pats, &mut h), SignalLevel::Active);
-        assert_eq!(scrape_level(Some("waiting b"), &pats, &mut h), SignalLevel::Active);
+        assert_eq!(
+            scrape_level(Some("waiting a"), &pats, &mut h),
+            SignalLevel::Active
+        );
+        assert_eq!(
+            scrape_level(Some("waiting b"), &pats, &mut h),
+            SignalLevel::Active
+        );
     }
 
     #[test]
     fn scrape_no_match_is_active() {
         let pats = vec!["waiting".to_string()];
         let mut h: Option<u64> = None;
-        assert_eq!(scrape_level(Some("nvim"), &pats, &mut h), SignalLevel::Active);
-        assert_eq!(scrape_level(Some("nvim"), &pats, &mut h), SignalLevel::Active);
+        assert_eq!(
+            scrape_level(Some("nvim"), &pats, &mut h),
+            SignalLevel::Active
+        );
+        assert_eq!(
+            scrape_level(Some("nvim"), &pats, &mut h),
+            SignalLevel::Active
+        );
     }
 
     #[test]
     fn scrape_empty_patterns_never_idle() {
         let pats: Vec<String> = vec![];
         let mut h: Option<u64> = None;
-        assert_eq!(scrape_level(Some("anything"), &pats, &mut h), SignalLevel::Active);
-        assert_eq!(scrape_level(Some("anything"), &pats, &mut h), SignalLevel::Active);
+        assert_eq!(
+            scrape_level(Some("anything"), &pats, &mut h),
+            SignalLevel::Active
+        );
+        assert_eq!(
+            scrape_level(Some("anything"), &pats, &mut h),
+            SignalLevel::Active
+        );
     }
 
     #[test]
