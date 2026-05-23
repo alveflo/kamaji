@@ -188,7 +188,7 @@ pub fn render_help(frame: &mut Frame) {
     let text = "\
 ↑/↓ j/k   select ticket
 ←/→ h/l   change column
-c         create ticket
+c         create ticket (auto-starts a background session)
 e         edit ticket
 Enter     attach / start session
 m         move ticket (then ←/→, Enter)
