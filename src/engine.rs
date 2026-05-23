@@ -221,6 +221,44 @@ impl Engine {
         Ok(())
     }
 
+    /// Read the current signal level for every live, in-progress/review ticket.
+    fn gather_levels(&mut self) -> HashMap<i64, SignalLevel> {
+        // Snapshot first so we don't borrow `app` while mutating scrape state.
+        let live: Vec<(i64, Agent, String)> = self
+            .app
+            .tickets
+            .iter()
+            .filter(|t| matches!(t.status, Status::InProgress | Status::Review))
+            .filter_map(|t| t.session_name.clone().map(|s| (t.id, t.agent, s)))
+            .collect();
+
+        let mut out = HashMap::new();
+        for (id, agent, session) in live {
+            let level = match agent {
+                Agent::Claude => {
+                    detect::marker_level(&detect::marker_path(&self.state_dir, &session))
+                }
+                Agent::Codex | Agent::Copilot => {
+                    let patterns: Vec<String> = self.config.auto_review_patterns(agent).to_vec();
+                    if patterns.is_empty() {
+                        continue; // detector disabled for this agent
+                    }
+                    let screen = zellij::dump_screen(&session);
+                    let hash = self.scrape_hash.entry(id).or_insert(None);
+                    detect::scrape_level(screen.as_deref(), &patterns, hash)
+                }
+            };
+            out.insert(id, level);
+        }
+        out
+    }
+
+    /// One detection pass: gather levels, then apply move decisions.
+    pub fn detect_tick(&mut self) -> Result<()> {
+        let levels = self.gather_levels();
+        self.detect_tick_with(&levels)
+    }
+
     fn submit_form(&mut self, form: &TicketForm) -> Result<()> {
         match form.editing_id {
             Some(id) => self
@@ -567,5 +605,32 @@ mod tests {
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
         e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
         assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
+    }
+
+    #[test]
+    fn detect_tick_reads_claude_marker_and_moves_to_review() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.state_dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(&e.state_dir).unwrap();
+
+        let t = e
+            .db
+            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        e.db
+            .set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
+            .unwrap();
+        e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
+        e.reload().unwrap();
+
+        // No marker yet => Active baseline; no move.
+        e.detect_tick().unwrap();
+        assert_eq!(e.db.get_ticket(t.id).unwrap().unwrap().status, Status::InProgress);
+
+        // Agent's Stop hook would create the marker => Idle => Review.
+        std::fs::write(crate::detect::marker_path(&e.state_dir, "kamaji-sess"), "").unwrap();
+        e.detect_tick().unwrap();
+        assert_eq!(e.db.get_ticket(t.id).unwrap().unwrap().status, Status::Review);
     }
 }
