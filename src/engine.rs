@@ -1,11 +1,13 @@
 use anyhow::{bail, Result};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::app::{App, FormField, Modal, TicketForm};
 use crate::config::Config;
 use crate::db::Db;
-use crate::models::{Status, Ticket};
+use crate::detect::{self, SignalLevel};
+use crate::models::{Agent, Status, Ticket};
 use crate::{agent, git, layout, slug, zellij};
 
 /// Side effect the main loop must run by releasing the terminal.
@@ -27,11 +29,27 @@ pub struct Engine {
     pub db: Db,
     pub config: Config,
     pub app: App,
+    /// Last observed signal level per ticket id (in-memory; re-baselined on restart).
+    pub last_level: HashMap<i64, SignalLevel>,
+    /// Tickets kamaji auto-moved to Review (provenance gate for the move back).
+    pub auto_review_ids: HashSet<i64>,
+    /// Per-ticket scrape screen hash for the stability guard.
+    pub scrape_hash: HashMap<i64, Option<u64>>,
+    /// Where per-session idle markers live.
+    pub state_dir: std::path::PathBuf,
 }
 
 impl Engine {
     pub fn new(db: Db, config: Config, app: App) -> Self {
-        Engine { db, config, app }
+        Engine {
+            db,
+            config,
+            app,
+            last_level: HashMap::new(),
+            auto_review_ids: HashSet::new(),
+            scrape_hash: HashMap::new(),
+            state_dir: detect::default_state_dir(),
+        }
     }
 
     pub fn reload(&mut self) -> Result<()> {
@@ -97,6 +115,7 @@ impl Engine {
     }
 
     fn apply_move(&mut self, ticket: Ticket, target: Status) -> Result<Effect> {
+        self.auto_review_ids.remove(&ticket.id);
         if target == Status::InProgress {
             return match ticket.session_name.clone() {
                 Some(name) => {
@@ -155,6 +174,51 @@ impl Engine {
             self.db.clear_ticket_session(id)?;
         }
         self.reload()
+    }
+
+    /// Forget all in-memory detection state for a ticket (on teardown/vanish).
+    fn forget_ticket_state(&mut self, id: i64) {
+        self.last_level.remove(&id);
+        self.auto_review_ids.remove(&id);
+        self.scrape_hash.remove(&id);
+    }
+
+    /// Apply move decisions given already-gathered signal levels. Split out from
+    /// the IO so it can be unit-tested with crafted levels.
+    fn detect_tick_with(&mut self, levels: &HashMap<i64, SignalLevel>) -> Result<()> {
+        let mut changed = false;
+        for (&id, &level) in levels {
+            // Copy out the status so we don't hold an app borrow across the db write.
+            let Some(status) = self.app.tickets.iter().find(|t| t.id == id).map(|t| t.status)
+            else {
+                continue;
+            };
+            let last = self.last_level.get(&id).copied();
+            let was_auto = self.auto_review_ids.contains(&id);
+            if let Some(target) = detect::decide(last, level, status, was_auto) {
+                self.db.set_ticket_status(id, target)?;
+                match target {
+                    Status::Review => {
+                        self.auto_review_ids.insert(id);
+                        self.app.status_message = Some(format!("#{id} → Review (agent idle)"));
+                    }
+                    Status::InProgress => {
+                        self.auto_review_ids.remove(&id);
+                        self.app.status_message =
+                            Some(format!("#{id} → In Progress (agent active)"));
+                    }
+                    _ => {}
+                }
+                changed = true;
+            }
+            if level != SignalLevel::Unknown {
+                self.last_level.insert(id, level);
+            }
+        }
+        if changed {
+            self.reload()?;
+        }
+        Ok(())
     }
 
     fn submit_form(&mut self, form: &TicketForm) -> Result<()> {
@@ -333,8 +397,10 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::SignalLevel;
     use crate::models::Agent;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+    use std::collections::HashMap;
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -433,5 +499,73 @@ mod tests {
         assert_eq!(cleaned.worktree_path, None);
         assert_eq!(cleaned.branch, None);
         assert!(!dir.path().join("wts").join(&name).join("f").exists());
+    }
+
+    /// Helper: an in-progress ticket with a recorded session, returns its id.
+    fn in_progress_ticket(e: &mut Engine) -> i64 {
+        let t = e
+            .db
+            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        e.db
+            .set_ticket_session(t.id, "kamaji-x", "/wt", "kamaji-x")
+            .unwrap();
+        e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
+        e.reload().unwrap();
+        t.id
+    }
+
+    fn levels(id: i64, level: SignalLevel) -> HashMap<i64, SignalLevel> {
+        let mut m = HashMap::new();
+        m.insert(id, level);
+        m
+    }
+
+    #[test]
+    fn idle_after_active_moves_in_progress_to_review() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e);
+        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
+        assert!(e.auto_review_ids.contains(&id));
+    }
+
+    #[test]
+    fn resumed_auto_reviewed_card_returns_to_in_progress() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e);
+        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        assert_eq!(
+            e.db.get_ticket(id).unwrap().unwrap().status,
+            Status::InProgress
+        );
+        assert!(!e.auto_review_ids.contains(&id));
+    }
+
+    #[test]
+    fn manual_drag_back_is_not_re_moved() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e);
+        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        e.move_ticket(id, Status::InProgress).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        assert_eq!(
+            e.db.get_ticket(id).unwrap().unwrap().status,
+            Status::InProgress
+        );
+    }
+
+    #[test]
+    fn never_drags_manually_placed_review_card() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e);
+        e.move_ticket(id, Status::Review).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
     }
 }
