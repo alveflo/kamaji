@@ -10,6 +10,7 @@ mod picker;
 mod slug;
 mod ui;
 mod zellij;
+mod zellij_config;
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
