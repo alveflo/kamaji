@@ -197,14 +197,28 @@ with an initial prompt:
 
 ```kdl
 layout {
-    pane command="claude" cwd="/home/victor/dev/kamaji-worktrees/kamaji-1-refactor-db" {
-        args "Refactor the database access layer to use a repository pattern"
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="tab-bar"
+        }
+        children
+        pane size=1 borderless=true {
+            plugin location="status-bar"
+        }
+    }
+    tab {
+        pane command="claude" cwd="/home/victor/dev/kamaji-worktrees/kamaji-1-refactor-db" {
+            args "Refactor the database access layer to use a repository pattern"
+        }
     }
 }
 ```
 
-With no initial prompt the `args` line is omitted. The exact KDL spelling is
-confirmed during implementation against zellij 0.43.
+With no initial prompt the `args` line is omitted. The agent command lives in an
+explicit `tab` so it runs only in the first tab; the `default_tab_template`
+re-adds zellij's standard tab-bar/status-bar (a custom layout replaces the
+default) and gives newly-created tabs (`Ctrl+T n`) a plain shell via `children`
+instead of re-launching the agent (issue #2). KDL confirmed against zellij 0.43.
 
 ## 9. Core flows (summary)
 
