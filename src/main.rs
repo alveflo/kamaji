@@ -37,15 +37,31 @@ fn main() -> Result<()> {
     result
 }
 
-fn run(terminal: &mut DefaultTerminal, db: Db, config: config::Config) -> Result<()> {
-    let Some(project) = picker::run(terminal, &db)? else {
-        return Ok(());
-    };
+fn run(terminal: &mut DefaultTerminal, mut db: Db, mut config: config::Config) -> Result<()> {
+    loop {
+        let Some(project) = picker::run(terminal, &db)? else {
+            return Ok(());
+        };
 
-    let tickets = db.list_tickets(project.id)?;
-    let app = App::new(project, tickets);
-    let mut engine = Engine::new(db, config, app);
+        let tickets = db.list_tickets(project.id)?;
+        let app = App::new(project, tickets);
+        let mut engine = Engine::new(db, config, app);
 
+        let switch_project = run_board(terminal, &mut engine)?;
+
+        // Reclaim db + config for the next project (or to drop on quit).
+        db = engine.db;
+        config = engine.config;
+
+        if !switch_project {
+            return Ok(());
+        }
+    }
+}
+
+/// Run the board event loop for one project. Returns `true` if the user asked to
+/// switch projects (return to the picker), `false` to quit the app.
+fn run_board(terminal: &mut DefaultTerminal, engine: &mut Engine) -> Result<bool> {
     loop {
         terminal.draw(|frame| ui::render(frame, &engine.app))?;
 
@@ -62,21 +78,21 @@ fn run(terminal: &mut DefaultTerminal, db: Db, config: config::Config) -> Result
         let effect = engine.on_key(key)?;
         match effect {
             Effect::None => {}
+            Effect::SwitchProject => return Ok(true),
             Effect::RunSession { name, layout_path } => {
-                run_zellij(terminal, &mut engine, |_| {
+                run_zellij(terminal, engine, |_| {
                     zellij::create_session(&name, &layout_path)
                 })?;
             }
             Effect::Attach { name } => {
-                run_zellij(terminal, &mut engine, |_| zellij::attach_session(&name))?;
+                run_zellij(terminal, engine, |_| zellij::attach_session(&name))?;
             }
         }
 
         if engine.app.should_quit {
-            break;
+            return Ok(false);
         }
     }
-    Ok(())
 }
 
 /// Release the terminal, run a zellij command (inherits the real TTY), then

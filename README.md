@@ -12,7 +12,7 @@ into it. Detach and the session keeps running in the background.
 │ ○ #4 Dark mode││ ● #6 API docs ││               ││               │
 │               ││               ││               ││               │
 └───────────────┘└───────────────┘└───────────────┘└───────────────┘
- project: acme-api  [c]reate [m]ove [a]ttach [o]pen [d]elete [?]help [q]uit
+ project: acme-api  [c]reate [m]ove [a]ttach [o]pen [d]elete [p]roject [?]help [q]uit
 ```
 
 ## Features
@@ -96,7 +96,8 @@ entries to support other CLIs.
 
 On launch kamaji shows a project picker. Select an existing project with
 `↑`/`↓` and `Enter`, or press `n` to create a new project (name + root
-directory). The last-used project is remembered.
+directory). You can return to the picker at any time from the board by
+pressing `p`.
 
 ### Typical workflow
 
@@ -131,9 +132,9 @@ directory). The last-used project is remembered.
 
 - Moving a ticket *backward* (e.g. In Progress → Todo) leaves the worktree and
   session intact so no work is lost.
-- A filled circle `●` next to a ticket title means a session exists for it.
-- If a session is killed externally, kamaji reconciles its state automatically
-  on the next key press.
+- A filled circle `●` next to a ticket title means a session has been created
+  for it (the session name is recorded on the ticket); an empty circle `○` means
+  none has been started yet.
 
 ## Keybindings
 
@@ -150,6 +151,7 @@ directory). The last-used project is remembered.
 | `a` | Attach to selected ticket's zellij session |
 | `o` / `Enter` | Open / edit selected ticket (title and description) |
 | `d` | Delete selected ticket (prompts for confirmation and optional cleanup) |
+| `p` | Switch project (returns to the project picker) |
 | `?` | Help overlay |
 | `q` | Quit |
 

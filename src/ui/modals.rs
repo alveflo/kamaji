@@ -146,6 +146,7 @@ o / Enter open / edit ticket
 m         move ticket (then ←/→, Enter)
 a         attach to session
 d         delete ticket
+p         switch project
 ?         this help
 q         quit
 

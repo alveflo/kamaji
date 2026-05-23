@@ -56,7 +56,7 @@ pub fn render_board(frame: &mut Frame, app: &App) {
         frame.render_stateful_widget(list, columns[col_idx], &mut state);
     }
 
-    let hints = " [c]reate [m]ove [a]ttach [o]pen [d]elete [?]help [q]uit";
+    let hints = " [c]reate [m]ove [a]ttach [o]pen [d]elete [p]roject [?]help [q]uit";
     let left = format!(" project: {} ", app.project.name);
     let msg = app.status_message.clone().unwrap_or_default();
     let status_line = Paragraph::new(Line::from(vec![

@@ -12,8 +12,15 @@ use crate::{agent, git, layout, slug, zellij};
 #[derive(Debug, PartialEq)]
 pub enum Effect {
     None,
-    RunSession { name: String, layout_path: PathBuf },
-    Attach { name: String },
+    RunSession {
+        name: String,
+        layout_path: PathBuf,
+    },
+    Attach {
+        name: String,
+    },
+    /// Leave the board and return to the project picker.
+    SwitchProject,
 }
 
 pub struct Engine {
@@ -248,6 +255,7 @@ impl Engine {
         self.app.status_message = None;
         match key.code {
             KeyCode::Char('q') => self.app.should_quit = true,
+            KeyCode::Char('p') => return Ok(Effect::SwitchProject),
             KeyCode::Char('?') => self.app.modal = Modal::Help,
             KeyCode::Left | KeyCode::Char('h') => self.app.left(),
             KeyCode::Right | KeyCode::Char('l') => self.app.right(),
@@ -317,6 +325,12 @@ mod tests {
         assert_eq!(e.app.tickets.len(), 1);
         assert_eq!(e.app.tickets[0].title, "Add login");
         assert_eq!(e.app.tickets[0].status, Status::Todo);
+    }
+
+    #[test]
+    fn pressing_p_requests_project_switch() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        assert_eq!(e.on_key(key('p')).unwrap(), Effect::SwitchProject);
     }
 
     #[test]
