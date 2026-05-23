@@ -45,41 +45,38 @@ not noisy. File an issue with:
 gh issue create --title "<concise title>" --body "<context, why it matters, acceptance criteria>"
 ```
 
-### 3. A new issue spawns a slay ticket and a live Claude session
+### 3. A new issue becomes a slay task that auto-starts a Claude session
 
-Whenever a GitHub issue is created (by you, for a side quest), immediately:
+Whenever a GitHub issue is created (by you, for a side quest), create a matching
+slay task. **slay spawns the Claude process** that works the issue — and the
+task's **`--description` is the initial prompt** handed to that Claude. So set
+the description to a short "start working" instruction pointing at the issue;
+the issue itself holds the detail.
 
-1. **Create a matching slay ticket**, deduplicated against the issue so the same
-   issue never produces two tickets:
+```sh
+slay tasks create "<issue title>" \
+  --project kamaji \
+  --description "Start working on GitHub issue #<n>." \
+  --external-provider github \
+  --external-id "<n>"
+```
 
-   ```sh
-   slay tasks create "<issue title>" \
-     --project kamaji \
-     --description "<issue body + link to the GitHub issue>" \
-     --external-provider github \
-     --external-id "<issue number>"
-   ```
+Conventions (always follow these):
+- **Project** is always **kamaji** (`--project kamaji`).
+- **Description = the agent prompt.** Keep it to `Start working on GitHub issue
+  #<n>.` The spawned Claude reads the issue itself (`gh issue view <n>`) for full
+  context — do **not** paste the issue body into the description.
+- **`--external-id <n>` + `--external-provider github` dedupe** against the
+  issue: re-running never creates a duplicate task. Always pass them.
+- **Make the GitHub issue self-contained and actionable** (clear what / why /
+  acceptance criteria + pointers to the relevant files), because that issue is
+  the spec the spawned Claude works from.
 
-   The slay project is always **kamaji** (`--project kamaji`).
-
-   `--external-id` makes this idempotent: if a ticket for that issue already
-   exists, slay skips creating a duplicate. **Always pass it**, and check for an
-   existing ticket/worktree before proceeding so you never spawn work twice.
-
-2. **Create a worktree** for the issue branch (`issue-<n>-<slug>`, see step 1).
-
-3. **Auto-launch a new Claude Code session** in that worktree, seeded with the
-   issue context, so the side quest starts immediately:
-
-   ```sh
-   cd ../kamaji-worktrees/issue-<n>-<slug>
-   claude "Work GitHub issue #<n>: <title>. <body / acceptance criteria>"
-   ```
-
-   Guard against runaway fan-out: before launching, confirm (via the
-   `--external-id` dedup and the presence of a worktree) that this issue is not
-   already being worked. Never re-launch a session for an issue that already has
-   one.
+Creating the task does not itself launch Claude — the task is started from slay
+(by a human or automation). When started, slay spawns a Claude session with the
+prompt above and it begins working the issue automatically, in its own worktree
+per the worktree rule (§1). Because `--external-id` dedupes, you never spawn the
+same issue twice.
 
 ### 4. Ship: PR, then auto-merge when green
 
@@ -129,7 +126,7 @@ the filter if they differ.) Then `slay tasks done <id> --close`.
 |------------------------------------|-----------------------------------------------------|
 | Starting any task                  | New worktree + branch off `main`                    |
 | Noticed separate work              | `gh issue create` (only if genuinely out of scope)  |
-| Issue created                      | slay ticket (`--project kamaji --external-id`) → worktree → launch Claude |
+| Issue created                      | `slay tasks create "<title>" --project kamaji --description "Start working on GitHub issue #<n>." --external-provider github --external-id <n>` (description = the spawned Claude's prompt) |
 | Work finished                      | `gh pr create` → `gh pr merge --squash --auto`      |
 | Merged / issue closed              | Remove worktree + branch; `slay tasks done <id> --close` |
 
