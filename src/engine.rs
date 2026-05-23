@@ -26,6 +26,15 @@ pub enum Effect {
     SwitchProject,
 }
 
+/// Everything needed to launch a session, produced by `prepare_session`
+/// before any DB session/status columns are written.
+pub struct Prepared {
+    pub name: String,
+    pub layout_path: PathBuf,
+    pub worktree: PathBuf,
+    pub instrumented: bool,
+}
+
 pub struct Engine {
     pub db: Db,
     pub config: Config,
@@ -79,8 +88,9 @@ impl Engine {
         Ok(path)
     }
 
-    /// Create the worktree + layout for a ticket and return the RunSession effect.
-    fn start_session(&mut self, ticket: &Ticket) -> Result<Effect> {
+    /// Build the worktree + layout for a ticket without writing any DB
+    /// session/status columns. Shared by foreground and background start.
+    fn prepare_session(&mut self, ticket: &Ticket) -> Result<Prepared> {
         let root = self.app.project.root_dir.clone();
         if !git::is_git_repo(&root) {
             bail!("project root is not a git repository: {}", root.display());
@@ -99,8 +109,6 @@ impl Engine {
             self.config.commands_for(ticket.agent),
             ticket.initial_prompt.as_deref(),
         );
-        // For Claude, inject hook settings that maintain the idle marker, and
-        // clear any stale marker so the session baselines as Active.
         let instrumented = self.config.auto_review.enabled && ticket.agent == Agent::Claude;
         let argv = if instrumented {
             let marker = detect::marker_path(&self.state_dir, &name);
@@ -110,20 +118,32 @@ impl Engine {
         } else {
             argv
         };
-        // Resolve the bar style: config override (compact/default/none) else
-        // auto-detect from the user's zellij default_layout.
         let bar = zellij_config::resolve_bar_style(
             &self.config.zellij_bar,
             zellij_config::detect_default_layout().as_deref(),
         );
         let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv, bar);
         let layout_path = self.layout_file(&name, &kdl)?;
+        Ok(Prepared {
+            name,
+            layout_path,
+            worktree,
+            instrumented,
+        })
+    }
+
+    /// Create the worktree + layout for a ticket and return the RunSession effect.
+    fn start_session(&mut self, ticket: &Ticket) -> Result<Effect> {
+        let p = self.prepare_session(ticket)?;
         self.db
-            .set_ticket_session(ticket.id, &name, &worktree.to_string_lossy(), &name)?;
-        self.db.set_ticket_instrumented(ticket.id, instrumented)?;
+            .set_ticket_session(ticket.id, &p.name, &p.worktree.to_string_lossy(), &p.name)?;
+        self.db.set_ticket_instrumented(ticket.id, p.instrumented)?;
         self.db.set_ticket_status(ticket.id, Status::InProgress)?;
         self.reload()?;
-        Ok(Effect::RunSession { name, layout_path })
+        Ok(Effect::RunSession {
+            name: p.name,
+            layout_path: p.layout_path,
+        })
     }
 
     /// Apply a column move to the currently-selected ticket.
