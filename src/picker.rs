@@ -105,10 +105,8 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db) -> Result<Option<Project>> {
                 KeyCode::Up | KeyCode::Char('k') => {
                     state.selected = state.selected.saturating_sub(1);
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if state.selected + 1 < state.projects.len() {
-                        state.selected += 1;
-                    }
+                KeyCode::Down | KeyCode::Char('j') if state.selected + 1 < state.projects.len() => {
+                    state.selected += 1;
                 }
                 KeyCode::Enter => {
                     if let Some(p) = state.projects.get(state.selected) {
