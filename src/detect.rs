@@ -1,4 +1,6 @@
 use crate::models::Status;
+use directories::ProjectDirs;
+use std::path::{Path, PathBuf};
 
 /// What a detector believes about an agent session right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +39,28 @@ pub fn decide(
             Some(Status::InProgress)
         }
         _ => None,
+    }
+}
+
+/// Directory holding per-session idle markers (XDG data dir; temp fallback).
+pub fn default_state_dir() -> PathBuf {
+    ProjectDirs::from("", "", "kamaji")
+        .map(|d| d.data_dir().join("state"))
+        .unwrap_or_else(|| std::env::temp_dir().join("kamaji").join("state"))
+}
+
+/// Absolute marker path for a session.
+pub fn marker_path(state_dir: &Path, session: &str) -> PathBuf {
+    state_dir.join(format!("{session}.idle"))
+}
+
+/// Claude detector: marker present => Idle, absent => Active. Absence is
+/// meaningful (the agent is working), so this never returns Unknown.
+pub fn marker_level(path: &Path) -> SignalLevel {
+    if path.exists() {
+        SignalLevel::Idle
+    } else {
+        SignalLevel::Active
     }
 }
 
@@ -102,5 +126,20 @@ mod tests {
             decide(Some(SignalLevel::Active), SignalLevel::Idle, Status::Review, true),
             None
         );
+    }
+
+    #[test]
+    fn marker_path_is_session_dot_idle() {
+        let p = marker_path(std::path::Path::new("/var/state"), "kamaji-1-x");
+        assert_eq!(p, std::path::PathBuf::from("/var/state/kamaji-1-x.idle"));
+    }
+
+    #[test]
+    fn marker_present_is_idle_absent_is_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = marker_path(dir.path(), "s");
+        assert_eq!(marker_level(&p), SignalLevel::Active); // absent
+        std::fs::write(&p, "").unwrap();
+        assert_eq!(marker_level(&p), SignalLevel::Idle); // present
     }
 }
