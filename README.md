@@ -63,6 +63,7 @@ The config file is written with defaults on first run if it does not exist.
 default_agent = "claude"
 worktree_base = "{root}/../kamaji-worktrees"
 base_branch = "auto"
+zellij_bar = "auto"
 
 [agents.claude]
 with_prompt = ["claude", "{prompt}"]
@@ -84,6 +85,7 @@ no_prompt = ["copilot"]
 | `default_agent` | Pre-fills the agent field when creating a ticket. |
 | `worktree_base` | Where worktrees are created. `{root}` expands to the project's root directory. Default places them alongside (not inside) the main working tree. |
 | `base_branch` | Branch new ticket branches are created from. `auto` detects the repo's default branch (`origin/HEAD`), falling back to the current `HEAD`. |
+| `zellij_bar` | Bar style for spawned sessions. `auto` (default) matches your zellij `default_layout` (`compact` → compact bar, otherwise tab-bar + status-bar). Force a style with `compact`, `default`, or `none` (no bars). |
 | `agents.<name>.with_prompt` | Argv array used when the ticket has an initial prompt. `{prompt}` is replaced with the prompt text. |
 | `agents.<name>.no_prompt` | Argv array used when no initial prompt is set. |
 

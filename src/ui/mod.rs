@@ -6,6 +6,8 @@ use ratatui::Frame;
 
 use crate::app::{App, Modal};
 
+pub(crate) use modals::render_field_modal;
+
 pub fn render(frame: &mut Frame, app: &App) {
     board::render_board(frame, app);
     match &app.modal {

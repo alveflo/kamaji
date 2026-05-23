@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::detect::{self, SignalLevel};
 use crate::models::{Agent, Status, Ticket};
-use crate::{agent, git, layout, slug, zellij};
+use crate::{agent, git, layout, slug, zellij, zellij_config};
 
 /// Side effect the main loop must run by releasing the terminal.
 #[derive(Debug, PartialEq)]
@@ -96,7 +96,13 @@ impl Engine {
         } else {
             argv
         };
-        let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv);
+        // Resolve the bar style: config override (compact/default/none) else
+        // auto-detect from the user's zellij default_layout.
+        let bar = zellij_config::resolve_bar_style(
+            &self.config.zellij_bar,
+            zellij_config::detect_default_layout().as_deref(),
+        );
+        let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv, bar);
         let layout_path = self.layout_file(&name, &kdl)?;
         self.db
             .set_ticket_session(ticket.id, &name, &worktree.to_string_lossy(), &name)?;
@@ -419,7 +425,7 @@ impl Engine {
                     .unwrap_or_else(|| self.config.default_agent());
                 self.app.modal = Modal::Form(TicketForm::new_create(default_agent));
             }
-            KeyCode::Char('o') | KeyCode::Enter => {
+            KeyCode::Char('e') => {
                 if let Some(t) = self.app.selected_ticket() {
                     self.app.modal = Modal::Form(TicketForm::from_ticket(t));
                 }
@@ -437,12 +443,15 @@ impl Engine {
                     self.app.modal = Modal::ConfirmDelete { ticket_id: t.id };
                 }
             }
-            KeyCode::Char('a') => {
-                if let Some(t) = self.app.selected_ticket() {
-                    if let Some(name) = t.session_name.clone() {
-                        return Ok(Effect::Attach { name });
-                    }
-                    self.app.status_message = Some("No session for this ticket yet".into());
+            // Enter "enters" the ticket: attach to its session if one exists,
+            // otherwise start one (creating the worktree + session and moving
+            // the ticket to In Progress).
+            KeyCode::Enter => {
+                if let Some(t) = self.app.selected_ticket().cloned() {
+                    return match t.session_name.clone() {
+                        Some(name) => Ok(Effect::Attach { name }),
+                        None => self.start_session(&t),
+                    };
                 }
             }
             _ => {}
@@ -468,6 +477,25 @@ mod tests {
         let project = db.create_project("p", &root, None).unwrap();
         let app = App::new(project, vec![]);
         Engine::new(db, Config::default(), app)
+    }
+
+    /// Initialize a real git repo with one commit at `root` so `start_session`
+    /// can add a worktree against it.
+    fn init_repo(root: &std::path::Path) {
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "t@t.t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(root.join("f"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "i"]);
     }
 
     #[test]
@@ -509,20 +537,7 @@ mod tests {
         // Build a real repo so start_session can add a worktree.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
-        let run = |args: &[&str]| {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-        };
-        run(&["init", "-b", "main"]);
-        run(&["config", "user.email", "t@t.t"]);
-        run(&["config", "user.name", "t"]);
-        std::fs::write(root.join("f"), "x").unwrap();
-        run(&["add", "."]);
-        run(&["commit", "-m", "i"]);
+        init_repo(&root);
 
         let mut e = engine_with_project(root.clone());
         // Point worktrees somewhere isolated under tempdir.
@@ -689,5 +704,113 @@ mod tests {
             e.db.get_ticket(t.id).unwrap().unwrap().status,
             Status::Review
         );
+    }
+
+    /// A `zellij_bar = "compact"` override must produce a compact-bar layout
+    /// regardless of the user's zellij config.
+    #[test]
+    fn start_session_honors_compact_bar_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        init_repo(&root);
+
+        let mut e = engine_with_project(root.clone());
+        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.config.zellij_bar = "compact".to_string();
+        e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
+            .unwrap();
+        e.reload().unwrap();
+
+        let effect = e.move_selected(Status::InProgress).unwrap();
+        let Effect::RunSession { layout_path, .. } = effect else {
+            panic!("expected RunSession, got {effect:?}");
+        };
+        let kdl = std::fs::read_to_string(&layout_path).unwrap();
+        assert!(
+            kdl.contains("compact-bar"),
+            "compact override should render compact-bar:\n{kdl}"
+        );
+        assert!(
+            !kdl.contains("status-bar"),
+            "compact override must drop the status-bar:\n{kdl}"
+        );
+    }
+
+    fn enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    /// Enter on a ticket that already has a session attaches to it without
+    /// changing its status (the old `a` behavior, now on Enter).
+    #[test]
+    fn enter_attaches_to_existing_session() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let t =
+            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+                .unwrap();
+        e.db.set_ticket_session(t.id, "sess", "/tmp/wt", "branch")
+            .unwrap();
+        e.db.set_ticket_status(t.id, Status::Review).unwrap();
+        e.reload().unwrap();
+        // Move the cursor to the Review column so the ticket is selected.
+        e.on_key(key('l')).unwrap();
+        e.on_key(key('l')).unwrap();
+
+        assert_eq!(
+            e.on_key(enter()).unwrap(),
+            Effect::Attach {
+                name: "sess".into()
+            }
+        );
+        // Attaching to an existing session leaves the column untouched.
+        assert_eq!(
+            e.db.get_ticket(t.id).unwrap().unwrap().status,
+            Status::Review
+        );
+    }
+
+    /// Enter on a Todo ticket without a session creates the session/worktree
+    /// and moves the ticket to In Progress.
+    #[test]
+    fn enter_starts_session_for_todo_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        init_repo(&root);
+
+        let mut e = engine_with_project(root.clone());
+        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        let t =
+            e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
+                .unwrap();
+        e.reload().unwrap();
+        assert_eq!(e.db.get_ticket(t.id).unwrap().unwrap().status, Status::Todo);
+
+        let effect = e.on_key(enter()).unwrap();
+        let name = slug::ticket_name(t.id, "Add login");
+        match effect {
+            Effect::RunSession { name: n, .. } => assert_eq!(n, name),
+            other => panic!("expected RunSession, got {other:?}"),
+        }
+        let stored = e.db.get_ticket(t.id).unwrap().unwrap();
+        assert_eq!(stored.status, Status::InProgress);
+        assert_eq!(stored.session_name.as_deref(), Some(name.as_str()));
+
+        e.cleanup_ticket(t.id).unwrap();
+    }
+
+    /// `e` opens the edit form for the selected ticket (edit moved off Enter).
+    #[test]
+    fn e_opens_edit_form() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let t =
+            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+                .unwrap();
+        e.reload().unwrap();
+
+        e.on_key(key('e')).unwrap();
+        match &e.app.modal {
+            Modal::Form(form) => assert_eq!(form.editing_id, Some(t.id)),
+            other => panic!("expected edit form, got {other:?}"),
+        }
     }
 }

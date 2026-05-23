@@ -8,7 +8,7 @@ use crate::app::{FormField, TicketForm};
 use crate::models::{Agent, Status};
 use crate::ui::centered_rect;
 
-fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
+pub(crate) fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
     let style = if active {
         Style::new()
             .fg(Color::Black)
@@ -22,6 +22,45 @@ fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
         Span::styled(format!("{label}: "), Style::new().fg(Color::Yellow)),
         Span::styled(format!("{value}{cursor}"), style),
     ])
+}
+
+/// Render a centered, bordered modal form: a list of labelled fields with an
+/// active-field highlight, a hint line, and an optional error. Shared by modals
+/// (like the new-project form) that want the same look as the ticket modal.
+pub(crate) fn render_field_modal(
+    frame: &mut Frame,
+    title: &str,
+    fields: &[(&str, &str, bool)],
+    hint: &str,
+    error: Option<&str>,
+) {
+    let area = centered_rect(70, 60, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::bordered()
+        .title(format!(" {title} "))
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (label, value, active)) in fields.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.push(field_line(label, value, *active));
+    }
+    lines.push(Line::raw(""));
+    if let Some(err) = error {
+        lines.push(Line::styled(err.to_string(), Style::new().fg(Color::Red)));
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::styled(
+        hint.to_string(),
+        Style::new().fg(Color::DarkGray),
+    ));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 pub fn render_form(frame: &mut Frame, form: &TicketForm) {
@@ -142,9 +181,9 @@ pub fn render_help(frame: &mut Frame) {
 ↑/↓ j/k   select ticket
 ←/→ h/l   change column
 c         create ticket
-o / Enter open / edit ticket
+e         edit ticket
+Enter     attach / start session
 m         move ticket (then ←/→, Enter)
-a         attach to session
 d         delete ticket
 p         switch project
 ?         this help

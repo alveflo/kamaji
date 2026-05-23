@@ -26,6 +26,10 @@ fn default_poll_interval() -> u64 {
     5
 }
 
+fn default_zellij_bar() -> String {
+    "auto".to_string()
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScrapePatterns {
     #[serde(default)]
@@ -59,6 +63,11 @@ pub struct Config {
     pub default_agent: String,
     pub worktree_base: String,
     pub base_branch: String,
+    /// Bar style for spawned zellij sessions: `auto` (match the user's zellij
+    /// `default_layout`), `compact`, `default`, or `none`. Defaults to `auto`,
+    /// and tolerates older configs that omit the key.
+    #[serde(default = "default_zellij_bar")]
+    pub zellij_bar: String,
     pub agents: Agents,
     #[serde(default)]
     pub auto_review: AutoReview,
@@ -74,6 +83,7 @@ impl Default for Config {
             default_agent: "claude".to_string(),
             worktree_base: "{root}/../kamaji-worktrees".to_string(),
             base_branch: "auto".to_string(),
+            zellij_bar: default_zellij_bar(),
             agents: Agents {
                 claude: cmd("claude"),
                 codex: cmd("codex"),
@@ -159,6 +169,7 @@ mod tests {
     fn defaults_are_sane() {
         let c = Config::default();
         assert_eq!(c.default_agent(), Agent::Claude);
+        assert_eq!(c.zellij_bar, "auto");
         assert_eq!(
             c.commands_for(Agent::Codex).with_prompt,
             vec!["codex", "{prompt}"]
@@ -184,6 +195,25 @@ mod tests {
         let loaded = load_from(&path).unwrap();
         assert_eq!(loaded.default_agent, c.default_agent);
         assert_eq!(loaded.worktree_base, c.worktree_base);
+        assert_eq!(loaded.zellij_bar, c.zellij_bar);
+    }
+
+    /// A config.toml written before `zellij_bar` existed must still load,
+    /// defaulting the missing field to "auto" rather than erroring.
+    #[test]
+    fn missing_zellij_bar_defaults_to_auto() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut text = toml::to_string_pretty(&Config::default()).unwrap();
+        text = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("zellij_bar"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("zellij_bar"));
+        fs::write(&path, text).unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(loaded.zellij_bar, "auto");
     }
 
     #[test]
