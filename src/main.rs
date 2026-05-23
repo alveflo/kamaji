@@ -98,6 +98,8 @@ fn run_board(terminal: &mut DefaultTerminal, engine: &mut Engine) -> Result<bool
             Effect::Attach { name } => {
                 run_zellij(terminal, engine, |_| zellij::attach_session(&name))?;
             }
+            // Background session launch: handled in a later task (Task 6/7).
+            Effect::RunSessionBackground { .. } => {}
         }
 
         if engine.app.should_quit {

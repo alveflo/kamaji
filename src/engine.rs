@@ -19,6 +19,11 @@ pub enum Effect {
         name: String,
         layout_path: PathBuf,
     },
+    RunSessionBackground {
+        name: String,
+        layout_path: PathBuf,
+        cwd: PathBuf,
+    },
     Attach {
         name: String,
     },
@@ -347,22 +352,53 @@ impl Engine {
         self.detect_tick_with(&levels)
     }
 
-    fn submit_form(&mut self, form: &TicketForm) -> Result<()> {
+    fn submit_form(&mut self, form: &TicketForm) -> Result<Effect> {
         match form.editing_id {
-            Some(id) => self
-                .db
-                .update_ticket_fields(id, &form.title, &form.description)?,
+            Some(id) => {
+                self.db
+                    .update_ticket_fields(id, &form.title, &form.description)?;
+                self.reload()?;
+                Ok(Effect::None)
+            }
             None => {
-                self.db.create_ticket(
+                let ticket = self.db.create_ticket(
                     self.app.project.id,
                     &form.title,
                     &form.description,
                     form.prompt_opt().as_deref(),
                     form.agent,
                 )?;
+                self.reload()?;
+                if !form.start_in_background {
+                    return Ok(Effect::None);
+                }
+                // Background start: prepare the session, then commit DB state.
+                // On any preparation error, leave the card in Todo with a toast.
+                match self.prepare_session(&ticket) {
+                    Ok(p) => {
+                        self.db.set_ticket_session(
+                            ticket.id,
+                            &p.name,
+                            &p.worktree.to_string_lossy(),
+                            &p.name,
+                        )?;
+                        self.db.set_ticket_instrumented(ticket.id, p.instrumented)?;
+                        self.db.set_ticket_status(ticket.id, Status::InProgress)?;
+                        self.reload()?;
+                        Ok(Effect::RunSessionBackground {
+                            name: p.name,
+                            layout_path: p.layout_path,
+                            cwd: p.worktree,
+                        })
+                    }
+                    Err(err) => {
+                        self.app.status_message =
+                            Some(format!("could not start session: {err}"));
+                        Ok(Effect::None)
+                    }
+                }
             }
         }
-        self.reload()
     }
 
     /// Single entry point for key handling. Returns an Effect for the main loop.
@@ -376,7 +412,7 @@ impl Engine {
                     KeyCode::Esc => {} // close (modal already None)
                     KeyCode::Enter => {
                         if !form.title.trim().is_empty() {
-                            self.submit_form(&form)?;
+                            return self.submit_form(&form);
                         } else {
                             self.app.modal = Modal::Form(form);
                             self.app.status_message = Some("Title is required".into());
@@ -950,6 +986,108 @@ mod tests {
         assert_eq!(stored.session_name.as_deref(), Some(name.as_str()));
 
         e.cleanup_ticket(t.id).unwrap();
+    }
+
+    /// Submitting the create form with the background toggle on (in a real git
+    /// repo) prepares a session and returns RunSessionBackground; the ticket is
+    /// moved to In Progress with a recorded session.
+    #[test]
+    fn create_with_background_toggle_starts_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        init_repo(&root);
+
+        let mut e = engine_with_project(root.clone());
+        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.state_dir = dir.path().join("state");
+
+        e.on_key(key('c')).unwrap();
+        for ch in "Add login".chars() {
+            e.on_key(key(ch)).unwrap();
+        }
+        let effect = e
+            .on_key(ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Enter,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ))
+            .unwrap();
+
+        let ticket_id = e.app.tickets[0].id;
+        let name = slug::ticket_name(ticket_id, "Add login");
+        match effect {
+            Effect::RunSessionBackground {
+                name: n,
+                layout_path,
+                cwd,
+            } => {
+                assert_eq!(n, name);
+                assert!(layout_path.exists());
+                assert!(cwd.ends_with(&name));
+            }
+            other => panic!("expected RunSessionBackground, got {other:?}"),
+        }
+        let t = &e.app.tickets[0];
+        assert_eq!(t.status, Status::InProgress);
+        assert_eq!(t.session_name.as_deref(), Some(name.as_str()));
+
+        e.cleanup_ticket(ticket_id).unwrap();
+    }
+
+    /// With the toggle off, creation is the classic Todo card with no session.
+    #[test]
+    fn create_without_background_toggle_makes_todo_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        init_repo(&root);
+        let mut e = engine_with_project(root.clone());
+        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+
+        e.on_key(key('c')).unwrap();
+        for ch in "Plan only".chars() {
+            e.on_key(key(ch)).unwrap();
+        }
+        // Tab to Background and turn it off.
+        for _ in 0..4 {
+            e.on_key(ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Tab,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ))
+            .unwrap();
+        }
+        e.on_key(key(' ')).unwrap();
+        let effect = e
+            .on_key(ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Enter,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ))
+            .unwrap();
+
+        assert_eq!(effect, Effect::None);
+        assert_eq!(e.app.tickets[0].status, Status::Todo);
+        assert_eq!(e.app.tickets[0].session_name, None);
+    }
+
+    /// Toggle on but the project root is not a git repo: the ticket is still
+    /// created, left in Todo, with an error toast (graceful failure).
+    #[test]
+    fn create_with_background_toggle_in_non_git_root_stays_todo() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('c')).unwrap();
+        for ch in "No repo".chars() {
+            e.on_key(key(ch)).unwrap();
+        }
+        let effect = e
+            .on_key(ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Enter,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ))
+            .unwrap();
+
+        assert_eq!(effect, Effect::None);
+        assert_eq!(e.app.tickets.len(), 1);
+        assert_eq!(e.app.tickets[0].status, Status::Todo);
+        assert_eq!(e.app.tickets[0].session_name, None);
+        assert!(e.app.status_message.is_some(), "an error toast is shown");
     }
 
     #[test]
