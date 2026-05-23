@@ -92,6 +92,52 @@ pub fn scrape_level(
     }
 }
 
+/// Minimal JSON string-body escaper (enough for shell command strings).
+pub fn json_escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o
+}
+
+/// Claude settings JSON whose hooks maintain the idle marker at `marker_path`.
+/// Stop/Notification create it (idle); UserPromptSubmit/PreToolUse remove it
+/// (active). `marker_path` is single-quoted for the shell; kamaji session names
+/// are slugs, so the path contains no single quotes.
+pub fn claude_settings_json(marker_path: &str) -> String {
+    let touch = json_escape(&format!("touch '{marker_path}'"));
+    let rm = json_escape(&format!("rm -f '{marker_path}'"));
+    let cmd = |c: &str| format!("[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"{c}\"}}]}}]");
+    format!(
+        "{{\"hooks\":{{\"Stop\":{stop},\"Notification\":{notif},\"UserPromptSubmit\":{ups},\"PreToolUse\":{ptu}}}}}",
+        stop = cmd(&touch),
+        notif = cmd(&touch),
+        ups = cmd(&rm),
+        ptu = cmd(&rm),
+    )
+}
+
+/// Splice `--settings <json>` after argv[0] (a global claude flag, before the
+/// positional prompt). `argv` must be non-empty (build_command guarantees it).
+pub fn inject_claude_settings(argv: Vec<String>, marker_path: &str) -> Vec<String> {
+    let json = claude_settings_json(marker_path);
+    let mut out = Vec::with_capacity(argv.len() + 2);
+    out.push(argv[0].clone());
+    out.push("--settings".to_string());
+    out.push(json);
+    out.extend_from_slice(&argv[1..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +257,39 @@ mod tests {
         let pats = vec!["x".to_string()];
         let mut h: Option<u64> = None;
         assert_eq!(scrape_level(None, &pats, &mut h), SignalLevel::Unknown);
+    }
+
+    #[test]
+    fn settings_json_wires_all_four_hooks() {
+        let j = claude_settings_json("/s/kamaji-1-x.idle");
+        assert!(j.contains("\"Stop\""));
+        assert!(j.contains("\"Notification\""));
+        assert!(j.contains("\"UserPromptSubmit\""));
+        assert!(j.contains("\"PreToolUse\""));
+        assert!(j.contains("touch '/s/kamaji-1-x.idle'"));
+        assert!(j.contains("rm -f '/s/kamaji-1-x.idle'"));
+    }
+
+    #[test]
+    fn json_escape_escapes_quotes_and_backslashes() {
+        assert_eq!(json_escape("a\"b\\c"), "a\\\"b\\\\c");
+    }
+
+    #[test]
+    fn inject_puts_settings_after_program_before_prompt() {
+        let argv = vec!["claude".to_string(), "do it".to_string()];
+        let out = inject_claude_settings(argv, "/s/m.idle");
+        assert_eq!(out[0], "claude");
+        assert_eq!(out[1], "--settings");
+        assert!(out[2].contains("\"Stop\""));
+        assert_eq!(out[3], "do it");
+    }
+
+    #[test]
+    fn inject_handles_no_prompt_argv() {
+        let argv = vec!["claude".to_string()];
+        let out = inject_claude_settings(argv, "/s/m.idle");
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1], "--settings");
     }
 }
