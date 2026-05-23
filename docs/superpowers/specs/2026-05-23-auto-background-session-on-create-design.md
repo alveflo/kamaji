@@ -33,17 +33,20 @@ stays on the board and the agent starts working right away.
 
 ## Mechanism: detached session creation in zellij
 
-Verified against zellij **0.43.1**. Two commands, neither of which needs a TTY
-or requires releasing kamaji's terminal:
+Verified against zellij **0.43.1**. A single command, which needs no TTY and
+does not require releasing kamaji's terminal:
 
-1. `zellij attach --create-background <name>` — creates a **detached** session
-   (returns immediately; the user is *not* attached).
-2. `zellij --session <name> action new-tab --layout <layout-file>` — runs the
-   agent layout (worktree `cwd` + agent command) inside that session. The new
-   tab becomes the focused tab, so a later attach lands on the agent.
+```
+zellij --layout <layout-file> attach --create-background <name>
+```
+
+The top-level `--layout` makes the layout the session's *initial* tab, and
+`attach --create-background` creates the session **detached** (returns
+immediately; the user is *not* attached). The result has exactly **one** tab —
+the agent — so a later `attach` lands directly on it.
 
 Empirically confirmed: the command embedded in the layout actually executes in
-the detached session.
+the detached session, and the session contains a single tab.
 
 ### Alternative considered and rejected
 
@@ -52,12 +55,13 @@ Running the normal attaching invocation (`zellij -s NAME -n LAYOUT`) under
 and would hang or error without one. The `--create-background` path is
 purpose-built for exactly this.
 
-### Known cosmetic wrinkle
+### Single tab (resolved)
 
-`--create-background` leaves one empty default tab behind the agent tab. The
-agent tab is focused after `new-tab`, so it is harmless. As optional polish, the
-implementation may close the spare default tab so the attached view is clean. If
-closing proves flaky while detached, leaving the spare tab is acceptable.
+An earlier two-step approach (`attach --create-background` then
+`action new-tab --layout`) left a stray empty default tab in front of the agent
+tab, so attaching landed on a blank shell. Folding the layout into session
+creation via the top-level `--layout` flag removes that tab entirely: the
+session is born with the agent layout as its only tab.
 
 ## Behavior
 
@@ -113,11 +117,11 @@ Follows the existing "engine decides, main loop performs IO" pattern (cf.
 ### `zellij.rs`
 
 - Add `create_session_background(name: &str, layout_path: &Path, cwd: &Path) -> Result<()>`:
-  runs the two commands above with `cwd` as the working directory, using
-  `.output()` (not `.status()`) so zellij's stdout/stderr are captured rather
-  than painted onto the live TUI (same rationale as `dump_screen`). Returns
-  `Err` if either command fails to spawn or exits non-zero. May optionally close
-  the spare default tab as polish. Thin and untested, like the existing
+  runs the single `zellij --layout … attach --create-background …` command above
+  with `cwd` as the working directory, using `.output()` (not `.status()`) so
+  zellij's stdout/stderr are captured rather than painted onto the live TUI (same
+  rationale as `dump_screen`). Returns `Err` if the command fails to spawn or
+  exits non-zero. Thin and untested, like the existing
   `create_session` / `attach_session`.
 
 ### `main.rs`

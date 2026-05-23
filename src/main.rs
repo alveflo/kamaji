@@ -128,13 +128,12 @@ fn run_board(terminal: &mut DefaultTerminal, engine: &mut Engine) -> Result<bool
                     }
                     Err(e) => {
                         engine.app.status_message = Some(format!("background session failed: {e}"));
-                        // Tear down any half-created session first: the first
-                        // command may have made the (agent-less) session before
-                        // the second failed, and reconcile only clears sessions
-                        // that are ABSENT from `list-sessions`. Killing it makes
-                        // reconcile drop the columns. Then the card has no
-                        // session (status stays In Progress; recoverable via
-                        // Enter, which starts a fresh session).
+                        // Tear down any partially-created session first: zellij
+                        // may have made the session before erroring, and
+                        // reconcile only clears sessions ABSENT from
+                        // `list-sessions`. Killing it makes reconcile drop the
+                        // columns. Then the card has no session (status stays In
+                        // Progress; recoverable via Enter, which starts fresh).
                         zellij::terminate_session(&name);
                         engine.reconcile()?;
                     }

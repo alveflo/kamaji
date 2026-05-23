@@ -43,32 +43,25 @@ pub fn create_session(name: &str, layout_path: &Path) -> Result<ExitStatus> {
         .status()?)
 }
 
-/// Create a DETACHED session and run `layout_path` inside it, without attaching
-/// the caller. Two steps: `attach --create-background` makes the session, then
-/// `action new-tab --layout` runs the agent layout in it (the new tab becomes
-/// focused, so a later `attach` lands on the agent). Commands run from `cwd` and
-/// use `output()` so zellij's stdout/stderr are captured rather than painted
-/// onto the live TUI (same rationale as `dump_screen`).
+/// Create a DETACHED session running `layout_path`, without attaching the
+/// caller. The top-level `--layout` makes the layout the session's *initial*
+/// tab, and `attach --create-background` creates it detached — so the session
+/// has exactly ONE tab (the agent) and a later `attach` lands directly on it.
+/// (Doing this in two steps — create then `action new-tab --layout` — leaves a
+/// stray empty default tab in front of the agent, which is what we avoid here.)
+/// Runs from `cwd` and uses `output()` so zellij's stdout/stderr are captured
+/// rather than painted onto the live TUI (same rationale as `dump_screen`).
 pub fn create_session_background(name: &str, layout_path: &Path, cwd: &Path) -> Result<()> {
-    let created = Command::new("zellij")
+    let out = Command::new("zellij")
         .current_dir(cwd)
+        .arg("--layout")
+        .arg(layout_path)
         .args(["attach", "--create-background", name])
         .output()?;
-    if !created.status.success() {
+    if !out.status.success() {
         anyhow::bail!(
-            "zellij attach --create-background failed: {}",
-            String::from_utf8_lossy(&created.stderr)
-        );
-    }
-    let tab = Command::new("zellij")
-        .current_dir(cwd)
-        .args(["--session", name, "action", "new-tab", "--layout"])
-        .arg(layout_path)
-        .output()?;
-    if !tab.status.success() {
-        anyhow::bail!(
-            "zellij action new-tab failed: {}",
-            String::from_utf8_lossy(&tab.stderr)
+            "zellij --layout … attach --create-background failed: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
     }
     Ok(())
