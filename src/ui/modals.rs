@@ -115,10 +115,18 @@ pub fn render_form(frame: &mut Frame, form: &TicketForm) {
         let mut agent_line = vec![Span::styled("Agent: ", Style::new().fg(Color::Yellow))];
         agent_line.extend(agents);
         lines.push(Line::from(agent_line));
+
+        lines.push(Line::raw(""));
+        let checkbox = if form.start_in_background { "[x]" } else { "[ ]" };
+        lines.push(field_line(
+            "Start in background",
+            checkbox,
+            form.field == FormField::Background,
+        ));
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "Tab/Shift-Tab: field   ←/→: agent   Enter: save   Esc: cancel",
+        "Tab/Shift-Tab: field   ←/→: agent / toggle   Enter: save   Esc: cancel",
         Style::new().fg(Color::DarkGray),
     ));
 
