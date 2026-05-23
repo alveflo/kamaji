@@ -112,7 +112,8 @@ impl Engine {
         Ok(Effect::None)
     }
 
-    /// Terminate session + remove worktree + delete branch for a ticket.
+    /// Terminate session + remove worktree + delete branch for a ticket, then
+    /// clear the recorded session columns so the ticket no longer shows as live.
     pub fn cleanup_ticket(&mut self, ticket_id: i64) -> Result<()> {
         if let Some(t) = self.db.get_ticket(ticket_id)? {
             if let Some(name) = &t.session_name {
@@ -125,8 +126,35 @@ impl Engine {
             if let Some(b) = &t.branch {
                 let _ = git::delete_branch(root, b);
             }
+            self.db.clear_ticket_session(ticket_id)?;
         }
         Ok(())
+    }
+
+    /// Reconcile recorded sessions against zellij: if a successful
+    /// `zellij list-sessions` does not contain a ticket's session (including as
+    /// a resurrectable/exited entry), the session is gone, so clear its columns.
+    /// Does nothing if zellij can't be queried, so a transient failure never
+    /// wipes valid state.
+    pub fn reconcile(&mut self) -> Result<()> {
+        let Some(list) = zellij::list_sessions() else {
+            return Ok(());
+        };
+        let stale: Vec<i64> = self
+            .app
+            .tickets
+            .iter()
+            .filter(|t| {
+                t.session_name
+                    .as_deref()
+                    .is_some_and(|n| !zellij::session_in_list(&list, n))
+            })
+            .map(|t| t.id)
+            .collect();
+        for id in stale {
+            self.db.clear_ticket_session(id)?;
+        }
+        self.reload()
     }
 
     fn submit_form(&mut self, form: &TicketForm) -> Result<()> {
@@ -262,7 +290,13 @@ impl Engine {
             KeyCode::Up | KeyCode::Char('k') => self.app.up(),
             KeyCode::Down | KeyCode::Char('j') => self.app.down(),
             KeyCode::Char('c') => {
-                self.app.modal = Modal::Form(TicketForm::new_create(self.config.default_agent()));
+                // Resolve the default agent: project override, else global config.
+                let default_agent = self
+                    .app
+                    .project
+                    .default_agent
+                    .unwrap_or_else(|| self.config.default_agent());
+                self.app.modal = Modal::Form(TicketForm::new_create(default_agent));
             }
             KeyCode::Char('o') | KeyCode::Enter => {
                 if let Some(t) = self.app.selected_ticket() {
@@ -391,5 +425,13 @@ mod tests {
         assert_eq!(stored.status, Status::InProgress);
         assert_eq!(stored.session_name.as_deref(), Some(name.as_str()));
         assert!(dir.path().join("wts").join(&name).join("f").exists());
+
+        // Cleanup removes the worktree and clears the recorded session columns.
+        e.cleanup_ticket(t.id).unwrap();
+        let cleaned = e.db.get_ticket(t.id).unwrap().unwrap();
+        assert_eq!(cleaned.session_name, None);
+        assert_eq!(cleaned.worktree_path, None);
+        assert_eq!(cleaned.branch, None);
+        assert!(!dir.path().join("wts").join(&name).join("f").exists());
     }
 }

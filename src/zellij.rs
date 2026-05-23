@@ -3,22 +3,24 @@ use std::path::Path;
 use std::process::{Command, ExitStatus};
 
 /// True if a session named `name` appears in `zellij list-sessions` output.
-/// Compares the first whitespace-delimited token of each line.
-#[allow(dead_code)]
+/// Compares the first whitespace-delimited token of each line. Note that
+/// zellij keeps exited-but-resurrectable sessions in this list, so presence
+/// here means "exists or is resurrectable", not "currently running".
 pub fn session_in_list(list_output: &str, name: &str) -> bool {
     list_output
         .lines()
         .any(|l| l.split_whitespace().next() == Some(name))
 }
 
-#[allow(dead_code)]
-pub fn session_exists(name: &str) -> bool {
+/// Raw `zellij list-sessions` output, or `None` if the command failed (so
+/// callers can distinguish "no sessions" from "couldn't ask").
+pub fn list_sessions() -> Option<String> {
     match Command::new("zellij")
         .args(["list-sessions", "--no-formatting"])
         .output()
     {
-        Ok(o) if o.status.success() => session_in_list(&String::from_utf8_lossy(&o.stdout), name),
-        _ => false,
+        Ok(o) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).into_owned()),
+        _ => None,
     }
 }
 

@@ -46,6 +46,8 @@ fn run(terminal: &mut DefaultTerminal, mut db: Db, mut config: config::Config) -
         let tickets = db.list_tickets(project.id)?;
         let app = App::new(project, tickets);
         let mut engine = Engine::new(db, config, app);
+        // Drop any recorded sessions that no longer exist in zellij.
+        engine.reconcile()?;
 
         let switch_project = run_board(terminal, &mut engine)?;
 
@@ -96,7 +98,7 @@ fn run_board(terminal: &mut DefaultTerminal, engine: &mut Engine) -> Result<bool
 }
 
 /// Release the terminal, run a zellij command (inherits the real TTY), then
-/// re-initialize ratatui and reload tickets.
+/// re-initialize ratatui and reconcile session state.
 fn run_zellij<F>(terminal: &mut DefaultTerminal, engine: &mut Engine, f: F) -> Result<()>
 where
     F: FnOnce(()) -> Result<std::process::ExitStatus>,
@@ -107,6 +109,7 @@ where
     if let Err(e) = outcome {
         engine.app.status_message = Some(format!("zellij error: {e}"));
     }
-    engine.reload()?;
+    // reconcile() reloads tickets and drops any sessions that vanished.
+    engine.reconcile()?;
     Ok(())
 }

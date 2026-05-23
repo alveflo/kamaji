@@ -202,6 +202,17 @@ impl Db {
         Ok(())
     }
 
+    /// Clear the session/worktree/branch columns (e.g. after cleanup or when a
+    /// session no longer exists).
+    pub fn clear_ticket_session(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tickets SET session_name = NULL, worktree_path = NULL, branch = NULL,
+             updated_at = datetime('now') WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_ticket(&self, id: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM tickets WHERE id = ?1", [id])?;
@@ -260,5 +271,23 @@ mod tests {
         assert_eq!(db.list_tickets(p.id).unwrap().len(), 1);
         db.delete_ticket(t.id).unwrap();
         assert_eq!(db.list_tickets(p.id).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn clear_ticket_session_nulls_columns() {
+        let db = db();
+        let p = db
+            .create_project("p", &PathBuf::from("/tmp/p"), None)
+            .unwrap();
+        let t = db
+            .create_ticket(p.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        db.set_ticket_session(t.id, "kamaji-1-t", "/wt", "kamaji-1-t")
+            .unwrap();
+        db.clear_ticket_session(t.id).unwrap();
+        let got = db.get_ticket(t.id).unwrap().unwrap();
+        assert_eq!(got.session_name, None);
+        assert_eq!(got.worktree_path, None);
+        assert_eq!(got.branch, None);
     }
 }

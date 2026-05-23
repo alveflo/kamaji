@@ -93,7 +93,6 @@ pub struct Project {
     pub id: i64,
     pub name: String,
     pub root_dir: PathBuf,
-    #[allow(dead_code)]
     pub default_agent: Option<Agent>,
     #[allow(dead_code)]
     pub created_at: String,
