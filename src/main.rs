@@ -2,6 +2,7 @@ mod agent;
 mod app;
 mod config;
 mod db;
+mod detect;
 mod engine;
 mod git;
 mod layout;
