@@ -47,7 +47,12 @@ impl TicketForm {
         if self.editing_id.is_some() {
             &[FormField::Title, FormField::Description]
         } else {
-            &[FormField::Title, FormField::Description, FormField::InitialPrompt, FormField::Agent]
+            &[
+                FormField::Title,
+                FormField::Description,
+                FormField::InitialPrompt,
+                FormField::Agent,
+            ]
         }
     }
 
@@ -85,7 +90,11 @@ impl TicketForm {
         let all = Agent::all();
         let i = all.iter().position(|a| *a == self.agent).unwrap_or(0);
         let n = all.len();
-        self.agent = if forward { all[(i + 1) % n] } else { all[(i + n - 1) % n] };
+        self.agent = if forward {
+            all[(i + 1) % n]
+        } else {
+            all[(i + n - 1) % n]
+        };
     }
 
     pub fn prompt_opt(&self) -> Option<String> {
@@ -146,7 +155,11 @@ impl App {
 
     fn clamp_row(&mut self) {
         let len = self.column_tickets(self.selected_status()).len();
-        self.selected_row = if len == 0 { 0 } else { self.selected_row.min(len - 1) };
+        self.selected_row = if len == 0 {
+            0
+        } else {
+            self.selected_row.min(len - 1)
+        };
     }
 
     pub fn left(&mut self) {

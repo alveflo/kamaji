@@ -63,18 +63,15 @@ impl Engine {
         );
         let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv);
         let layout_path = self.layout_file(&name, &kdl)?;
-        self.db.set_ticket_session(
-            ticket.id,
-            &name,
-            &worktree.to_string_lossy(),
-            &name,
-        )?;
+        self.db
+            .set_ticket_session(ticket.id, &name, &worktree.to_string_lossy(), &name)?;
         self.db.set_ticket_status(ticket.id, Status::InProgress)?;
         self.reload()?;
         Ok(Effect::RunSession { name, layout_path })
     }
 
     /// Apply a column move to the currently-selected ticket.
+    #[allow(dead_code)]
     pub fn move_selected(&mut self, target: Status) -> Result<Effect> {
         let Some(ticket) = self.app.selected_ticket().cloned() else {
             return Ok(Effect::None);
@@ -127,7 +124,9 @@ impl Engine {
 
     fn submit_form(&mut self, form: &TicketForm) -> Result<()> {
         match form.editing_id {
-            Some(id) => self.db.update_ticket_fields(id, &form.title, &form.description)?,
+            Some(id) => self
+                .db
+                .update_ticket_fields(id, &form.title, &form.description)?,
             None => {
                 self.db.create_ticket(
                     self.app.project.id,
@@ -188,7 +187,10 @@ impl Engine {
                 }
                 Ok(Effect::None)
             }
-            Modal::Move { ticket_id, mut target } => match key.code {
+            Modal::Move {
+                ticket_id,
+                mut target,
+            } => match key.code {
                 KeyCode::Esc => Ok(Effect::None),
                 KeyCode::Left => {
                     let i = Status::all().iter().position(|s| *s == target).unwrap();
@@ -261,7 +263,10 @@ impl Engine {
             }
             KeyCode::Char('m') => {
                 if let Some(t) = self.app.selected_ticket() {
-                    self.app.modal = Modal::Move { ticket_id: t.id, target: t.status };
+                    self.app.modal = Modal::Move {
+                        ticket_id: t.id,
+                        target: t.status,
+                    };
                 }
             }
             KeyCode::Char('d') => {
@@ -307,7 +312,8 @@ mod tests {
         for ch in "Add login".chars() {
             e.on_key(key(ch)).unwrap();
         }
-        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
         assert_eq!(e.app.tickets.len(), 1);
         assert_eq!(e.app.tickets[0].title, "Add login");
         assert_eq!(e.app.tickets[0].status, Status::Todo);
@@ -316,11 +322,15 @@ mod tests {
     #[test]
     fn move_to_review_then_done_without_session() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude).unwrap();
+        e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+            .unwrap();
         e.reload().unwrap();
         // Move to Review (col index 2).
         assert_eq!(e.move_selected(Status::Review).unwrap(), Effect::None);
-        assert_eq!(e.db.list_tickets(e.app.project.id).unwrap()[0].status, Status::Review);
+        assert_eq!(
+            e.db.list_tickets(e.app.project.id).unwrap()[0].status,
+            Status::Review
+        );
     }
 
     #[test]
@@ -329,7 +339,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         let run = |args: &[&str]| {
-            std::process::Command::new("git").arg("-C").arg(&root).args(args).output().unwrap();
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
         };
         run(&["init", "-b", "main"]);
         run(&["config", "user.email", "t@t.t"]);
@@ -341,13 +356,18 @@ mod tests {
         let mut e = engine_with_project(root.clone());
         // Point worktrees somewhere isolated under tempdir.
         e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
-        let t = e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude).unwrap();
+        let t =
+            e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
+                .unwrap();
         e.reload().unwrap();
 
         let effect = e.move_selected(Status::InProgress).unwrap();
         let name = slug::ticket_name(t.id, "Add login");
         match effect {
-            Effect::RunSession { name: n, layout_path } => {
+            Effect::RunSession {
+                name: n,
+                layout_path,
+            } => {
                 assert_eq!(n, name);
                 assert!(layout_path.exists());
             }

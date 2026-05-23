@@ -43,7 +43,9 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db) -> Result<Option<Project>> {
         if !event::poll(Duration::from_millis(200))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else { continue };
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
         if key.kind != KeyEventKind::Press {
             continue;
         }
@@ -144,7 +146,12 @@ fn render(frame: &mut Frame, state: &PickerState) {
             }
             let list = List::new(items)
                 .block(Block::bordered().title(" Projects "))
-                .highlight_style(Style::new().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD));
+                .highlight_style(
+                    Style::new()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                );
             frame.render_stateful_widget(list, body_area, &mut list_state);
             frame.render_widget(
                 Paragraph::new(" ↑/↓ select   Enter open   n new   q quit"),

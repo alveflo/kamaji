@@ -18,13 +18,20 @@ pub fn is_git_repo(root: &Path) -> bool {
 
 pub fn default_branch(root: &Path) -> Result<String> {
     let out = git(root)
-        .args(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+        .args([
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ])
         .output()?;
     if out.status.success() {
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
         return Ok(s.strip_prefix("origin/").unwrap_or(&s).to_string());
     }
-    let out = git(root).args(["rev-parse", "--abbrev-ref", "HEAD"]).output()?;
+    let out = git(root)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()?;
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
     }
@@ -38,7 +45,10 @@ pub fn add_worktree(root: &Path, worktree: &Path, branch: &str, base: &str) -> R
         .args(["-b", branch, base])
         .output()?;
     if !out.status.success() {
-        bail!("git worktree add failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     Ok(())
 }
@@ -49,7 +59,10 @@ pub fn remove_worktree(root: &Path, worktree: &Path) -> Result<()> {
         .arg(worktree)
         .output()?;
     if !out.status.success() {
-        bail!("git worktree remove failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "git worktree remove failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     Ok(())
 }
@@ -67,7 +80,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let run = |args: &[&str]| {
-            let ok = Command::new("git").arg("-C").arg(root).args(args).output().unwrap().status.success();
+            let ok = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
             assert!(ok, "git {:?} failed", args);
         };
         run(&["init", "-b", "main"]);

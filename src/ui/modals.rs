@@ -10,7 +10,10 @@ use crate::ui::centered_rect;
 
 fn field_line(label: &str, value: &str, active: bool) -> Line<'static> {
     let style = if active {
-        Style::new().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::new()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::new().fg(Color::Gray)
     };
@@ -25,19 +28,33 @@ pub fn render_form(frame: &mut Frame, form: &TicketForm) {
     let area = centered_rect(70, 60, frame.area());
     frame.render_widget(Clear, area);
 
-    let title = if form.editing_id.is_some() { " Edit ticket " } else { " New ticket " };
-    let block = Block::bordered().title(title).border_style(Style::new().fg(Color::Cyan));
+    let title = if form.editing_id.is_some() {
+        " Edit ticket "
+    } else {
+        " New ticket "
+    };
+    let block = Block::bordered()
+        .title(title)
+        .border_style(Style::new().fg(Color::Cyan));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let mut lines = vec![
         field_line("Title", &form.title, form.field == FormField::Title),
         Line::raw(""),
-        field_line("Description", &form.description, form.field == FormField::Description),
+        field_line(
+            "Description",
+            &form.description,
+            form.field == FormField::Description,
+        ),
     ];
     if form.editing_id.is_none() {
         lines.push(Line::raw(""));
-        lines.push(field_line("Prompt", &form.initial_prompt, form.field == FormField::InitialPrompt));
+        lines.push(field_line(
+            "Prompt",
+            &form.initial_prompt,
+            form.field == FormField::InitialPrompt,
+        ));
         lines.push(Line::raw(""));
         let agents: Vec<Span> = Agent::all()
             .into_iter()
@@ -50,7 +67,10 @@ pub fn render_form(frame: &mut Frame, form: &TicketForm) {
                 } else {
                     Style::new().fg(Color::DarkGray)
                 };
-                vec![Span::styled(format!(" {} ", a.label()), style), Span::raw(" ")]
+                vec![
+                    Span::styled(format!(" {} ", a.label()), style),
+                    Span::raw(" "),
+                ]
             })
             .collect();
         let mut agent_line = vec![Span::styled("Agent: ", Style::new().fg(Color::Yellow))];
@@ -69,7 +89,9 @@ pub fn render_form(frame: &mut Frame, form: &TicketForm) {
 pub fn render_move(frame: &mut Frame, target: Status) {
     let area = centered_rect(60, 25, frame.area());
     frame.render_widget(Clear, area);
-    let block = Block::bordered().title(" Move ticket ").border_style(Style::new().fg(Color::Cyan));
+    let block = Block::bordered()
+        .title(" Move ticket ")
+        .border_style(Style::new().fg(Color::Cyan));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -79,7 +101,10 @@ pub fn render_move(frame: &mut Frame, target: Status) {
         .into_iter()
         .map(|s| {
             let style = if s == target {
-                Style::new().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::new().fg(Color::Gray)
             };
@@ -108,7 +133,9 @@ pub fn render_confirm(frame: &mut Frame, title: &str, body: &str) {
 pub fn render_help(frame: &mut Frame) {
     let area = centered_rect(50, 60, frame.area());
     frame.render_widget(Clear, area);
-    let block = Block::bordered().title(" Help ").border_style(Style::new().fg(Color::Cyan));
+    let block = Block::bordered()
+        .title(" Help ")
+        .border_style(Style::new().fg(Color::Cyan));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let text = "\

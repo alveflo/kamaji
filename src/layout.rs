@@ -28,7 +28,10 @@ mod tests {
     #[test]
     fn no_args_layout() {
         let out = render_layout("/wt", &["claude".to_string()]);
-        assert_eq!(out, "layout {\n    pane command=\"claude\" cwd=\"/wt\"\n}\n");
+        assert_eq!(
+            out,
+            "layout {\n    pane command=\"claude\" cwd=\"/wt\"\n}\n"
+        );
     }
 
     #[test]

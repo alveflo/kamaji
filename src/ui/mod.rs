@@ -13,7 +13,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         Modal::Form(form) => modals::render_form(frame, form),
         Modal::Move { target, .. } => modals::render_move(frame, *target),
         Modal::ConfirmDone { .. } => {
-            modals::render_confirm(frame, "Move to Done", "Clean up worktree + session? [y]es / [n]o / Esc");
+            modals::render_confirm(
+                frame,
+                "Move to Done",
+                "Clean up worktree + session? [y]es / [n]o / Esc",
+            );
         }
         Modal::ConfirmDelete { .. } => {
             modals::render_confirm(frame, "Delete ticket", "Delete and clean up? [y]es / Esc");

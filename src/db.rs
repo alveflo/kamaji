@@ -110,7 +110,11 @@ impl Db {
     ) -> Result<Project> {
         self.conn.execute(
             "INSERT INTO projects (name, root_dir, default_agent) VALUES (?1, ?2, ?3)",
-            params![name, root_dir.to_string_lossy(), default_agent.map(|a| a.as_str())],
+            params![
+                name,
+                root_dir.to_string_lossy(),
+                default_agent.map(|a| a.as_str())
+            ],
         )?;
         let id = self.conn.last_insert_rowid();
         Ok(self.get_project(id)?.expect("just inserted"))
@@ -140,7 +144,13 @@ impl Db {
         self.conn.execute(
             "INSERT INTO tickets (project_id, title, description, initial_prompt, agent, status)
              VALUES (?1, ?2, ?3, ?4, ?5, 'todo')",
-            params![project_id, title, description, initial_prompt, agent.as_str()],
+            params![
+                project_id,
+                title,
+                description,
+                initial_prompt,
+                agent.as_str()
+            ],
         )?;
         let id = self.conn.last_insert_rowid();
         Ok(self.get_ticket(id)?.expect("just inserted"))
@@ -193,7 +203,8 @@ impl Db {
     }
 
     pub fn delete_ticket(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM tickets WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM tickets WHERE id = ?1", [id])?;
         Ok(())
     }
 }
@@ -216,22 +227,29 @@ mod tests {
         assert!(p.id > 0);
         assert_eq!(db.get_project(p.id).unwrap().unwrap().name, "acme");
         assert_eq!(db.list_projects().unwrap().len(), 1);
-        assert_eq!(db.get_project(p.id).unwrap().unwrap().default_agent, Some(Agent::Codex));
+        assert_eq!(
+            db.get_project(p.id).unwrap().unwrap().default_agent,
+            Some(Agent::Codex)
+        );
     }
 
     #[test]
     fn ticket_lifecycle() {
         let db = db();
-        let p = db.create_project("p", &PathBuf::from("/tmp/p"), None).unwrap();
+        let p = db
+            .create_project("p", &PathBuf::from("/tmp/p"), None)
+            .unwrap();
         let t = db
             .create_ticket(p.id, "Add login", "desc", Some("do it"), Agent::Claude)
             .unwrap();
         assert_eq!(t.status, Status::Todo);
         assert_eq!(t.session_name, None);
 
-        db.update_ticket_fields(t.id, "Add SSO", "new desc").unwrap();
+        db.update_ticket_fields(t.id, "Add SSO", "new desc")
+            .unwrap();
         db.set_ticket_status(t.id, Status::InProgress).unwrap();
-        db.set_ticket_session(t.id, "kamaji-1-add-sso", "/wt", "kamaji-1-add-sso").unwrap();
+        db.set_ticket_session(t.id, "kamaji-1-add-sso", "/wt", "kamaji-1-add-sso")
+            .unwrap();
 
         let got = db.get_ticket(t.id).unwrap().unwrap();
         assert_eq!(got.title, "Add SSO");

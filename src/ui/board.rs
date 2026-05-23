@@ -20,7 +20,11 @@ pub fn render_board(frame: &mut Frame, app: &App) {
         let items: Vec<ListItem> = tickets
             .iter()
             .map(|t| {
-                let marker = if t.session_name.is_some() { "●" } else { "○" };
+                let marker = if t.session_name.is_some() {
+                    "●"
+                } else {
+                    "○"
+                };
                 ListItem::new(format!("{marker} #{} {}", t.id, t.title))
             })
             .collect();
@@ -31,9 +35,11 @@ pub fn render_board(frame: &mut Frame, app: &App) {
             Style::new().fg(Color::DarkGray)
         };
 
-        let block = Block::bordered()
-            .border_style(border_style)
-            .title(format!(" {} ({}) ", status.title(), tickets.len()));
+        let block = Block::bordered().border_style(border_style).title(format!(
+            " {} ({}) ",
+            status.title(),
+            tickets.len()
+        ));
 
         let mut state = ListState::default();
         if focused && !tickets.is_empty() {
@@ -41,7 +47,10 @@ pub fn render_board(frame: &mut Frame, app: &App) {
         }
 
         let list = List::new(items).block(block).highlight_style(
-            Style::new().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         );
 
         frame.render_stateful_widget(list, columns[col_idx], &mut state);

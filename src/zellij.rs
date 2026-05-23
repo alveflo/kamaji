@@ -4,17 +4,20 @@ use std::process::{Command, ExitStatus};
 
 /// True if a session named `name` appears in `zellij list-sessions` output.
 /// Compares the first whitespace-delimited token of each line.
+#[allow(dead_code)]
 pub fn session_in_list(list_output: &str, name: &str) -> bool {
     list_output
         .lines()
         .any(|l| l.split_whitespace().next() == Some(name))
 }
 
+#[allow(dead_code)]
 pub fn session_exists(name: &str) -> bool {
-    match Command::new("zellij").args(["list-sessions", "--no-formatting"]).output() {
-        Ok(o) if o.status.success() => {
-            session_in_list(&String::from_utf8_lossy(&o.stdout), name)
-        }
+    match Command::new("zellij")
+        .args(["list-sessions", "--no-formatting"])
+        .output()
+    {
+        Ok(o) if o.status.success() => session_in_list(&String::from_utf8_lossy(&o.stdout), name),
         _ => false,
     }
 }
@@ -36,7 +39,9 @@ pub fn attach_session(name: &str) -> Result<ExitStatus> {
 /// Kill and delete a session; errors are ignored (it may already be gone).
 pub fn terminate_session(name: &str) {
     let _ = Command::new("zellij").args(["kill-session", name]).output();
-    let _ = Command::new("zellij").args(["delete-session", "--force", name]).output();
+    let _ = Command::new("zellij")
+        .args(["delete-session", "--force", name])
+        .output();
 }
 
 #[cfg(test)]

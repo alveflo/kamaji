@@ -61,7 +61,9 @@ impl Config {
 
     /// Absolute worktree directory for `name`, with `{root}` expanded.
     pub fn worktree_dir(&self, root: &Path, name: &str) -> PathBuf {
-        let base = self.worktree_base.replace("{root}", &root.to_string_lossy());
+        let base = self
+            .worktree_base
+            .replace("{root}", &root.to_string_lossy());
         PathBuf::from(base).join(name)
     }
 }
@@ -104,14 +106,20 @@ mod tests {
     fn defaults_are_sane() {
         let c = Config::default();
         assert_eq!(c.default_agent(), Agent::Claude);
-        assert_eq!(c.commands_for(Agent::Codex).with_prompt, vec!["codex", "{prompt}"]);
+        assert_eq!(
+            c.commands_for(Agent::Codex).with_prompt,
+            vec!["codex", "{prompt}"]
+        );
     }
 
     #[test]
     fn worktree_dir_expands_root() {
         let c = Config::default();
         let p = c.worktree_dir(&PathBuf::from("/home/u/proj"), "kamaji-1-x");
-        assert_eq!(p, PathBuf::from("/home/u/proj/../kamaji-worktrees/kamaji-1-x"));
+        assert_eq!(
+            p,
+            PathBuf::from("/home/u/proj/../kamaji-worktrees/kamaji-1-x")
+        );
     }
 
     #[test]

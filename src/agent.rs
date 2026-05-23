@@ -26,7 +26,10 @@ mod tests {
 
     #[test]
     fn substitutes_prompt() {
-        assert_eq!(build_command(&tpl(), Some("fix the bug")), vec!["claude", "fix the bug"]);
+        assert_eq!(
+            build_command(&tpl(), Some("fix the bug")),
+            vec!["claude", "fix the bug"]
+        );
     }
 
     #[test]

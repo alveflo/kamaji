@@ -66,7 +66,12 @@ impl Status {
         }
     }
     pub fn all() -> [Status; 4] {
-        [Status::Todo, Status::InProgress, Status::Review, Status::Done]
+        [
+            Status::Todo,
+            Status::InProgress,
+            Status::Review,
+            Status::Done,
+        ]
     }
 }
 
@@ -88,24 +93,30 @@ pub struct Project {
     pub id: i64,
     pub name: String,
     pub root_dir: PathBuf,
+    #[allow(dead_code)]
     pub default_agent: Option<Agent>,
+    #[allow(dead_code)]
     pub created_at: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct Ticket {
     pub id: i64,
+    #[allow(dead_code)]
     pub project_id: i64,
     pub title: String,
     pub description: String,
     pub initial_prompt: Option<String>,
     pub agent: Agent,
     pub status: Status,
+    #[allow(dead_code)]
     pub position: i64,
     pub session_name: Option<String>,
     pub worktree_path: Option<PathBuf>,
     pub branch: Option<String>,
+    #[allow(dead_code)]
     pub created_at: String,
+    #[allow(dead_code)]
     pub updated_at: String,
 }
 
