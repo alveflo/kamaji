@@ -43,12 +43,14 @@ pub fn attach_session(name: &str) -> Result<ExitStatus> {
 /// information". `dump-screen` writes to a file, which we read then delete.
 pub fn dump_screen(session: &str) -> Option<String> {
     let tmp = std::env::temp_dir().join(format!("kamaji-dump-{session}.txt"));
-    let status = Command::new("zellij")
+    // Use output() (not status()) so zellij's stdout/stderr are captured rather
+    // than inherited — otherwise its noise would paint onto the live TUI.
+    let output = Command::new("zellij")
         .args(["--session", session, "action", "dump-screen"])
         .arg(&tmp)
-        .status()
+        .output()
         .ok()?;
-    let result = if status.success() {
+    let result = if output.status.success() {
         std::fs::read_to_string(&tmp).ok()
     } else {
         None
