@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -113,6 +114,9 @@ where
 {
     ratatui::restore();
     let outcome = f(());
+    if outcome.as_ref().is_ok_and(|status| status.success()) {
+        clear_zellij_detach_banner();
+    }
     *terminal = ratatui::init();
     if let Err(e) = outcome {
         engine.app.status_message = Some(format!("zellij error: {e}"));
@@ -120,4 +124,13 @@ where
     // reconcile() reloads tickets and drops any sessions that vanished.
     engine.reconcile()?;
     Ok(())
+}
+
+fn clear_zellij_detach_banner() {
+    let mut stdout = io::stdout();
+    // Zellij prints "Bye from Zellij!" after detach. Erase that normal-screen
+    // line before Kamaji re-enters its alternate-screen TUI, otherwise every
+    // attach/detach leaves a stale line visible after Kamaji exits.
+    let _ = stdout.write_all(b"\r\x1b[1A\x1b[2K");
+    let _ = stdout.flush();
 }
