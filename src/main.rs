@@ -7,6 +7,7 @@ mod git;
 mod layout;
 mod models;
 mod slug;
+mod ui;
 mod zellij;
 
 fn main() {
