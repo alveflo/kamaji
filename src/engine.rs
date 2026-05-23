@@ -2,6 +2,7 @@ use anyhow::{bail, Result};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::app::{App, FormField, Modal, TicketForm};
 use crate::config::Config;
@@ -59,9 +60,12 @@ impl Engine {
     }
 
     fn layout_file(&self, name: &str, contents: &str) -> Result<PathBuf> {
+        static LAYOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
         let dir = std::env::temp_dir().join("kamaji-layouts");
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{name}.kdl"));
+        let counter = LAYOUT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("{name}-{}-{counter}.kdl", std::process::id()));
         std::fs::write(&path, contents)?;
         Ok(path)
     }
