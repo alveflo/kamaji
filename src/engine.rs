@@ -86,6 +86,16 @@ impl Engine {
             self.config.commands_for(ticket.agent),
             ticket.initial_prompt.as_deref(),
         );
+        // For Claude, inject hook settings that maintain the idle marker, and
+        // clear any stale marker so the session baselines as Active.
+        let argv = if self.config.auto_review.enabled && ticket.agent == Agent::Claude {
+            let marker = detect::marker_path(&self.state_dir, &name);
+            let _ = std::fs::create_dir_all(&self.state_dir);
+            let _ = std::fs::remove_file(&marker);
+            detect::inject_claude_settings(argv, &marker.to_string_lossy())
+        } else {
+            argv
+        };
         let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv);
         let layout_path = self.layout_file(&name, &kdl)?;
         self.db
@@ -137,6 +147,7 @@ impl Engine {
         if let Some(t) = self.db.get_ticket(ticket_id)? {
             if let Some(name) = &t.session_name {
                 zellij::terminate_session(name);
+                let _ = std::fs::remove_file(detect::marker_path(&self.state_dir, name));
             }
             let root = &self.app.project.root_dir;
             if let Some(wt) = &t.worktree_path {
@@ -146,6 +157,7 @@ impl Engine {
                 let _ = git::delete_branch(root, b);
             }
             self.db.clear_ticket_session(ticket_id)?;
+            self.forget_ticket_state(ticket_id);
         }
         Ok(())
     }
@@ -159,19 +171,21 @@ impl Engine {
         let Some(list) = zellij::list_sessions() else {
             return Ok(());
         };
-        let stale: Vec<i64> = self
+        let stale: Vec<(i64, String)> = self
             .app
             .tickets
             .iter()
-            .filter(|t| {
+            .filter_map(|t| {
                 t.session_name
                     .as_deref()
-                    .is_some_and(|n| !zellij::session_in_list(&list, n))
+                    .filter(|n| !zellij::session_in_list(&list, n))
+                    .map(|n| (t.id, n.to_string()))
             })
-            .map(|t| t.id)
             .collect();
-        for id in stale {
+        for (id, name) in stale {
             self.db.clear_ticket_session(id)?;
+            let _ = std::fs::remove_file(detect::marker_path(&self.state_dir, &name));
+            self.forget_ticket_state(id);
         }
         self.reload()
     }
@@ -508,6 +522,7 @@ mod tests {
         let mut e = engine_with_project(root.clone());
         // Point worktrees somewhere isolated under tempdir.
         e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.state_dir = dir.path().join("state");
         let t =
             e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
                 .unwrap();
@@ -522,6 +537,11 @@ mod tests {
             } => {
                 assert_eq!(n, name);
                 assert!(layout_path.exists());
+                let layout = std::fs::read_to_string(&layout_path).unwrap();
+                assert!(
+                    layout.contains("--settings"),
+                    "claude layout must inject --settings: {layout}"
+                );
             }
             other => panic!("expected RunSession, got {other:?}"),
         }
@@ -605,6 +625,33 @@ mod tests {
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
         e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
         assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
+    }
+
+    #[test]
+    fn cleanup_removes_marker_and_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.state_dir = tmp.path().to_path_buf();
+        std::fs::create_dir_all(&e.state_dir).unwrap();
+
+        let t = e
+            .db
+            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        e.db
+            .set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
+            .unwrap();
+        e.reload().unwrap();
+        let marker = crate::detect::marker_path(&e.state_dir, "kamaji-sess");
+        std::fs::write(&marker, "").unwrap();
+        e.auto_review_ids.insert(t.id);
+        e.last_level.insert(t.id, SignalLevel::Idle);
+
+        e.cleanup_ticket(t.id).unwrap();
+
+        assert!(!marker.exists());
+        assert!(!e.auto_review_ids.contains(&t.id));
+        assert!(!e.last_level.contains_key(&t.id));
     }
 
     #[test]
