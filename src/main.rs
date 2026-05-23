@@ -109,8 +109,7 @@ fn run_board(terminal: &mut DefaultTerminal, engine: &mut Engine) -> Result<bool
                             Some(format!("Started '{name}' in the background"));
                     }
                     Err(e) => {
-                        engine.app.status_message =
-                            Some(format!("background session failed: {e}"));
+                        engine.app.status_message = Some(format!("background session failed: {e}"));
                         // Drop the dangling session columns for the session that
                         // never came up (status stays In Progress; recoverable
                         // via Enter, which starts a fresh session).

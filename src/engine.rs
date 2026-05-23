@@ -392,8 +392,7 @@ impl Engine {
                         })
                     }
                     Err(err) => {
-                        self.app.status_message =
-                            Some(format!("could not start session: {err}"));
+                        self.app.status_message = Some(format!("could not start session: {err}"));
                         Ok(Effect::None)
                     }
                 }
@@ -434,9 +433,7 @@ impl Engine {
                         form.cycle_agent(true);
                         self.app.modal = Modal::Form(form);
                     }
-                    KeyCode::Left | KeyCode::Right
-                        if form.field == FormField::Background =>
-                    {
+                    KeyCode::Left | KeyCode::Right if form.field == FormField::Background => {
                         form.toggle_background();
                         self.app.modal = Modal::Form(form);
                     }
@@ -1097,7 +1094,8 @@ mod tests {
         e.on_key(key('c')).unwrap();
         // Walk to the Background field via Tab (Title→Desc→Prompt→Agent→Background).
         for _ in 0..4 {
-            e.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)).unwrap();
+            e.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+                .unwrap();
         }
         match &e.app.modal {
             Modal::Form(f) => assert_eq!(f.field, FormField::Background),

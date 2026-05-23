@@ -117,7 +117,11 @@ pub fn render_form(frame: &mut Frame, form: &TicketForm) {
         lines.push(Line::from(agent_line));
 
         lines.push(Line::raw(""));
-        let checkbox = if form.start_in_background { "[x]" } else { "[ ]" };
+        let checkbox = if form.start_in_background {
+            "[x]"
+        } else {
+            "[ ]"
+        };
         lines.push(field_line(
             "Start in background",
             checkbox,
