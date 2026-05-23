@@ -115,10 +115,22 @@ pub fn render_form(frame: &mut Frame, form: &TicketForm) {
         let mut agent_line = vec![Span::styled("Agent: ", Style::new().fg(Color::Yellow))];
         agent_line.extend(agents);
         lines.push(Line::from(agent_line));
+
+        lines.push(Line::raw(""));
+        let checkbox = if form.start_in_background {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        lines.push(field_line(
+            "Start in background",
+            checkbox,
+            form.field == FormField::Background,
+        ));
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "Tab/Shift-Tab: field   ←/→: agent   Enter: save   Esc: cancel",
+        "Tab/Shift-Tab: field   ←/→: agent / toggle   Enter: save   Esc: cancel",
         Style::new().fg(Color::DarkGray),
     ));
 
@@ -180,7 +192,7 @@ pub fn render_help(frame: &mut Frame) {
     let text = "\
 ↑/↓ j/k   select ticket
 ←/→ h/l   change column
-c         create ticket
+c         create ticket (auto-starts a background session)
 e         edit ticket
 Enter     attach / start session
 m         move ticket (then ←/→, Enter)
