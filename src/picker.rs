@@ -2,7 +2,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -161,8 +161,10 @@ fn render(frame: &mut Frame, state: &PickerState) {
     ])
     .areas(frame.area());
 
+    let theme = &state.theme;
+
     frame.render_widget(
-        Paragraph::new(" kamaji — select a project").style(Style::new().fg(Color::Cyan)),
+        Paragraph::new(" kamaji — select a project").style(Style::new().fg(theme.accent())),
         title_area,
     );
 
@@ -171,23 +173,32 @@ fn render(frame: &mut Frame, state: &PickerState) {
     let items: Vec<ListItem> = state
         .projects
         .iter()
-        .map(|p| ListItem::new(format!("{}  ({})", p.name, p.root_dir.display())))
+        .map(|p| {
+            ListItem::new(format!("{}  ({})", p.name, p.root_dir.display()))
+                .style(Style::new().fg(theme.text))
+        })
         .collect();
     let mut list_state = ListState::default();
     if !state.projects.is_empty() {
         list_state.select(Some(state.selected));
     }
     let list = List::new(items)
-        .block(Block::bordered().title(" Projects "))
+        .block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(theme.border))
+                .title(" Projects "),
+        )
         .highlight_style(
             Style::new()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+                .fg(theme.base.unwrap_or(Color::Black))
+                .bg(theme.accent())
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_stateful_widget(list, body_area, &mut list_state);
     frame.render_widget(
-        Paragraph::new(" ↑/↓ select   Enter open   n new   q quit"),
+        Paragraph::new(" ↑/↓ select   Enter open   n new   q quit")
+            .style(Style::new().fg(theme.muted)),
         hint_area,
     );
 
