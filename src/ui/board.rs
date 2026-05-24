@@ -16,6 +16,19 @@ const CARD_HEIGHT: u16 = 3;
 /// Blank line between stacked cards.
 const CARD_GAP: u16 = 1;
 
+/// Per-column display parameters passed to `render_column`. Bundling them
+/// avoids the `too_many_arguments` lint.
+struct ColumnParams {
+    /// Total tickets in the column, ignoring the active search filter.
+    total: usize,
+    /// `true` when a non-empty search query is active.
+    filtering: bool,
+    /// Whether this column is keyboard-focused.
+    focused: bool,
+    /// The currently selected card row (used only when `focused`).
+    selected_row: usize,
+}
+
 /// The fg color for a ticket's bullet, or `None` to inherit the card's text
 /// style. Needs-attention bullets use the attention color; an actively working
 /// In Progress bullet uses the active color; otherwise it inherits (idle).
@@ -40,26 +53,38 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
 
     let columns = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(board_area);
 
+    let filtering = !app.search.is_empty();
     for (col_idx, status) in Status::all().into_iter().enumerate() {
         let tickets = app.column_tickets(status);
-        let focused = col_idx == app.selected_col;
-        render_column(
-            frame,
-            theme,
-            columns[col_idx],
-            status,
-            &tickets,
-            focused,
-            app.selected_row,
-            levels,
-        );
+        let params = ColumnParams {
+            total: app.column_total(status),
+            filtering,
+            focused: col_idx == app.selected_col,
+            selected_row: app.selected_row,
+        };
+        render_column(frame, theme, columns[col_idx], status, &tickets, params, levels);
     }
 
-    let hints = " [↵]attach [e]dit [c]reate [m]ove [d]elete [t]heme [p]roject [?]help [q]uit";
+    let hints =
+        " [↵]attach [e]dit [c]reate [m]ove [d]elete [/]search [t]heme [p]roject [?]help [q]uit";
     let left = format!(" project: {} ", app.project.name);
+    let search_span = if app.search.editing {
+        Span::styled(
+            format!("search: {}_ ", app.search.query),
+            Style::new().fg(theme.accent()),
+        )
+    } else if !app.search.is_empty() {
+        Span::styled(
+            format!("filter: {} — Esc to clear ", app.search.query),
+            Style::new().fg(theme.accent()),
+        )
+    } else {
+        Span::raw("")
+    };
     let msg = app.status_message.clone().unwrap_or_default();
     let status_line = Paragraph::new(Line::from(vec![
         Span::styled(left, Style::new().fg(theme.accent())),
+        search_span,
         Span::styled(msg, Style::new().fg(theme.error)),
         Span::styled(hints, Style::new().fg(theme.muted)),
     ]));
@@ -69,19 +94,17 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
 /// Render one Kanban column: a colored header (`TITLE · n`) and rule, then the
 /// tickets as vertically stacked cards. The focused column's header is drawn in
 /// the status accent; unfocused columns use the muted color.
-#[allow(clippy::too_many_arguments)]
 fn render_column(
     frame: &mut Frame,
     theme: &Theme,
     area: Rect,
     status: Status,
     tickets: &[&Ticket],
-    focused: bool,
-    selected_row: usize,
+    params: ColumnParams,
     levels: &HashMap<i64, SignalLevel>,
 ) {
     let accent = theme.status_color(status);
-    let header_color = if focused { accent } else { theme.muted };
+    let header_color = if params.focused { accent } else { theme.muted };
 
     let [header_area, rule_area, body] = Layout::vertical([
         Constraint::Length(1),
@@ -90,13 +113,15 @@ fn render_column(
     ])
     .areas(area);
 
-    let title = format!(
-        " {} · {}",
-        status.title().to_uppercase(),
-        tickets.len()
-    );
+    // Show "matches/total" while a search filter is active, else just the count.
+    let count = if params.filtering {
+        format!("{}/{}", tickets.len(), params.total)
+    } else {
+        params.total.to_string()
+    };
+    let title = format!(" {} · {}", status.title().to_uppercase(), count);
     let mut header_style = Style::new().fg(header_color);
-    if focused {
+    if params.focused {
         header_style = header_style.add_modifier(Modifier::BOLD);
     }
     frame.render_widget(
@@ -114,8 +139,8 @@ fn render_column(
     }
 
     let visible = visible_cards(body.height);
-    let offset = if focused {
-        first_visible(selected_row, visible, tickets.len())
+    let offset = if params.focused {
+        first_visible(params.selected_row, visible, tickets.len())
     } else {
         0
     };
@@ -134,7 +159,7 @@ fn render_column(
             width: body.width,
             height,
         };
-        let selected = focused && i == selected_row;
+        let selected = params.focused && i == params.selected_row;
         let level = levels.get(&ticket.id).copied();
         render_card(frame, theme, card, ticket, selected, level);
     }
@@ -424,5 +449,43 @@ mod tests {
         let buf = render(&app, &HashMap::new(), 80, 12);
         let text = buffer_text(&buf);
         assert!(text.contains("#20"), "selected card should be visible:\n{text}");
+    }
+
+    #[test]
+    fn column_title_shows_matches_over_total_when_filtering() {
+        let mut app = App::new(
+            project(),
+            vec![ticket(1, Status::Todo), ticket(2, Status::Todo)],
+        );
+        // ticket() titles are "title1" / "title2"; "title1" matches only the first.
+        app.search.query = "title1".into();
+        let buf = render(&app, &HashMap::new(), 80, 20);
+        let text = buffer_text(&buf);
+        // The restyled header reads "TODO · 1/2" (matches/total) while filtering.
+        assert!(
+            text.contains("TODO · 1/2"),
+            "expected matches/total count in title:\n{text}"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_search_prompt_while_editing() {
+        let mut app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        app.search.editing = true;
+        app.search.query = "lo".into();
+        let buf = render(&app, &HashMap::new(), 80, 20);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("search: lo"),
+            "expected the search prompt in the status bar:\n{text}"
+        );
+    }
+
+    #[test]
+    fn status_bar_lists_the_search_hint() {
+        let app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        let buf = render(&app, &HashMap::new(), 120, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("[/]search"), "search hint present:\n{text}");
     }
 }

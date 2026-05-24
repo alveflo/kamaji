@@ -562,8 +562,24 @@ impl Engine {
 
     fn on_board_key(&mut self, key: KeyEvent) -> Result<Effect> {
         self.app.status_message = None;
+
+        // While editing the search query, capture input before the board
+        // hotkeys so typed characters edit the query (and 'q' doesn't quit).
+        if self.app.search.editing {
+            match key.code {
+                KeyCode::Esc => self.app.search_clear(),
+                KeyCode::Enter => self.app.search_commit(),
+                KeyCode::Backspace => self.app.search_backspace(),
+                KeyCode::Char(c) => self.app.search_push(c),
+                _ => {}
+            }
+            return Ok(Effect::None);
+        }
+
         match key.code {
             KeyCode::Char('q') => self.app.should_quit = true,
+            KeyCode::Char('/') => self.app.search_start(),
+            KeyCode::Esc if !self.app.search.is_empty() => self.app.search_clear(),
             KeyCode::Char('p') => return Ok(Effect::SwitchProject),
             KeyCode::Char('?') => self.app.modal = Modal::Help,
             KeyCode::Char('t') => {
@@ -1259,5 +1275,83 @@ mod tests {
             Modal::Form(form) => assert_eq!(form.editing_id, Some(t.id)),
             other => panic!("expected edit form, got {other:?}"),
         }
+    }
+
+    fn esc() -> KeyEvent {
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn slash_enters_search_and_typing_does_not_trigger_hotkeys() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('/')).unwrap();
+        assert!(e.app.search.editing, "/ starts search editing");
+        // 'q' is captured as query text, not treated as quit.
+        e.on_key(key('q')).unwrap();
+        assert!(
+            !e.app.should_quit,
+            "q is typed into the query while editing"
+        );
+        assert_eq!(e.app.search.query, "q");
+    }
+
+    #[test]
+    fn enter_commits_search_filter() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('/')).unwrap();
+        for c in "log".chars() {
+            e.on_key(key(c)).unwrap();
+        }
+        e.on_key(enter()).unwrap();
+        assert!(!e.app.search.editing, "Enter commits and stops editing");
+        assert_eq!(
+            e.app.search.query, "log",
+            "the filter persists after commit"
+        );
+    }
+
+    #[test]
+    fn esc_clears_query_while_editing_then_clears_filter_when_applied() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        // While editing, Esc clears the query and exits search.
+        e.on_key(key('/')).unwrap();
+        for c in "log".chars() {
+            e.on_key(key(c)).unwrap();
+        }
+        e.on_key(esc()).unwrap();
+        assert!(!e.app.search.editing);
+        assert!(e.app.search.query.is_empty());
+
+        // Apply and commit a filter, then Esc on the board clears it.
+        e.on_key(key('/')).unwrap();
+        e.on_key(key('x')).unwrap();
+        e.on_key(enter()).unwrap();
+        assert_eq!(e.app.search.query, "x");
+        e.on_key(esc()).unwrap();
+        assert!(
+            e.app.search.query.is_empty(),
+            "Esc clears the applied filter"
+        );
+    }
+
+    #[test]
+    fn filter_does_not_stop_detection() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let id = in_progress_ticket(&mut e); // title "t", In Progress, has a session
+                                             // Apply a filter that hides the in-progress card.
+        e.app.search.query = "zzz".into();
+        assert!(
+            e.app.column_tickets(Status::InProgress).is_empty(),
+            "the filter hides the in-progress card"
+        );
+        // Detection still sees the hidden ticket and auto-moves it on idle.
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
+        assert_eq!(
+            e.db.get_ticket(id).unwrap().unwrap().status,
+            Status::Review,
+            "a hidden ticket is still auto-moved to Needs attention"
+        );
     }
 }

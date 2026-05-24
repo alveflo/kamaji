@@ -229,6 +229,7 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
 c         create ticket (auto-starts a background session)
 e         edit ticket
 Enter     attach / start session
+/         search / filter tickets (Esc clears)
 m         move ticket (then ←/→, Enter)
 d         delete ticket
 t         switch theme (live preview)
@@ -265,5 +266,24 @@ mod tests {
             (0..buf.area.width).any(|x| buf[Position::new(x, y)].fg == theme.border)
         });
         assert!(found, "confirm modal should draw its border in theme.border");
+    }
+
+    #[test]
+    fn help_lists_the_search_key() {
+        let theme = Theme::by_name("catppuccin");
+        let backend = TestBackend::new(60, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_help(f, &theme)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[Position::new(x, y)].symbol());
+            }
+        }
+        assert!(
+            text.contains("search"),
+            "help should mention search:\n{text}"
+        );
     }
 }

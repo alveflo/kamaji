@@ -1,6 +1,35 @@
 use crate::models::{Agent, Project, Status, Ticket};
 use crate::theme::Theme;
 
+/// Board search/filter state. An empty query means no filter is applied.
+#[derive(Debug, Clone, Default)]
+pub struct Search {
+    /// The current query text.
+    pub query: String,
+    /// True while the user is typing the query (board input is captured by
+    /// search instead of the normal hotkeys).
+    pub editing: bool,
+}
+
+impl Search {
+    /// True when no query is set (the board shows every ticket).
+    pub fn is_empty(&self) -> bool {
+        self.query.is_empty()
+    }
+
+    /// Case-insensitive substring match against the ticket title. An empty
+    /// query matches every ticket.
+    pub fn matches(&self, ticket: &Ticket) -> bool {
+        if self.query.is_empty() {
+            return true;
+        }
+        ticket
+            .title
+            .to_lowercase()
+            .contains(&self.query.to_lowercase())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
     Title,
@@ -136,6 +165,7 @@ pub struct App {
     pub selected_row: usize,
     pub modal: Modal,
     pub status_message: Option<String>,
+    pub search: Search,
     pub should_quit: bool,
     pub theme: Theme,
 }
@@ -149,6 +179,7 @@ impl App {
             selected_row: 0,
             modal: Modal::None,
             status_message: None,
+            search: Search::default(),
             should_quit: false,
             theme: Theme::default(),
         }
@@ -159,7 +190,16 @@ impl App {
     }
 
     pub fn column_tickets(&self, status: Status) -> Vec<&Ticket> {
-        self.tickets.iter().filter(|t| t.status == status).collect()
+        self.tickets
+            .iter()
+            .filter(|t| t.status == status && self.search.matches(t))
+            .collect()
+    }
+
+    /// Count of all tickets in a column, ignoring the active search filter
+    /// (used to render the `matches/total` count in the column title).
+    pub fn column_total(&self, status: Status) -> usize {
+        self.tickets.iter().filter(|t| t.status == status).count()
     }
 
     pub fn selected_ticket(&self) -> Option<&Ticket> {
@@ -206,6 +246,36 @@ impl App {
         if self.selected_col > 3 {
             self.selected_col = 3;
         }
+        self.clamp_row();
+    }
+
+    /// Begin editing the search query (keeps any existing query so `/` re-edits).
+    pub fn search_start(&mut self) {
+        self.search.editing = true;
+    }
+
+    /// Append a character to the query and re-clamp the cursor to the now-
+    /// filtered column.
+    pub fn search_push(&mut self, c: char) {
+        self.search.query.push(c);
+        self.clamp_row();
+    }
+
+    /// Delete the last query character and re-clamp the cursor.
+    pub fn search_backspace(&mut self) {
+        self.search.query.pop();
+        self.clamp_row();
+    }
+
+    /// Commit the current filter: stop editing but keep the query applied.
+    pub fn search_commit(&mut self) {
+        self.search.editing = false;
+    }
+
+    /// Clear the filter entirely and exit editing.
+    pub fn search_clear(&mut self) {
+        self.search.query.clear();
+        self.search.editing = false;
         self.clamp_row();
     }
 }
@@ -314,5 +384,74 @@ mod tests {
             assert_ne!(f.field, FormField::Background);
             f.next_field();
         }
+    }
+
+    #[test]
+    fn narrowing_search_reclamps_selected_row() {
+        let mut t1 = ticket(1, Status::Todo);
+        t1.title = "alpha".into();
+        let mut t2 = ticket(2, Status::Todo);
+        t2.title = "alpine".into();
+        let mut t3 = ticket(3, Status::Todo);
+        t3.title = "beta".into();
+        let mut app = App::new(project(), vec![t1, t2, t3]);
+        app.selected_row = 2; // "beta"
+
+        app.search_start();
+        assert!(app.search.editing);
+        for c in "alp".chars() {
+            app.search_push(c);
+        }
+        // Only alpha + alpine remain (2 cards); the cursor must clamp into range.
+        assert_eq!(app.column_tickets(Status::Todo).len(), 2);
+        assert!(app.selected_row <= 1, "row clamped into the filtered range");
+        assert!(app.selected_ticket().is_some());
+
+        // Backspace re-widens the filter and stays valid.
+        app.search_backspace();
+        assert_eq!(app.search.query, "al");
+
+        // Esc clears the query and exits editing.
+        app.search_clear();
+        assert!(app.search.is_empty());
+        assert!(!app.search.editing);
+    }
+
+    #[test]
+    fn column_tickets_filters_by_search_and_total_ignores_it() {
+        let mut t1 = ticket(1, Status::Todo);
+        t1.title = "Add login".into();
+        let mut t2 = ticket(2, Status::Todo);
+        t2.title = "Fix logout bug".into();
+        let mut t3 = ticket(3, Status::Todo);
+        t3.title = "Update README".into();
+        let mut app = App::new(project(), vec![t1, t2, t3]);
+
+        app.search.query = "log".into();
+        let matches = app.column_tickets(Status::Todo);
+        assert_eq!(matches.len(), 2, "login + logout match 'log'");
+        assert_eq!(
+            app.column_total(Status::Todo),
+            3,
+            "the unfiltered total ignores the search query"
+        );
+    }
+
+    #[test]
+    fn search_matches_is_case_insensitive_substring() {
+        let mut t = ticket(1, Status::Todo);
+        t.title = "Add Login".into();
+
+        let mut s = Search::default();
+        assert!(s.matches(&t), "an empty query matches everything");
+
+        s.query = "login".into();
+        assert!(s.matches(&t), "case-insensitive substring matches");
+
+        s.query = "LOG".into();
+        assert!(s.matches(&t));
+
+        s.query = "logout".into();
+        assert!(!s.matches(&t), "a non-substring does not match");
     }
 }
