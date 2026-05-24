@@ -195,6 +195,7 @@ pub fn render_help(frame: &mut Frame) {
 c         create ticket (auto-starts a background session)
 e         edit ticket
 Enter     attach / start session
+/         search / filter tickets (Esc clears)
 m         move ticket (then ←/→, Enter)
 d         delete ticket
 p         switch project
@@ -203,4 +204,27 @@ q         quit
 
 Any key closes this help.";
     frame.render_widget(Paragraph::new(text), inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Position;
+    use ratatui::Terminal;
+
+    #[test]
+    fn help_lists_the_search_key() {
+        let backend = TestBackend::new(60, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(render_help).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[Position::new(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("search"), "help should mention search:\n{text}");
+    }
 }
