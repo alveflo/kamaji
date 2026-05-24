@@ -1,5 +1,34 @@
 use crate::models::{Agent, Project, Status, Ticket};
 
+/// Board search/filter state. An empty query means no filter is applied.
+#[derive(Debug, Clone, Default)]
+pub struct Search {
+    /// The current query text.
+    pub query: String,
+    /// True while the user is typing the query (board input is captured by
+    /// search instead of the normal hotkeys).
+    pub editing: bool,
+}
+
+impl Search {
+    /// True when no query is set (the board shows every ticket).
+    pub fn is_empty(&self) -> bool {
+        self.query.is_empty()
+    }
+
+    /// Case-insensitive substring match against the ticket title. An empty
+    /// query matches every ticket.
+    pub fn matches(&self, ticket: &Ticket) -> bool {
+        if self.query.is_empty() {
+            return true;
+        }
+        ticket
+            .title
+            .to_lowercase()
+            .contains(&self.query.to_lowercase())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
     Title,
@@ -302,5 +331,23 @@ mod tests {
             assert_ne!(f.field, FormField::Background);
             f.next_field();
         }
+    }
+
+    #[test]
+    fn search_matches_is_case_insensitive_substring() {
+        let mut t = ticket(1, Status::Todo);
+        t.title = "Add Login".into();
+
+        let mut s = Search::default();
+        assert!(s.matches(&t), "an empty query matches everything");
+
+        s.query = "login".into();
+        assert!(s.matches(&t), "case-insensitive substring matches");
+
+        s.query = "LOG".into();
+        assert!(s.matches(&t));
+
+        s.query = "logout".into();
+        assert!(!s.matches(&t), "a non-substring does not match");
     }
 }
