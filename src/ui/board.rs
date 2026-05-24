@@ -11,80 +11,10 @@ use crate::detect::SignalLevel;
 use crate::models::{Status, Ticket};
 use crate::theme::Theme;
 
+/// A card occupies its border lines plus one content line.
+const CARD_HEIGHT: u16 = 3;
 /// Blank line between stacked cards.
 const CARD_GAP: u16 = 1;
-
-/// A selected card expands into a thick-bordered box (border lines + content).
-const SELECTED_HEIGHT: u16 = 3;
-/// An unselected card is a single filled bar.
-const BAR_HEIGHT: u16 = 1;
-
-/// Where one card sits within a column body: its index in the ticket slice, its
-/// `y` offset from the top of the body, and its drawn height in rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CardPlacement {
-    index: usize,
-    y: u16,
-    height: u16,
-}
-
-/// Drawn height of card `index`: the selected card is a 3-row box, others are
-/// 1-row bars.
-fn card_height(index: usize, selected: Option<usize>) -> u16 {
-    if selected == Some(index) {
-        SELECTED_HEIGHT
-    } else {
-        BAR_HEIGHT
-    }
-}
-
-/// First card index to draw so the selected (taller) card stays fully visible,
-/// anchoring it to the bottom of the view once it scrolls past the first page.
-fn scroll_start(count: usize, selected: Option<usize>, body_height: u16) -> usize {
-    let sel = match selected {
-        Some(s) if s < count => s,
-        _ => return 0,
-    };
-    // Rows needed to render cards [start..=sel] contiguously, including gaps.
-    let span = |start: usize| -> u16 {
-        let mut rows = 0u16;
-        for i in start..=sel {
-            rows = rows.saturating_add(card_height(i, selected));
-            if i < sel {
-                rows = rows.saturating_add(CARD_GAP);
-            }
-        }
-        rows
-    };
-    let mut start = 0;
-    while start < sel && span(start) > body_height {
-        start += 1;
-    }
-    start
-}
-
-/// Lay out variable-height cards within a `body_height`-row column body. The
-/// selected card is 3 rows; every other card is 1 row; cards are separated by a
-/// 1-row gap. Returns only the cards that fit (scrolled to keep the selection
-/// visible); a card that does not fully fit is clipped rather than dropped.
-fn card_layout(count: usize, selected: Option<usize>, body_height: u16) -> Vec<CardPlacement> {
-    if count == 0 || body_height == 0 {
-        return Vec::new();
-    }
-    let start = scroll_start(count, selected, body_height);
-    let mut placements = Vec::new();
-    let mut y = 0u16;
-    for index in start..count {
-        if y >= body_height {
-            break;
-        }
-        let full = card_height(index, selected);
-        let height = full.min(body_height - y);
-        placements.push(CardPlacement { index, y, height });
-        y += full + CARD_GAP;
-    }
-    placements
-}
 
 /// Per-column display parameters passed to `render_column`. Bundling them
 /// avoids the `too_many_arguments` lint.
@@ -172,9 +102,9 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
 }
 
 /// Render one Kanban column: a rounded bordered box containing a per-column
-/// colored header, a dashed rule, then the tickets as filled bars (the selected
-/// one as a thick-bordered box). The focused column's box border uses the column
-/// accent; unfocused columns use the muted border color.
+/// colored header, a dashed rule, then the tickets as vertically stacked cards.
+/// The focused column's box border uses the column accent; unfocused columns use
+/// the muted border color.
 fn render_column(
     frame: &mut Frame,
     theme: &Theme,
@@ -230,52 +160,107 @@ fn render_column(
         return;
     }
 
-    let selected = if params.focused {
-        Some(params.selected_row)
+    let visible = visible_cards(body.height);
+    let offset = if params.focused {
+        first_visible(params.selected_row, visible, tickets.len())
     } else {
-        None
+        0
     };
-    for placement in card_layout(tickets.len(), selected, body.height) {
+
+    let slot = CARD_HEIGHT + CARD_GAP;
+    let bottom = body.y + body.height;
+    for (i, ticket) in tickets.iter().enumerate().skip(offset) {
+        let y = body.y + (i - offset) as u16 * slot;
+        if y >= bottom {
+            break;
+        }
+        let height = CARD_HEIGHT.min(bottom - y);
         let card = Rect {
             x: body.x,
-            y: body.y + placement.y,
+            y,
             width: body.width,
-            height: placement.height,
+            height,
         };
-        let ticket = tickets[placement.index];
-        let is_selected = selected == Some(placement.index);
+        let selected = params.focused && i == params.selected_row;
         let level = levels.get(&ticket.id).copied();
-        render_card(frame, theme, card, ticket, is_selected, level);
+        render_card(frame, theme, card, ticket, selected, level);
     }
 }
 
-/// Truncate `s` to at most `max` characters, appending `…` when shortened.
-fn truncate(s: &str, max: usize) -> String {
-    let len = s.chars().count();
-    if len <= max {
-        return s.to_string();
+/// How many whole cards fit in a column of the given inner height.
+fn visible_cards(inner_height: u16) -> usize {
+    if inner_height < CARD_HEIGHT {
+        return 1; // show one (clipped) card rather than nothing
     }
-    match max {
-        0 => String::new(),
-        1 => "…".to_string(),
-        _ => {
-            let mut out: String = s.chars().take(max - 1).collect();
-            out.push('…');
-            out
-        }
+    let slot = CARD_HEIGHT + CARD_GAP;
+    // n cards need n*CARD_HEIGHT + (n-1)*CARD_GAP <= inner_height, i.e.
+    // n <= (inner_height + CARD_GAP) / slot.
+    ((inner_height + CARD_GAP) / slot) as usize
+}
+
+/// Index of the first card to draw so that `selected` stays on screen, given
+/// that `visible` cards fit at once. Anchors the selection to the bottom of the
+/// view once it scrolls past the first page.
+fn first_visible(selected: usize, visible: usize, total: usize) -> usize {
+    if visible == 0 || total == 0 {
+        return 0;
+    }
+    if selected < visible {
+        0
+    } else {
+        // Keep selected as the last visible card.
+        (selected + 1 - visible).min(total.saturating_sub(visible))
     }
 }
 
-/// The content line for a ticket: `<pip> #<id> <title>`, with the title
-/// truncated to `title_max` characters. The pip uses `bullet_color`; the id
-/// keeps the column status accent; the title uses `theme.text`.
-fn card_line(
+/// Render a single ticket as a rounded card with a colored left accent strip.
+/// The selected card gets an accent border and a `surface` fill.
+fn render_card(
+    frame: &mut Frame,
     theme: &Theme,
+    area: Rect,
     ticket: &Ticket,
+    selected: bool,
     level: Option<SignalLevel>,
-    title_max: usize,
-) -> Line<'static> {
+) {
     let accent = theme.status_color(ticket.status);
+
+    // 1-cell accent strip on the far left; the rounded box fills the rest.
+    let strip = Rect {
+        x: area.x,
+        y: area.y,
+        width: 1,
+        height: area.height,
+    };
+    let box_area = Rect {
+        x: area.x + 1,
+        y: area.y,
+        width: area.width.saturating_sub(1),
+        height: area.height,
+    };
+    frame.render_widget(Block::default().style(Style::new().bg(accent)), strip);
+
+    let (border_color, fill, base_text) = if selected {
+        (
+            accent,
+            Some(theme.surface),
+            Style::new()
+                .fg(theme.text)
+                .bg(theme.surface)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (theme.border, None, Style::new().fg(theme.muted))
+    };
+
+    let mut block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(border_color))
+        .padding(Padding::horizontal(1));
+    if let Some(bg) = fill {
+        block = block.style(Style::new().bg(bg));
+    }
+
     let marker = if ticket.session_name.is_some() {
         "●"
     } else {
@@ -285,61 +270,17 @@ fn card_line(
         Some(c) => Span::styled(marker, Style::new().fg(c)),
         None => Span::raw(marker),
     };
-    Line::from(vec![
+
+    // The id deliberately keeps the column's status accent even on unselected
+    // (otherwise muted) cards, acting as a small per-column color swatch.
+    let line = Line::from(vec![
         marker_span,
         Span::styled(format!(" #{} ", ticket.id), Style::new().fg(accent)),
-        Span::styled(
-            truncate(&ticket.title, title_max),
-            Style::new().fg(theme.text),
-        ),
+        Span::styled(ticket.title.clone(), Style::new().fg(theme.text)),
     ])
-}
+    .style(base_text);
 
-/// Render a single ticket. Unselected tickets are single-line `surface`-filled
-/// bars; the selected ticket is a thick box bordered in the column accent.
-fn render_card(
-    frame: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    ticket: &Ticket,
-    selected: bool,
-    level: Option<SignalLevel>,
-) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-    let accent = theme.status_color(ticket.status);
-    // `<pip>` (1) + ` #<id> ` then the title.
-    let id_len = format!(" #{} ", ticket.id).chars().count();
-
-    if selected {
-        // Thick accent-bordered box: border (2) + horizontal padding (2) = 4.
-        let title_max = (area.width as usize).saturating_sub(4 + 1 + id_len);
-        let line = card_line(theme, ticket, level, title_max).style(
-            Style::new()
-                .fg(theme.text)
-                .bg(theme.surface)
-                .add_modifier(Modifier::BOLD),
-        );
-        let block = Block::bordered()
-            .border_type(BorderType::Thick)
-            .border_style(Style::new().fg(accent))
-            .style(Style::new().bg(theme.surface))
-            .padding(Padding::horizontal(1));
-        frame.render_widget(Paragraph::new(line).block(block), area);
-    } else {
-        // Single-row filled bar with a 1-cell inset on each side.
-        frame.render_widget(Block::default().style(Style::new().bg(theme.surface)), area);
-        let bar = Rect {
-            x: area.x + 1,
-            y: area.y,
-            width: area.width.saturating_sub(2),
-            height: 1,
-        };
-        let title_max = (bar.width as usize).saturating_sub(1 + id_len);
-        let line = card_line(theme, ticket, level, title_max).style(Style::new().bg(theme.surface));
-        frame.render_widget(Paragraph::new(line), bar);
-    }
+    frame.render_widget(Paragraph::new(line).block(block), box_area);
 }
 
 #[cfg(test)]
@@ -453,22 +394,24 @@ mod tests {
     }
 
     #[test]
-    fn renders_board_with_column_boxes_and_a_selected_card() {
+    fn renders_tickets_as_rounded_cards() {
         // Default selection is column 0, row 0 -> the only ticket is selected.
+        // Render wide enough that the title fits inside the boxed column's card.
         let app = app_with_theme(vec![ticket(1, Status::Todo)], "catppuccin");
-        let buf = render(&app, &HashMap::new(), 80, 20);
+        let buf = render(&app, &HashMap::new(), 120, 20);
         let text = buffer_text(&buf);
         assert!(text.contains("#1"), "expected ticket id in:\n{text}");
         assert!(text.contains("title1"), "expected title in:\n{text}");
-        // Columns are rounded boxes.
+        // Cards (and column boxes) use rounded corners.
         assert!(
             text.contains('╭') && text.contains('╰'),
-            "expected rounded column-box corners in:\n{text}"
+            "expected rounded corners in:\n{text}"
         );
-        // The selected ticket is a thick-bordered box.
+        // The selected card is highlighted in place, not expanded into a thick
+        // (larger) box.
         assert!(
-            text.contains('┏') && text.contains('┗'),
-            "expected thick selected-card corners in:\n{text}"
+            !text.contains('┏') && !text.contains('┗'),
+            "selected card must not be a thick box in:\n{text}"
         );
     }
 
@@ -575,59 +518,23 @@ mod tests {
     }
 
     #[test]
-    fn card_layout_handles_degenerate_inputs() {
-        assert!(card_layout(0, None, 10).is_empty());
-        assert!(card_layout(5, Some(0), 0).is_empty());
+    fn visible_cards_counts_whole_cards() {
+        assert_eq!(visible_cards(0), 1); // clipped single card
+        assert_eq!(visible_cards(CARD_HEIGHT), 1);
+        assert_eq!(visible_cards(CARD_HEIGHT + CARD_GAP + CARD_HEIGHT), 2);
     }
 
     #[test]
-    fn card_layout_uniform_bars_when_no_selection() {
-        // body 6 rows, all 1-row bars with a 1-row gap => slots at y 0,2,4.
-        let placed = card_layout(5, None, 6);
-        let got: Vec<(usize, u16, u16)> = placed.iter().map(|p| (p.index, p.y, p.height)).collect();
-        assert_eq!(got, vec![(0, 0, 1), (1, 2, 1), (2, 4, 1)]);
-    }
-
-    #[test]
-    fn card_layout_first_page_includes_tall_selected() {
-        // selected #0 is 3 rows; rest are 1-row bars; body 10 rows.
-        let placed = card_layout(5, Some(0), 10);
-        let got: Vec<(usize, u16, u16)> = placed.iter().map(|p| (p.index, p.y, p.height)).collect();
-        assert_eq!(got, vec![(0, 0, 3), (1, 4, 1), (2, 6, 1), (3, 8, 1)]);
-    }
-
-    #[test]
-    fn card_layout_scrolls_to_keep_tall_selected_visible() {
-        // 10 cards, selected last (#9, 3 rows tall), body only 6 rows.
-        let placed = card_layout(10, Some(9), 6);
-        let got: Vec<(usize, u16, u16)> = placed.iter().map(|p| (p.index, p.y, p.height)).collect();
-        assert_eq!(got, vec![(8, 0, 1), (9, 2, 3)]);
-    }
-
-    #[test]
-    fn card_layout_clips_selected_when_body_too_short() {
-        // body shorter than the 3-row selected card: draw it clipped, not nothing.
-        let placed = card_layout(1, Some(0), 2);
-        let got: Vec<(usize, u16, u16)> = placed.iter().map(|p| (p.index, p.y, p.height)).collect();
-        assert_eq!(got, vec![(0, 0, 2)]);
-    }
-
-    #[test]
-    fn scroll_start_anchors_tall_selection_to_bottom() {
-        assert_eq!(scroll_start(10, Some(9), 6), 8);
-        assert_eq!(scroll_start(5, Some(2), 100), 0);
-        assert_eq!(scroll_start(5, None, 10), 0);
-        // Out-of-range selection is ignored.
-        assert_eq!(scroll_start(3, Some(5), 10), 0);
-    }
-
-    #[test]
-    fn truncate_appends_ellipsis_only_when_shortened() {
-        assert_eq!(truncate("hello", 10), "hello");
-        assert_eq!(truncate("hello", 5), "hello");
-        assert_eq!(truncate("hello", 4), "hel…");
-        assert_eq!(truncate("hello", 1), "…");
-        assert_eq!(truncate("hello", 0), "");
+    fn first_visible_keeps_selection_on_screen() {
+        // First page: no scrolling.
+        assert_eq!(first_visible(0, 3, 10), 0);
+        assert_eq!(first_visible(2, 3, 10), 0);
+        // Past the page: selection anchored to the last visible slot.
+        assert_eq!(first_visible(3, 3, 10), 1);
+        assert_eq!(first_visible(9, 3, 10), 7);
+        // Degenerate inputs.
+        assert_eq!(first_visible(0, 0, 10), 0);
+        assert_eq!(first_visible(0, 3, 0), 0);
     }
 
     #[test]
@@ -674,23 +581,26 @@ mod tests {
     }
 
     #[test]
-    fn unselected_ticket_is_a_filled_bar_without_a_border() {
+    fn unselected_ticket_is_an_outlined_card_with_accent_strip() {
         // Focus the (empty) In Progress column so the Todo ticket is unselected.
         let mut app = app_with_theme(vec![ticket(1, Status::Todo)], "catppuccin");
         app.selected_col = 1;
         let theme = crate::theme::Theme::by_name("catppuccin");
         let buf = render(&app, &HashMap::new(), 80, 20);
-        // The bar fills its line with the surface color...
+        // The card has a left accent strip painted in the column color...
+        let has_accent_strip = (0..buf.area.height)
+            .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].bg == theme.todo));
+        assert!(
+            has_accent_strip,
+            "unselected card should have a column-accent left strip"
+        );
+        // ...and is NOT filled (only the selected card gets a surface fill; none
+        // is selected here).
         let has_surface = (0..buf.area.height)
             .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].bg == theme.surface));
         assert!(
-            has_surface,
-            "unselected ticket should be a surface-filled bar"
-        );
-        // ...and there is no thick selected-card border anywhere.
-        assert!(
-            !buffer_text(&buf).contains('┏'),
-            "an unselected ticket must not draw a thick border"
+            !has_surface,
+            "an unselected card must not be filled with theme.surface"
         );
     }
 }
