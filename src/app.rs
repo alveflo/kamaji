@@ -242,6 +242,36 @@ impl App {
         }
         self.clamp_row();
     }
+
+    /// Begin editing the search query (keeps any existing query so `/` re-edits).
+    pub fn search_start(&mut self) {
+        self.search.editing = true;
+    }
+
+    /// Append a character to the query and re-clamp the cursor to the now-
+    /// filtered column.
+    pub fn search_push(&mut self, c: char) {
+        self.search.query.push(c);
+        self.clamp_row();
+    }
+
+    /// Delete the last query character and re-clamp the cursor.
+    pub fn search_backspace(&mut self) {
+        self.search.query.pop();
+        self.clamp_row();
+    }
+
+    /// Commit the current filter: stop editing but keep the query applied.
+    pub fn search_commit(&mut self) {
+        self.search.editing = false;
+    }
+
+    /// Clear the filter entirely and exit editing.
+    pub fn search_clear(&mut self) {
+        self.search.query.clear();
+        self.search.editing = false;
+        self.clamp_row();
+    }
 }
 
 #[cfg(test)]
@@ -342,6 +372,37 @@ mod tests {
             assert_ne!(f.field, FormField::Background);
             f.next_field();
         }
+    }
+
+    #[test]
+    fn narrowing_search_reclamps_selected_row() {
+        let mut t1 = ticket(1, Status::Todo);
+        t1.title = "alpha".into();
+        let mut t2 = ticket(2, Status::Todo);
+        t2.title = "alpine".into();
+        let mut t3 = ticket(3, Status::Todo);
+        t3.title = "beta".into();
+        let mut app = App::new(project(), vec![t1, t2, t3]);
+        app.selected_row = 2; // "beta"
+
+        app.search_start();
+        assert!(app.search.editing);
+        for c in "alp".chars() {
+            app.search_push(c);
+        }
+        // Only alpha + alpine remain (2 cards); the cursor must clamp into range.
+        assert_eq!(app.column_tickets(Status::Todo).len(), 2);
+        assert!(app.selected_row <= 1, "row clamped into the filtered range");
+        assert!(app.selected_ticket().is_some());
+
+        // Backspace re-widens the filter and stays valid.
+        app.search_backspace();
+        assert_eq!(app.search.query, "al");
+
+        // Esc clears the query and exits editing.
+        app.search_clear();
+        assert!(app.search.is_empty());
+        assert!(!app.search.editing);
     }
 
     #[test]
