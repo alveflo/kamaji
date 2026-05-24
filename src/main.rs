@@ -10,6 +10,7 @@ mod layout;
 mod models;
 mod picker;
 mod slug;
+mod theme;
 mod ui;
 mod zellij;
 mod zellij_config;
