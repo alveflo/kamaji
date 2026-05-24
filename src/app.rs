@@ -1,4 +1,5 @@
 use crate::models::{Agent, Project, Status, Ticket};
+use crate::theme::Theme;
 
 /// Board search/filter state. An empty query means no filter is applied.
 #[derive(Debug, Clone, Default)]
@@ -152,6 +153,9 @@ pub enum Modal {
     ConfirmDone { ticket_id: i64 },
     ConfirmDelete { ticket_id: i64 },
     Help,
+    /// Theme picker: live-previews `Theme::ALL[selected]`; `original` is the
+    /// index to restore on cancel.
+    ThemePicker { selected: usize, original: usize },
 }
 
 pub struct App {
@@ -163,6 +167,7 @@ pub struct App {
     pub status_message: Option<String>,
     pub search: Search,
     pub should_quit: bool,
+    pub theme: Theme,
 }
 
 impl App {
@@ -176,6 +181,7 @@ impl App {
             status_message: None,
             search: Search::default(),
             should_quit: false,
+            theme: Theme::default(),
         }
     }
 
@@ -362,6 +368,12 @@ mod tests {
         assert!(!f.start_in_background);
         f.toggle_background();
         assert!(f.start_in_background);
+    }
+
+    #[test]
+    fn app_has_a_default_theme() {
+        let app = App::new(project(), vec![]);
+        assert_eq!(app.theme.name, "catppuccin");
     }
 
     #[test]
