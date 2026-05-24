@@ -1,4 +1,5 @@
 use crate::models::{Agent, Project, Status, Ticket};
+use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormField {
@@ -133,6 +134,7 @@ pub struct App {
     pub modal: Modal,
     pub status_message: Option<String>,
     pub should_quit: bool,
+    pub theme: Theme,
 }
 
 impl App {
@@ -145,6 +147,7 @@ impl App {
             modal: Modal::None,
             status_message: None,
             should_quit: false,
+            theme: Theme::by_name("catppuccin"),
         }
     }
 
@@ -292,6 +295,12 @@ mod tests {
         assert!(!f.start_in_background);
         f.toggle_background();
         assert!(f.start_in_background);
+    }
+
+    #[test]
+    fn app_has_a_default_theme() {
+        let app = App::new(project(), vec![]);
+        assert_eq!(app.theme.name, "catppuccin");
     }
 
     #[test]

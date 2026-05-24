@@ -66,7 +66,8 @@ fn run(terminal: &mut DefaultTerminal, mut db: Db, mut config: config::Config) -
         };
 
         let tickets = db.list_tickets(project.id)?;
-        let app = App::new(project, tickets);
+        let mut app = App::new(project, tickets);
+        app.theme = crate::theme::Theme::by_name(&config.theme);
         let mut engine = Engine::new(db, config, app);
         // Drop any recorded sessions that no longer exist in zellij.
         engine.reconcile()?;
