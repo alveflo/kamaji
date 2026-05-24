@@ -35,25 +35,44 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
 
     let columns = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(board_area);
 
+    let filtering = !app.search.is_empty();
     for (col_idx, status) in Status::all().into_iter().enumerate() {
         let tickets = app.column_tickets(status);
+        let total = app.column_total(status);
         let focused = col_idx == app.selected_col;
         render_column(
             frame,
             columns[col_idx],
             status,
             &tickets,
+            total,
+            filtering,
             focused,
             app.selected_row,
             levels,
         );
     }
 
-    let hints = " [↵]attach [e]dit [c]reate [m]ove [d]elete [p]roject [?]help [q]uit";
+    let hints =
+        " [↵]attach [e]dit [c]reate [m]ove [d]elete [/]search [p]roject [?]help [q]uit";
     let left = format!(" project: {} ", app.project.name);
+    let search_span = if app.search.editing {
+        Span::styled(
+            format!("search: {}_ ", app.search.query),
+            Style::new().fg(Color::Cyan),
+        )
+    } else if !app.search.is_empty() {
+        Span::styled(
+            format!("filter: {} — Esc to clear ", app.search.query),
+            Style::new().fg(Color::Cyan),
+        )
+    } else {
+        Span::raw("")
+    };
     let msg = app.status_message.clone().unwrap_or_default();
     let status_line = Paragraph::new(Line::from(vec![
         Span::styled(left, Style::new().fg(Color::Yellow)),
+        search_span,
         Span::styled(msg, Style::new().fg(Color::Red)),
         Span::raw(hints),
     ]));
@@ -67,6 +86,8 @@ fn render_column(
     area: Rect,
     status: Status,
     tickets: &[&Ticket],
+    total: usize,
+    filtering: bool,
     focused: bool,
     selected_row: usize,
     levels: &HashMap<i64, SignalLevel>,
@@ -77,11 +98,14 @@ fn render_column(
         Style::new().fg(Color::DarkGray)
     };
 
-    let block = Block::bordered().border_style(border_style).title(format!(
-        " {} ({}) ",
-        status.title(),
-        tickets.len()
-    ));
+    let count = if filtering {
+        format!("{}/{}", tickets.len(), total)
+    } else {
+        total.to_string()
+    };
+    let block = Block::bordered()
+        .border_style(border_style)
+        .title(format!(" {} ({}) ", status.title(), count));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -397,5 +421,39 @@ mod tests {
             text.contains("#20"),
             "selected card should be visible:\n{text}"
         );
+    }
+
+    #[test]
+    fn column_title_shows_matches_over_total_when_filtering() {
+        let mut app = App::new(project(), vec![ticket(1, Status::Todo), ticket(2, Status::Todo)]);
+        // ticket() titles are "title1" / "title2"; "title1" matches only the first.
+        app.search.query = "title1".into();
+        let buf = render(&app, &HashMap::new(), 80, 20);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("Todo (1/2)"),
+            "expected matches/total count in title:\n{text}"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_search_prompt_while_editing() {
+        let mut app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        app.search.editing = true;
+        app.search.query = "lo".into();
+        let buf = render(&app, &HashMap::new(), 80, 20);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("search: lo"),
+            "expected the search prompt in the status bar:\n{text}"
+        );
+    }
+
+    #[test]
+    fn status_bar_lists_the_search_hint() {
+        let app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        let buf = render(&app, &HashMap::new(), 120, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("[/]search"), "search hint present:\n{text}");
     }
 }
