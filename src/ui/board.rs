@@ -213,8 +213,8 @@ fn first_visible(selected: usize, visible: usize, total: usize) -> usize {
     }
 }
 
-/// Render a single ticket as a rounded card with a colored left accent strip.
-/// The selected card gets an accent border and a `surface` fill.
+/// Render a single ticket as a rounded card. The selected card gets an accent
+/// border and a `surface` fill.
 fn render_card(
     frame: &mut Frame,
     theme: &Theme,
@@ -224,21 +224,6 @@ fn render_card(
     level: Option<SignalLevel>,
 ) {
     let accent = theme.status_color(ticket.status);
-
-    // 1-cell accent strip on the far left; the rounded box fills the rest.
-    let strip = Rect {
-        x: area.x,
-        y: area.y,
-        width: 1,
-        height: area.height,
-    };
-    let box_area = Rect {
-        x: area.x + 1,
-        y: area.y,
-        width: area.width.saturating_sub(1),
-        height: area.height,
-    };
-    frame.render_widget(Block::default().style(Style::new().bg(accent)), strip);
 
     let (border_color, fill, base_text) = if selected {
         (
@@ -280,7 +265,7 @@ fn render_card(
     ])
     .style(base_text);
 
-    frame.render_widget(Paragraph::new(line).block(block), box_area);
+    frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
 #[cfg(test)]
@@ -581,21 +566,21 @@ mod tests {
     }
 
     #[test]
-    fn unselected_ticket_is_an_outlined_card_with_accent_strip() {
+    fn unselected_ticket_is_an_outlined_card_without_fill() {
         // Focus the (empty) In Progress column so the Todo ticket is unselected.
         let mut app = app_with_theme(vec![ticket(1, Status::Todo)], "catppuccin");
         app.selected_col = 1;
         let theme = crate::theme::Theme::by_name("catppuccin");
         let buf = render(&app, &HashMap::new(), 80, 20);
-        // The card has a left accent strip painted in the column color...
-        let has_accent_strip = (0..buf.area.height)
-            .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].bg == theme.todo));
+        let text = buffer_text(&buf);
+        // The ticket renders inside its own bordered card, in addition to the
+        // four column boxes (so at least five rounded top-left corners).
         assert!(
-            has_accent_strip,
-            "unselected card should have a column-accent left strip"
+            text.matches('╭').count() >= 5,
+            "expected a bordered ticket card beyond the column boxes:\n{text}"
         );
-        // ...and is NOT filled (only the selected card gets a surface fill; none
-        // is selected here).
+        // An unselected card is not filled (only the selected card gets a surface
+        // fill; none is selected here).
         let has_surface = (0..buf.area.height)
             .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].bg == theme.surface));
         assert!(
