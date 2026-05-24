@@ -30,6 +30,10 @@ fn default_zellij_bar() -> String {
     "auto".to_string()
 }
 
+fn default_theme() -> String {
+    "catppuccin".to_string()
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScrapePatterns {
     #[serde(default)]
@@ -68,6 +72,11 @@ pub struct Config {
     /// and tolerates older configs that omit the key.
     #[serde(default = "default_zellij_bar")]
     pub zellij_bar: String,
+    /// Active colorscheme name. One of the built-in theme keys (see
+    /// `crate::theme::Theme::ALL`), e.g. "catppuccin" or "default". Tolerates
+    /// older configs that omit the key.
+    #[serde(default = "default_theme")]
+    pub theme: String,
     pub agents: Agents,
     #[serde(default)]
     pub auto_review: AutoReview,
@@ -84,6 +93,7 @@ impl Default for Config {
             worktree_base: "{root}/../kamaji-worktrees".to_string(),
             base_branch: "auto".to_string(),
             zellij_bar: default_zellij_bar(),
+            theme: default_theme(),
             agents: Agents {
                 claude: cmd("claude"),
                 codex: cmd("codex"),
@@ -233,6 +243,28 @@ mod tests {
         assert_eq!(c.auto_review_patterns(Agent::Codex), &["▌".to_string()]);
         assert!(c.auto_review_patterns(Agent::Claude).is_empty());
         assert!(c.auto_review_patterns(Agent::Copilot).is_empty());
+    }
+
+    #[test]
+    fn missing_theme_defaults_to_catppuccin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Write a config that predates the theme key by stripping it out.
+        let text = toml::to_string_pretty(&Config::default())
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("theme"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("theme"));
+        fs::write(&path, text).unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(loaded.theme, "catppuccin");
+    }
+
+    #[test]
+    fn default_config_theme_is_catppuccin() {
+        assert_eq!(Config::default().theme, "catppuccin");
     }
 
     #[test]
