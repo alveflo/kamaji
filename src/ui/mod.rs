@@ -34,6 +34,9 @@ pub fn render(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) 
             );
         }
         Modal::Help => modals::render_help(frame, &app.theme),
+        Modal::ThemePicker { selected, .. } => {
+            modals::render_theme_picker(frame, &app.theme, *selected)
+        }
     }
 }
 

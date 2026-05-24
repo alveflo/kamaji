@@ -188,6 +188,35 @@ pub fn render_confirm(frame: &mut Frame, theme: &Theme, title: &str, body: &str)
     );
 }
 
+pub fn render_theme_picker(frame: &mut Frame, theme: &Theme, selected: usize) {
+    let area = centered_rect(40, 50, frame.area());
+    frame.render_widget(Clear, area);
+    let block = themed_block(theme, " Theme ".to_string());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, make) in Theme::ALL.iter().enumerate() {
+        let label = make().label;
+        let marker = if i == selected { "▸ " } else { "  " };
+        let style = if i == selected {
+            Style::new()
+                .fg(theme.base.unwrap_or(Color::Black))
+                .bg(theme.accent())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme.text)
+        };
+        lines.push(Line::styled(format!("{marker}{label}"), style));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "↑/↓ preview · ↵ save · Esc cancel",
+        Style::new().fg(theme.muted),
+    ));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
 pub fn render_help(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(50, 60, frame.area());
     frame.render_widget(Clear, area);

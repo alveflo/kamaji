@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::app::{App, FormField, Modal, TicketForm};
+use crate::theme::Theme;
 use crate::config::Config;
 use crate::db::Db;
 use crate::detect::{self, SignalLevel};
@@ -52,6 +53,9 @@ pub struct Engine {
     pub scrape_hash: HashMap<i64, Option<u64>>,
     /// Where per-session idle markers live.
     pub state_dir: std::path::PathBuf,
+    /// Where the theme picker persists the chosen theme. Defaults to the real
+    /// config path; tests override it.
+    pub config_path: std::path::PathBuf,
 }
 
 impl Engine {
@@ -64,6 +68,7 @@ impl Engine {
             auto_review_ids: HashSet::new(),
             scrape_hash: HashMap::new(),
             state_dir: detect::default_state_dir(),
+            config_path: crate::config::config_path().unwrap_or_default(),
         }
     }
 
@@ -509,6 +514,37 @@ impl Engine {
                 _ => Ok(Effect::None),
             },
             Modal::Help => Ok(Effect::None), // any key closes
+            Modal::ThemePicker {
+                mut selected,
+                original,
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.app.theme = Theme::ALL[original]();
+                    Ok(Effect::None)
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = selected.saturating_sub(1);
+                    self.app.theme = Theme::ALL[selected]();
+                    self.app.modal = Modal::ThemePicker { selected, original };
+                    Ok(Effect::None)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = (selected + 1).min(Theme::ALL.len() - 1);
+                    self.app.theme = Theme::ALL[selected]();
+                    self.app.modal = Modal::ThemePicker { selected, original };
+                    Ok(Effect::None)
+                }
+                KeyCode::Enter => {
+                    self.config.theme = self.app.theme.name.to_string();
+                    crate::config::save_to(&self.config_path, &self.config)?;
+                    self.app.status_message = Some(format!("theme: {}", self.app.theme.label));
+                    Ok(Effect::None)
+                }
+                _ => {
+                    self.app.modal = Modal::ThemePicker { selected, original };
+                    Ok(Effect::None)
+                }
+            },
         }
     }
 
@@ -518,6 +554,13 @@ impl Engine {
             KeyCode::Char('q') => self.app.should_quit = true,
             KeyCode::Char('p') => return Ok(Effect::SwitchProject),
             KeyCode::Char('?') => self.app.modal = Modal::Help,
+            KeyCode::Char('t') => {
+                let idx = Theme::index_of(&self.config.theme);
+                self.app.modal = Modal::ThemePicker {
+                    selected: idx,
+                    original: idx,
+                };
+            }
             KeyCode::Left | KeyCode::Char('h') => self.app.left(),
             KeyCode::Right | KeyCode::Char('l') => self.app.right(),
             KeyCode::Up | KeyCode::Char('k') => self.app.up(),
@@ -1085,6 +1128,61 @@ mod tests {
         assert_eq!(e.app.tickets[0].status, Status::Todo);
         assert_eq!(e.app.tickets[0].session_name, None);
         assert!(e.app.status_message.is_some(), "an error toast is shown");
+    }
+
+    #[test]
+    fn t_opens_theme_picker_at_current_theme() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config.theme = "nord".to_string();
+        e.app.theme = crate::theme::Theme::by_name("nord");
+        e.on_key(key('t')).unwrap();
+        match e.app.modal {
+            Modal::ThemePicker { selected, original } => {
+                let idx = crate::theme::Theme::index_of("nord");
+                assert_eq!(selected, idx);
+                assert_eq!(original, idx);
+            }
+            ref other => panic!("expected ThemePicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picker_down_previews_next_theme() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.app.modal = Modal::ThemePicker { selected: 0, original: 0 };
+        e.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).unwrap();
+        assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[1]().name);
+        match e.app.modal {
+            Modal::ThemePicker { selected, .. } => assert_eq!(selected, 1),
+            ref other => panic!("expected ThemePicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn picker_enter_persists_theme_to_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config_path = dir.path().join("config.toml");
+        let nord = crate::theme::Theme::index_of("nord");
+        e.app.modal = Modal::ThemePicker { selected: nord, original: 0 };
+        e.app.theme = crate::theme::Theme::ALL[nord]();
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+        assert!(matches!(e.app.modal, Modal::None));
+        assert_eq!(e.config.theme, "nord");
+        let saved = crate::config::load_from(&e.config_path).unwrap();
+        assert_eq!(saved.theme, "nord");
+    }
+
+    #[test]
+    fn picker_esc_reverts_to_original_theme() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.app.theme = crate::theme::Theme::ALL[0]();
+        let nord = crate::theme::Theme::index_of("nord");
+        e.app.modal = Modal::ThemePicker { selected: nord, original: 0 };
+        e.app.theme = crate::theme::Theme::ALL[nord]();
+        e.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
+        assert!(matches!(e.app.modal, Modal::None));
+        assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[0]().name);
     }
 
     #[test]
