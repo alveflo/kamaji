@@ -16,6 +16,82 @@ const CARD_HEIGHT: u16 = 3;
 /// Blank line between stacked cards.
 const CARD_GAP: u16 = 1;
 
+/// A selected card expands into a thick-bordered box (border lines + content).
+const SELECTED_HEIGHT: u16 = 3;
+/// An unselected card is a single filled bar.
+const BAR_HEIGHT: u16 = 1;
+
+/// Where one card sits within a column body: its index in the ticket slice, its
+/// `y` offset from the top of the body, and its drawn height in rows.
+#[allow(dead_code)] // wired into render_column in the rendering rewrite
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CardPlacement {
+    index: usize,
+    y: u16,
+    height: u16,
+}
+
+/// Drawn height of card `index`: the selected card is a 3-row box, others are
+/// 1-row bars.
+#[allow(dead_code)]
+fn card_height(index: usize, selected: Option<usize>) -> u16 {
+    if selected == Some(index) {
+        SELECTED_HEIGHT
+    } else {
+        BAR_HEIGHT
+    }
+}
+
+/// First card index to draw so the selected (taller) card stays fully visible,
+/// anchoring it to the bottom of the view once it scrolls past the first page.
+#[allow(dead_code)]
+fn scroll_start(count: usize, selected: Option<usize>, body_height: u16) -> usize {
+    let sel = match selected {
+        Some(s) if s < count => s,
+        _ => return 0,
+    };
+    // Rows needed to render cards [start..=sel] contiguously, including gaps.
+    let span = |start: usize| -> u16 {
+        let mut rows = 0u16;
+        for i in start..=sel {
+            rows = rows.saturating_add(card_height(i, selected));
+            if i < sel {
+                rows = rows.saturating_add(CARD_GAP);
+            }
+        }
+        rows
+    };
+    let mut start = 0;
+    while start < sel && span(start) > body_height {
+        start += 1;
+    }
+    start
+}
+
+/// Lay out variable-height cards within a `body_height`-row column body. The
+/// selected card is 3 rows; every other card is 1 row; cards are separated by a
+/// 1-row gap. Returns only the cards that fit (scrolled to keep the selection
+/// visible); a card that does not fully fit is clipped rather than dropped.
+#[allow(dead_code)]
+fn card_layout(count: usize, selected: Option<usize>, body_height: u16) -> Vec<CardPlacement> {
+    if count == 0 || body_height == 0 {
+        return Vec::new();
+    }
+    let start = scroll_start(count, selected, body_height);
+    let mut placements = Vec::new();
+    let mut y = 0u16;
+    for index in start..count {
+        if y >= body_height {
+            break;
+        }
+        let full = card_height(index, selected);
+        let height = full.min(body_height - y);
+        placements.push(CardPlacement { index, y, height });
+        y += full + CARD_GAP;
+    }
+    placements
+}
+
 /// Per-column display parameters passed to `render_column`. Bundling them
 /// avoids the `too_many_arguments` lint.
 struct ColumnParams {
@@ -62,7 +138,15 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
             focused: col_idx == app.selected_col,
             selected_row: app.selected_row,
         };
-        render_column(frame, theme, columns[col_idx], status, &tickets, params, levels);
+        render_column(
+            frame,
+            theme,
+            columns[col_idx],
+            status,
+            &tickets,
+            params,
+            levels,
+        );
     }
 
     let hints =
@@ -222,7 +306,10 @@ fn render_card(
         (
             accent,
             Some(theme.surface),
-            Style::new().fg(theme.text).bg(theme.surface).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(theme.text)
+                .bg(theme.surface)
+                .add_modifier(Modifier::BOLD),
         )
     } else {
         (theme.border, None, Style::new().fg(theme.muted))
@@ -286,10 +373,19 @@ mod tests {
             bullet_color(&t, Status::InProgress, Some(SignalLevel::Active)),
             Some(t.active)
         );
-        assert_eq!(bullet_color(&t, Status::InProgress, Some(SignalLevel::Idle)), None);
-        assert_eq!(bullet_color(&t, Status::InProgress, Some(SignalLevel::Unknown)), None);
+        assert_eq!(
+            bullet_color(&t, Status::InProgress, Some(SignalLevel::Idle)),
+            None
+        );
+        assert_eq!(
+            bullet_color(&t, Status::InProgress, Some(SignalLevel::Unknown)),
+            None
+        );
         assert_eq!(bullet_color(&t, Status::InProgress, None), None);
-        assert_eq!(bullet_color(&t, Status::Todo, Some(SignalLevel::Active)), None);
+        assert_eq!(
+            bullet_color(&t, Status::Todo, Some(SignalLevel::Active)),
+            None
+        );
         assert_eq!(bullet_color(&t, Status::Done, None), None);
     }
 
@@ -400,7 +496,10 @@ mod tests {
         let buf = render(&app, &HashMap::new(), 80, 20);
         let has_surface = (0..buf.area.height)
             .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].bg == theme.surface));
-        assert!(has_surface, "selected card should be filled with theme.surface");
+        assert!(
+            has_surface,
+            "selected card should be filled with theme.surface"
+        );
     }
 
     /// A ticket with a recorded session in the given column.
@@ -448,7 +547,10 @@ mod tests {
         app.selected_row = 19;
         let buf = render(&app, &HashMap::new(), 80, 12);
         let text = buffer_text(&buf);
-        assert!(text.contains("#20"), "selected card should be visible:\n{text}");
+        assert!(
+            text.contains("#20"),
+            "selected card should be visible:\n{text}"
+        );
     }
 
     #[test]
@@ -487,5 +589,52 @@ mod tests {
         let buf = render(&app, &HashMap::new(), 120, 20);
         let text = buffer_text(&buf);
         assert!(text.contains("[/]search"), "search hint present:\n{text}");
+    }
+
+    #[test]
+    fn card_layout_handles_degenerate_inputs() {
+        assert!(card_layout(0, None, 10).is_empty());
+        assert!(card_layout(5, Some(0), 0).is_empty());
+    }
+
+    #[test]
+    fn card_layout_uniform_bars_when_no_selection() {
+        // body 6 rows, all 1-row bars with a 1-row gap => slots at y 0,2,4.
+        let placed = card_layout(5, None, 6);
+        let got: Vec<(usize, u16, u16)> = placed.iter().map(|p| (p.index, p.y, p.height)).collect();
+        assert_eq!(got, vec![(0, 0, 1), (1, 2, 1), (2, 4, 1)]);
+    }
+
+    #[test]
+    fn card_layout_first_page_includes_tall_selected() {
+        // selected #0 is 3 rows; rest are 1-row bars; body 10 rows.
+        let placed = card_layout(5, Some(0), 10);
+        let got: Vec<(usize, u16, u16)> = placed.iter().map(|p| (p.index, p.y, p.height)).collect();
+        assert_eq!(got, vec![(0, 0, 3), (1, 4, 1), (2, 6, 1), (3, 8, 1)]);
+    }
+
+    #[test]
+    fn card_layout_scrolls_to_keep_tall_selected_visible() {
+        // 10 cards, selected last (#9, 3 rows tall), body only 6 rows.
+        let placed = card_layout(10, Some(9), 6);
+        let got: Vec<(usize, u16, u16)> = placed.iter().map(|p| (p.index, p.y, p.height)).collect();
+        assert_eq!(got, vec![(8, 0, 1), (9, 2, 3)]);
+    }
+
+    #[test]
+    fn card_layout_clips_selected_when_body_too_short() {
+        // body shorter than the 3-row selected card: draw it clipped, not nothing.
+        let placed = card_layout(1, Some(0), 2);
+        let got: Vec<(usize, u16, u16)> = placed.iter().map(|p| (p.index, p.y, p.height)).collect();
+        assert_eq!(got, vec![(0, 0, 2)]);
+    }
+
+    #[test]
+    fn scroll_start_anchors_tall_selection_to_bottom() {
+        assert_eq!(scroll_start(10, Some(9), 6), 8);
+        assert_eq!(scroll_start(5, Some(2), 100), 0);
+        assert_eq!(scroll_start(5, None, 10), 0);
+        // Out-of-range selection is ignored.
+        assert_eq!(scroll_start(3, Some(5), 10), 0);
     }
 }
