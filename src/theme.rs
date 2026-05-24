@@ -74,6 +74,13 @@ impl Theme {
     }
 }
 
+impl Default for Theme {
+    /// The out-of-box default theme (Catppuccin).
+    fn default() -> Self {
+        Theme::by_name(DEFAULT_THEME)
+    }
+}
+
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)
 }

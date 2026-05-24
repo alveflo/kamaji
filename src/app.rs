@@ -147,7 +147,7 @@ impl App {
             modal: Modal::None,
             status_message: None,
             should_quit: false,
-            theme: Theme::by_name("catppuccin"),
+            theme: Theme::default(),
         }
     }
 
