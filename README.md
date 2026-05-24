@@ -23,6 +23,8 @@ into it. Detach and the session keeps running in the background.
 - Supports Claude Code, Codex, and Copilot via configurable command templates
 - Optional per-ticket initial prompt seeds the agent on first launch
 - SQLite persistence; single global database
+- Built-in colorschemes — Catppuccin, Tokyo Night, Gruvbox, Nord, plus a
+  terminal-default mode — switchable live in-app with `t`
 
 ## Requirements
 
@@ -64,6 +66,7 @@ default_agent = "claude"
 worktree_base = "{root}/../kamaji-worktrees"
 base_branch = "auto"
 zellij_bar = "auto"
+theme = "catppuccin"
 
 [agents.claude]
 with_prompt = ["claude", "{prompt}"]
@@ -86,6 +89,7 @@ no_prompt = ["copilot"]
 | `worktree_base` | Where worktrees are created. `{root}` expands to the project's root directory. Default places them alongside (not inside) the main working tree. |
 | `base_branch` | Branch new ticket branches are created from. `auto` detects the repo's default branch (`origin/HEAD`), falling back to the current `HEAD`. |
 | `zellij_bar` | Bar style for spawned sessions. `auto` (default) matches your zellij `default_layout` (`compact` → compact bar, otherwise tab-bar + status-bar). Force a style with `compact`, `default`, or `none` (no bars). |
+| `theme` | Colorscheme: `catppuccin` (default), `tokyonight`, `gruvbox`, `nord`, or `default` (uses your terminal's own 16 colors). Switch live from the board with `t` (the choice is saved back here). Unknown names fall back to `catppuccin`. |
 | `agents.<name>.with_prompt` | Argv array used when the ticket has an initial prompt. `{prompt}` is replaced with the prompt text. |
 | `agents.<name>.no_prompt` | Argv array used when no initial prompt is set. |
 
@@ -180,6 +184,7 @@ prompt.
 | `a` | Attach to selected ticket's zellij session |
 | `o` / `Enter` | Open / edit selected ticket (title and description) |
 | `d` | Delete selected ticket (prompts for confirmation and optional cleanup) |
+| `t` | Switch theme (opens a picker; `↑`/`↓` preview live, `Enter` saves, `Esc` cancels) |
 | `p` | Switch project (returns to the project picker) |
 | `?` | Help overlay |
 | `q` | Quit |
