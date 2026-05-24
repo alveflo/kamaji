@@ -161,6 +161,7 @@ pub struct App {
     pub selected_row: usize,
     pub modal: Modal,
     pub status_message: Option<String>,
+    pub search: Search,
     pub should_quit: bool,
 }
 
@@ -173,6 +174,7 @@ impl App {
             selected_row: 0,
             modal: Modal::None,
             status_message: None,
+            search: Search::default(),
             should_quit: false,
         }
     }
@@ -182,7 +184,16 @@ impl App {
     }
 
     pub fn column_tickets(&self, status: Status) -> Vec<&Ticket> {
-        self.tickets.iter().filter(|t| t.status == status).collect()
+        self.tickets
+            .iter()
+            .filter(|t| t.status == status && self.search.matches(t))
+            .collect()
+    }
+
+    /// Count of all tickets in a column, ignoring the active search filter
+    /// (used to render the `matches/total` count in the column title).
+    pub fn column_total(&self, status: Status) -> usize {
+        self.tickets.iter().filter(|t| t.status == status).count()
     }
 
     pub fn selected_ticket(&self) -> Option<&Ticket> {
@@ -331,6 +342,26 @@ mod tests {
             assert_ne!(f.field, FormField::Background);
             f.next_field();
         }
+    }
+
+    #[test]
+    fn column_tickets_filters_by_search_and_total_ignores_it() {
+        let mut t1 = ticket(1, Status::Todo);
+        t1.title = "Add login".into();
+        let mut t2 = ticket(2, Status::Todo);
+        t2.title = "Fix logout bug".into();
+        let mut t3 = ticket(3, Status::Todo);
+        t3.title = "Update README".into();
+        let mut app = App::new(project(), vec![t1, t2, t3]);
+
+        app.search.query = "log".into();
+        let matches = app.column_tickets(Status::Todo);
+        assert_eq!(matches.len(), 2, "login + logout match 'log'");
+        assert_eq!(
+            app.column_total(Status::Todo),
+            3,
+            "the unfiltered total ignores the search query"
+        );
     }
 
     #[test]
