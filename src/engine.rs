@@ -1152,7 +1152,10 @@ mod tests {
         assert!(e.app.search.editing, "/ starts search editing");
         // 'q' is captured as query text, not treated as quit.
         e.on_key(key('q')).unwrap();
-        assert!(!e.app.should_quit, "q is typed into the query while editing");
+        assert!(
+            !e.app.should_quit,
+            "q is typed into the query while editing"
+        );
         assert_eq!(e.app.search.query, "q");
     }
 
@@ -1165,7 +1168,10 @@ mod tests {
         }
         e.on_key(enter()).unwrap();
         assert!(!e.app.search.editing, "Enter commits and stops editing");
-        assert_eq!(e.app.search.query, "log", "the filter persists after commit");
+        assert_eq!(
+            e.app.search.query, "log",
+            "the filter persists after commit"
+        );
     }
 
     #[test]
@@ -1186,7 +1192,10 @@ mod tests {
         e.on_key(enter()).unwrap();
         assert_eq!(e.app.search.query, "x");
         e.on_key(esc()).unwrap();
-        assert!(e.app.search.query.is_empty(), "Esc clears the applied filter");
+        assert!(
+            e.app.search.query.is_empty(),
+            "Esc clears the applied filter"
+        );
     }
 
     #[test]
@@ -1200,7 +1209,8 @@ mod tests {
             "the filter hides the in-progress card"
         );
         // Detection still sees the hidden ticket and auto-moves it on idle.
-        e.detect_tick_with(&levels(id, SignalLevel::Active)).unwrap();
+        e.detect_tick_with(&levels(id, SignalLevel::Active))
+            .unwrap();
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
         assert_eq!(
             e.db.get_ticket(id).unwrap().unwrap().status,
