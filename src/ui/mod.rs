@@ -15,19 +15,25 @@ pub fn render(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) 
     board::render_board(frame, app, levels);
     match &app.modal {
         Modal::None => {}
-        Modal::Form(form) => modals::render_form(frame, form),
-        Modal::Move { target, .. } => modals::render_move(frame, *target),
+        Modal::Form(form) => modals::render_form(frame, &app.theme, form),
+        Modal::Move { target, .. } => modals::render_move(frame, &app.theme, *target),
         Modal::ConfirmDone { .. } => {
             modals::render_confirm(
                 frame,
+                &app.theme,
                 "Move to Done",
                 "Clean up worktree + session? [y]es / [n]o / Esc",
             );
         }
         Modal::ConfirmDelete { .. } => {
-            modals::render_confirm(frame, "Delete ticket", "Delete and clean up? [y]es / Esc");
+            modals::render_confirm(
+                frame,
+                &app.theme,
+                "Delete ticket",
+                "Delete and clean up? [y]es / Esc",
+            );
         }
-        Modal::Help => modals::render_help(frame),
+        Modal::Help => modals::render_help(frame, &app.theme),
     }
 }
 

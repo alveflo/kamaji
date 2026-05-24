@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::db::Db;
 use crate::models::Project;
+use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectField {
@@ -72,15 +73,17 @@ struct PickerState {
     selected: usize,
     /// `Some` while the new-project modal is open.
     form: Option<ProjectForm>,
+    theme: Theme,
 }
 
 /// Run the project picker loop. Returns the chosen project, or None if the user
 /// quit without selecting.
-pub fn run(terminal: &mut DefaultTerminal, db: &Db) -> Result<Option<Project>> {
+pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Option<Project>> {
     let mut state = PickerState {
         projects: db.list_projects()?,
         selected: 0,
         form: None,
+        theme,
     };
 
     loop {
@@ -191,6 +194,7 @@ fn render(frame: &mut Frame, state: &PickerState) {
     if let Some(form) = &state.form {
         crate::ui::render_field_modal(
             frame,
+            &state.theme,
             "New project",
             &[
                 ("Name", &form.name, form.field == ProjectField::Name),
