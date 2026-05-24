@@ -2,6 +2,9 @@ use ratatui::style::Color;
 
 use crate::models::Status;
 
+/// The out-of-box default theme; also the fallback for unknown names.
+const DEFAULT_THEME: &str = "catppuccin";
+
 /// A complete colorscheme as a set of semantic roles. Every color the UI draws
 /// comes from one of these fields, so swapping a `Theme` re-skins the whole app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,9 +23,13 @@ pub struct Theme {
     pub muted: Color,
     /// Idle card + modal borders.
     pub border: Color,
+    /// Column header + card accent for the Todo column.
     pub todo: Color,
+    /// Column header + card accent for the In Progress column.
     pub in_progress: Color,
+    /// Column header + card accent for the Needs attention (Review) column.
     pub review: Color,
+    /// Column header + card accent for the Done column.
     pub done: Color,
     /// Green "agent actively working" bullet.
     pub active: Color,
@@ -54,12 +61,11 @@ impl Theme {
     pub const ALL: &'static [fn() -> Theme] =
         &[default_ansi, catppuccin, tokyo_night, gruvbox, nord];
 
-    /// Index of `name` in `ALL`, or the default's index (Catppuccin) if unknown.
+    /// Index of `name` in `ALL`, falling back to the default theme
+    /// (Catppuccin) — by name, not by position — if `name` is unknown.
     pub fn index_of(name: &str) -> usize {
-        Theme::ALL
-            .iter()
-            .position(|f| f().name == name)
-            .unwrap_or(1)
+        let find = |target: &str| Theme::ALL.iter().position(|f| f().name == target);
+        find(name).or_else(|| find(DEFAULT_THEME)).unwrap_or(0)
     }
 
     /// Look up a theme by name; unknown names fall back to Catppuccin.
@@ -78,6 +84,7 @@ pub fn default_ansi() -> Theme {
         name: "default",
         label: "Default (terminal)",
         base: None,
+        // Limited 16-color palette: surface/muted/border share DarkGray.
         surface: Color::DarkGray,
         text: Color::Gray,
         muted: Color::DarkGray,
@@ -111,6 +118,7 @@ pub fn catppuccin() -> Theme {
     }
 }
 
+// Config key "tokyonight" omits the underscore in the fn name.
 pub fn tokyo_night() -> Theme {
     Theme {
         name: "tokyonight",
