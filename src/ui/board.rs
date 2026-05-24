@@ -17,6 +17,19 @@ const CARD_GAP: u16 = 1;
 /// Bullet color for the "Needs attention" column (true orange; truecolor).
 const ORANGE: Color = Color::Rgb(255, 165, 0);
 
+/// Per-column display parameters passed to `render_column`. Bundling them
+/// avoids the `too_many_arguments` lint.
+struct ColumnParams {
+    /// Total tickets in the column, ignoring the active search filter.
+    total: usize,
+    /// `true` when a non-empty search query is active.
+    filtering: bool,
+    /// Whether this column is keyboard-focused.
+    focused: bool,
+    /// The currently selected card row (used only when `focused`).
+    selected_row: usize,
+}
+
 /// The fg color to apply to a ticket's bullet, or `None` to inherit the card's
 /// existing text style (the default appearance). Needs-attention tickets are
 /// always orange; an In Progress ticket whose agent is actively working is
@@ -38,23 +51,16 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
     let filtering = !app.search.is_empty();
     for (col_idx, status) in Status::all().into_iter().enumerate() {
         let tickets = app.column_tickets(status);
-        let total = app.column_total(status);
-        let focused = col_idx == app.selected_col;
-        render_column(
-            frame,
-            columns[col_idx],
-            status,
-            &tickets,
-            total,
+        let params = ColumnParams {
+            total: app.column_total(status),
             filtering,
-            focused,
-            app.selected_row,
-            levels,
-        );
+            focused: col_idx == app.selected_col,
+            selected_row: app.selected_row,
+        };
+        render_column(frame, columns[col_idx], status, &tickets, params, levels);
     }
 
-    let hints =
-        " [↵]attach [e]dit [c]reate [m]ove [d]elete [/]search [p]roject [?]help [q]uit";
+    let hints = " [↵]attach [e]dit [c]reate [m]ove [d]elete [/]search [p]roject [?]help [q]uit";
     let left = format!(" project: {} ", app.project.name);
     let search_span = if app.search.editing {
         Span::styled(
@@ -86,26 +92,25 @@ fn render_column(
     area: Rect,
     status: Status,
     tickets: &[&Ticket],
-    total: usize,
-    filtering: bool,
-    focused: bool,
-    selected_row: usize,
+    params: ColumnParams,
     levels: &HashMap<i64, SignalLevel>,
 ) {
-    let border_style = if focused {
+    let border_style = if params.focused {
         Style::new().fg(Color::Cyan)
     } else {
         Style::new().fg(Color::DarkGray)
     };
 
-    let count = if filtering {
-        format!("{}/{}", tickets.len(), total)
+    let count = if params.filtering {
+        format!("{}/{}", tickets.len(), params.total)
     } else {
-        total.to_string()
+        params.total.to_string()
     };
-    let block = Block::bordered()
-        .border_style(border_style)
-        .title(format!(" {} ({}) ", status.title(), count));
+    let block = Block::bordered().border_style(border_style).title(format!(
+        " {} ({}) ",
+        status.title(),
+        count
+    ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -114,8 +119,8 @@ fn render_column(
     }
 
     let visible = visible_cards(inner.height);
-    let offset = if focused {
-        first_visible(selected_row, visible, tickets.len())
+    let offset = if params.focused {
+        first_visible(params.selected_row, visible, tickets.len())
     } else {
         0
     };
@@ -135,7 +140,7 @@ fn render_column(
             width: inner.width,
             height,
         };
-        let selected = focused && i == selected_row;
+        let selected = params.focused && i == params.selected_row;
         let level = levels.get(&ticket.id).copied();
         render_card(frame, card, ticket, selected, level);
     }
@@ -425,7 +430,10 @@ mod tests {
 
     #[test]
     fn column_title_shows_matches_over_total_when_filtering() {
-        let mut app = App::new(project(), vec![ticket(1, Status::Todo), ticket(2, Status::Todo)]);
+        let mut app = App::new(
+            project(),
+            vec![ticket(1, Status::Todo), ticket(2, Status::Todo)],
+        );
         // ticket() titles are "title1" / "title2"; "title1" matches only the first.
         app.search.query = "title1".into();
         let buf = render(&app, &HashMap::new(), 80, 20);

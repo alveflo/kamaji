@@ -225,6 +225,9 @@ mod tests {
                 text.push_str(buf[Position::new(x, y)].symbol());
             }
         }
-        assert!(text.contains("search"), "help should mention search:\n{text}");
+        assert!(
+            text.contains("search"),
+            "help should mention search:\n{text}"
+        );
     }
 }

@@ -1202,7 +1202,7 @@ mod tests {
     fn filter_does_not_stop_detection() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         let id = in_progress_ticket(&mut e); // title "t", In Progress, has a session
-        // Apply a filter that hides the in-progress card.
+                                             // Apply a filter that hides the in-progress card.
         e.app.search.query = "zzz".into();
         assert!(
             e.app.column_tickets(Status::InProgress).is_empty(),
