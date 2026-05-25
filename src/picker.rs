@@ -163,9 +163,12 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
             Some(form) => match key.code {
                 KeyCode::Esc => state.form = None,
                 KeyCode::Tab => {
-                    if form.field == ProjectField::Root && !form.suggestions.is_empty() {
-                        // On Root with matches, Tab completes the highlighted entry.
-                        form.accept_suggestion();
+                    if form.field == ProjectField::Root {
+                        // On Root, Tab completes the highlighted entry; with no
+                        // matches it does nothing (Shift-Tab returns to Name).
+                        if !form.suggestions.is_empty() {
+                            form.accept_suggestion();
+                        }
                     } else {
                         form.next_field();
                         form.refresh_suggestions();
