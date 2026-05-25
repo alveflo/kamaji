@@ -25,6 +25,10 @@ struct ProjectForm {
     root: String,
     field: ProjectField,
     error: Option<String>,
+    /// Subdirectory names matching the current Root field segment.
+    suggestions: Vec<String>,
+    /// Highlighted entry in `suggestions`.
+    suggestion_idx: usize,
     /// `Some(path)` once the user has submitted a root directory that doesn't
     /// exist yet and we're awaiting their confirmation to create it.
     pending_create: Option<PathBuf>,
@@ -37,6 +41,8 @@ impl ProjectForm {
             root: String::new(),
             field: ProjectField::Name,
             error: None,
+            suggestions: Vec::new(),
+            suggestion_idx: 0,
             pending_create: None,
         }
     }
@@ -75,6 +81,44 @@ impl ProjectForm {
     /// Resolve the entered root directory, expanding a leading `~`.
     fn resolved_root(&self) -> PathBuf {
         PathBuf::from(shellexpand(&self.root))
+    }
+
+    /// Recompute suggestions for the Root field from its current text, expanding a
+    /// leading `~` only to read the filesystem. Resets the highlight to the top.
+    fn refresh_suggestions(&mut self) {
+        let (parent, partial) = split_root(&self.root);
+        let parent_expanded = if parent.is_empty() {
+            PathBuf::from(".")
+        } else {
+            PathBuf::from(shellexpand(parent))
+        };
+        self.suggestions = dir_suggestions(&parent_expanded, partial);
+        self.suggestion_idx = 0;
+    }
+
+    /// Move the suggestion highlight by `delta`, clamped to the list bounds.
+    fn move_suggestion(&mut self, delta: isize) {
+        if self.suggestions.is_empty() {
+            return;
+        }
+        let max = self.suggestions.len() as isize - 1;
+        let next = (self.suggestion_idx as isize + delta).clamp(0, max);
+        self.suggestion_idx = next as usize;
+    }
+
+    /// Accept the highlighted suggestion: replace the in-progress segment with the
+    /// chosen directory name plus a trailing `/`, keeping the literal parent text
+    /// (e.g. a `~/` prefix). Then refresh suggestions for the new level.
+    fn accept_suggestion(&mut self) {
+        // Completing the path edits the root, which invalidates a pending
+        // "create this directory?" prompt against the old value.
+        self.pending_create = None;
+        let Some(name) = self.suggestions.get(self.suggestion_idx).cloned() else {
+            return;
+        };
+        let (parent, _partial) = split_root(&self.root);
+        self.root = format!("{parent}{name}/");
+        self.refresh_suggestions();
     }
 
     /// Handle Esc. Returns `true` when the whole form should close; when a
@@ -178,8 +222,24 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
                         state.form = None;
                     }
                 }
-                KeyCode::Tab => form.next_field(),
-                KeyCode::BackTab => form.prev_field(),
+                KeyCode::Tab => {
+                    if form.field == ProjectField::Root {
+                        // On Root, Tab completes the highlighted entry; with no
+                        // matches it does nothing (Shift-Tab returns to Name).
+                        if !form.suggestions.is_empty() {
+                            form.accept_suggestion();
+                        }
+                    } else {
+                        form.next_field();
+                        form.refresh_suggestions();
+                    }
+                }
+                KeyCode::BackTab => {
+                    form.prev_field();
+                    form.refresh_suggestions();
+                }
+                KeyCode::Up if form.field == ProjectField::Root => form.move_suggestion(-1),
+                KeyCode::Down if form.field == ProjectField::Root => form.move_suggestion(1),
                 KeyCode::Enter => {
                     if form.name.trim().is_empty() {
                         form.error = Some("Name is required".into());
@@ -209,8 +269,18 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
                         }
                     }
                 }
-                KeyCode::Backspace => form.backspace(),
-                KeyCode::Char(c) => form.input_char(c),
+                KeyCode::Backspace => {
+                    form.backspace();
+                    if form.field == ProjectField::Root {
+                        form.refresh_suggestions();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    form.input_char(c);
+                    if form.field == ProjectField::Root {
+                        form.refresh_suggestions();
+                    }
+                }
                 _ => {}
             },
         }
@@ -225,6 +295,56 @@ fn shellexpand(input: &str) -> String {
         }
     }
     input.to_string()
+}
+
+/// Split a raw path string at its last `/` into `(parent, partial)`.
+/// `parent` keeps its trailing slash (or is empty when there is no slash);
+/// `partial` is the in-progress final segment.
+fn split_root(raw: &str) -> (&str, &str) {
+    match raw.rfind('/') {
+        Some(i) => (&raw[..=i], &raw[i + 1..]),
+        None => ("", raw),
+    }
+}
+
+/// Case-insensitive subsequence test: are all chars of `partial` found in
+/// `candidate` in order (not necessarily contiguous)? Empty `partial` matches.
+fn fuzzy_subsequence(partial: &str, candidate: &str) -> bool {
+    let mut cand = candidate.chars().flat_map(char::to_lowercase);
+    'outer: for pc in partial.chars().flat_map(char::to_lowercase) {
+        for cc in cand.by_ref() {
+            if cc == pc {
+                continue 'outer;
+            }
+        }
+        return false;
+    }
+    true
+}
+
+/// List subdirectory names of `parent` whose name fuzzy-matches `partial`.
+/// Names that start with `partial` (case-insensitive) sort first; the rest
+/// follow, each group alphabetical (case-insensitive). A parent that cannot be
+/// read yields an empty list.
+fn dir_suggestions(parent: &Path, partial: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let lower_partial = partial.to_lowercase();
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| fuzzy_subsequence(partial, name))
+        .collect();
+    names.sort_by(|a, b| {
+        let a_pref = a.to_lowercase().starts_with(&lower_partial);
+        let b_pref = b.to_lowercase().starts_with(&lower_partial);
+        b_pref
+            .cmp(&a_pref)
+            .then_with(|| a.to_lowercase().cmp(&b.to_lowercase()))
+    });
+    names
 }
 
 /// Contract a leading home-directory prefix to `~` for display (inverse of `shellexpand`).
@@ -326,18 +446,29 @@ fn render(frame: &mut Frame, state: &PickerState) {
     // 4. The new-project form overlays everything when open.
     if let Some(form) = &state.form {
         // While awaiting confirmation to create a missing directory, the message
-        // line warns about it and the hint explains how to respond.
+        // line warns about it and the hint explains how to respond — and the
+        // suggestion list is hidden so the prompt stands on its own.
         let pending_msg = form
             .pending_create
             .as_ref()
             .map(|p| format!("⚠ {} doesn't exist.", contract_home(p)));
-        let (hint, message) = match &pending_msg {
-            Some(msg) => ("Enter: create it   Esc: edit", Some(msg.as_str())),
-            None => (
-                "Tab/Shift-Tab: field   Enter: create   Esc: cancel",
-                form.error.as_deref(),
-            ),
-        };
+        let on_root = form.field == ProjectField::Root;
+        let (hint, message, suggestions): (&str, Option<&str>, &[String]) =
+            if let Some(msg) = &pending_msg {
+                ("Enter: create it   Esc: edit", Some(msg.as_str()), &[])
+            } else if on_root {
+                (
+                    "↑/↓ choose · Tab complete · ↵ create · Esc cancel",
+                    form.error.as_deref(),
+                    &form.suggestions,
+                )
+            } else {
+                (
+                    "Tab/Shift-Tab: field   Enter: create   Esc: cancel",
+                    form.error.as_deref(),
+                    &[],
+                )
+            };
         crate::ui::render_field_modal(
             frame,
             &state.theme,
@@ -352,6 +483,7 @@ fn render(frame: &mut Frame, state: &PickerState) {
             ],
             hint,
             message,
+            (suggestions, form.suggestion_idx),
         );
     }
 }
@@ -413,6 +545,60 @@ mod tests {
         let resolved = form.resolved_root();
         assert!(!resolved.to_string_lossy().starts_with('~'));
         assert!(resolved.to_string_lossy().ends_with("/foo"));
+    }
+
+    #[test]
+    fn split_root_splits_at_last_slash() {
+        assert_eq!(split_root("~/dev/kam"), ("~/dev/", "kam"));
+        assert_eq!(split_root("~/dev/"), ("~/dev/", ""));
+        assert_eq!(split_root("/abs/path/to/x"), ("/abs/path/to/", "x"));
+    }
+
+    #[test]
+    fn split_root_with_no_slash_has_empty_parent() {
+        assert_eq!(split_root("kam"), ("", "kam"));
+        assert_eq!(split_root(""), ("", ""));
+    }
+
+    #[test]
+    fn fuzzy_subsequence_matches_in_order() {
+        assert!(fuzzy_subsequence("km", "kamaji"));
+        assert!(fuzzy_subsequence("kam", "kamaji"));
+        assert!(!fuzzy_subsequence("mk", "kamaji")); // wrong order
+        assert!(!fuzzy_subsequence("xyz", "kamaji"));
+    }
+
+    #[test]
+    fn fuzzy_subsequence_is_case_insensitive() {
+        assert!(fuzzy_subsequence("KM", "kamaji"));
+        assert!(fuzzy_subsequence("km", "KamAji"));
+    }
+
+    #[test]
+    fn fuzzy_subsequence_empty_partial_matches_everything() {
+        assert!(fuzzy_subsequence("", "anything"));
+        assert!(fuzzy_subsequence("", ""));
+    }
+
+    #[test]
+    fn dir_suggestions_returns_only_matching_subdirs_sorted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        std::fs::create_dir(base.join("kamaji")).unwrap();
+        std::fs::create_dir(base.join("kafka")).unwrap();
+        std::fs::create_dir(base.join("zzz")).unwrap();
+        std::fs::write(base.join("kamfile.txt"), b"x").unwrap(); // a file, must be excluded
+
+        // partial "ka" matches the two k-dirs (prefix matches first, alphabetical)
+        let got = dir_suggestions(base, "ka");
+        assert_eq!(got, vec!["kafka".to_string(), "kamaji".to_string()]);
+
+        // empty partial lists all subdirs, prefix group is empty so plain alphabetical
+        let all = dir_suggestions(base, "");
+        assert_eq!(
+            all,
+            vec!["kafka".to_string(), "kamaji".to_string(), "zzz".to_string()]
+        );
     }
 
     #[test]
@@ -490,6 +676,97 @@ mod tests {
             form.pending_create.is_none(),
             "switching field clears pending"
         );
+    }
+
+    #[test]
+    fn dir_suggestions_orders_prefix_matches_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        std::fs::create_dir(base.join("alpha")).unwrap();
+        std::fs::create_dir(base.join("banana")).unwrap();
+        std::fs::create_dir(base.join("ant")).unwrap();
+        // partial "an": "ant" is a prefix match, "banana" only a subsequence match.
+        let got = dir_suggestions(base, "an");
+        assert_eq!(got, vec!["ant".to_string(), "banana".to_string()]);
+    }
+
+    #[test]
+    fn dir_suggestions_nonexistent_parent_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        assert!(dir_suggestions(&missing, "x").is_empty());
+    }
+
+    #[test]
+    fn refresh_suggestions_lists_subdirs_of_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("kamaji")).unwrap();
+        std::fs::create_dir(tmp.path().join("other")).unwrap();
+
+        let mut form = ProjectForm::new();
+        form.field = ProjectField::Root;
+        // Type an absolute parent path with partial "kam".
+        form.root = format!("{}/kam", tmp.path().display());
+        form.refresh_suggestions();
+
+        assert_eq!(form.suggestions, vec!["kamaji".to_string()]);
+        assert_eq!(form.suggestion_idx, 0);
+    }
+
+    #[test]
+    fn move_suggestion_clamps_at_both_ends() {
+        let mut form = ProjectForm::new();
+        form.suggestions = vec!["a".into(), "b".into(), "c".into()];
+        form.suggestion_idx = 0;
+
+        form.move_suggestion(-1); // already at top
+        assert_eq!(form.suggestion_idx, 0);
+
+        form.move_suggestion(1);
+        form.move_suggestion(1);
+        assert_eq!(form.suggestion_idx, 2);
+
+        form.move_suggestion(1); // already at bottom
+        assert_eq!(form.suggestion_idx, 2);
+    }
+
+    #[test]
+    fn accept_suggestion_replaces_partial_and_appends_slash() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("kamaji")).unwrap();
+
+        let mut form = ProjectForm::new();
+        form.field = ProjectField::Root;
+        form.root = format!("{}/kam", tmp.path().display());
+        form.refresh_suggestions();
+        assert_eq!(form.suggestions, vec!["kamaji".to_string()]);
+
+        form.accept_suggestion();
+        assert_eq!(form.root, format!("{}/kamaji/", tmp.path().display()));
+    }
+
+    #[test]
+    fn accept_suggestion_preserves_tilde_parent() {
+        // No filesystem read needed: drive the suggestion list directly.
+        let mut form = ProjectForm::new();
+        form.field = ProjectField::Root;
+        form.root = "~/dev/kam".into();
+        form.suggestions = vec!["kamaji".into()];
+        form.suggestion_idx = 0;
+
+        form.accept_suggestion();
+        // Parent text (including ~/) is preserved; partial replaced + trailing slash.
+        assert!(form.root.starts_with("~/dev/kamaji/"));
+    }
+
+    #[test]
+    fn accept_suggestion_with_empty_list_is_noop() {
+        let mut form = ProjectForm::new();
+        form.field = ProjectField::Root;
+        form.root = "~/dev/".into();
+        form.suggestions.clear();
+        form.accept_suggestion();
+        assert_eq!(form.root, "~/dev/");
     }
 
     #[test]

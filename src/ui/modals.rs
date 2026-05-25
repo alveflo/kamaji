@@ -9,6 +9,9 @@ use crate::models::{Agent, Status};
 use crate::theme::Theme;
 use crate::ui::centered_rect;
 
+/// Maximum suggestion rows shown at once in a field modal; longer lists scroll.
+const MAX_VISIBLE_SUGGESTIONS: usize = 5;
+
 /// A rounded modal frame titled `title`, bordered in the theme's border color.
 pub(crate) fn themed_block(theme: &Theme, title: String) -> Block<'static> {
     Block::bordered()
@@ -43,7 +46,9 @@ pub(crate) fn render_field_modal(
     fields: &[(&str, &str, bool)],
     hint: &str,
     error: Option<&str>,
+    suggestions: (&[String], usize),
 ) {
+    let (suggestions, selected) = suggestions;
     let area = centered_rect(70, 60, frame.area());
     frame.render_widget(Clear, area);
 
@@ -58,6 +63,26 @@ pub(crate) fn render_field_modal(
         }
         lines.push(field_line(theme, label, value, *active));
     }
+
+    if !suggestions.is_empty() {
+        lines.push(Line::raw(""));
+        // Scroll a fixed-size window so the selected entry stays visible.
+        let start = selected.saturating_sub(MAX_VISIBLE_SUGGESTIONS - 1);
+        let end = (start + MAX_VISIBLE_SUGGESTIONS).min(suggestions.len());
+        for (i, name) in suggestions.iter().enumerate().take(end).skip(start) {
+            let style = if i == selected {
+                Style::new()
+                    .fg(theme.base.unwrap_or(Color::Black))
+                    .bg(theme.accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(theme.text)
+            };
+            let marker = if i == selected { "› " } else { "  " };
+            lines.push(Line::styled(format!("{marker}{name}"), style));
+        }
+    }
+
     lines.push(Line::raw(""));
     if let Some(err) = error {
         lines.push(Line::styled(err.to_string(), Style::new().fg(theme.error)));
@@ -289,6 +314,82 @@ mod tests {
         assert!(
             text.contains("search"),
             "help should mention search:\n{text}"
+        );
+    }
+
+    #[test]
+    fn field_modal_draws_suggestions() {
+        let theme = Theme::by_name("catppuccin");
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let suggestions = ["kamaji".to_string(), "kafka".to_string()];
+        terminal
+            .draw(|f| {
+                render_field_modal(
+                    f,
+                    &theme,
+                    "New project",
+                    &[("Name", "x", false), ("Root", "~/dev/kam", true)],
+                    "hint",
+                    None,
+                    (&suggestions, 0),
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[Position::new(x, y)].symbol());
+            }
+        }
+        assert!(
+            text.contains("kamaji"),
+            "suggestion list should render:\n{text}"
+        );
+        assert!(text.contains("kafka"));
+    }
+
+    #[test]
+    fn field_modal_windows_suggestions_to_five() {
+        let theme = Theme::by_name("catppuccin");
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let suggestions: Vec<String> = (0..8).map(|i| format!("dir{i}")).collect();
+        terminal
+            .draw(|f| {
+                render_field_modal(
+                    f,
+                    &theme,
+                    "New project",
+                    &[("Root", "~/", true)],
+                    "hint",
+                    None,
+                    (&suggestions, 7), // last entry selected
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[Position::new(x, y)].symbol());
+            }
+        }
+        // Selected entry is visible; an early entry has scrolled out.
+        assert!(
+            text.contains("dir7"),
+            "selected entry must be visible:\n{text}"
+        );
+        assert!(
+            !text.contains("dir0"),
+            "early entry should scroll out of the 5-window:\n{text}"
+        );
+        // At most 5 of the dirN labels are rendered.
+        let visible = (0..8).filter(|i| text.contains(&format!("dir{i}"))).count();
+        assert!(
+            visible <= 5,
+            "at most 5 suggestions visible, saw {visible}:\n{text}"
         );
     }
 }
