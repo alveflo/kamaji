@@ -1,16 +1,16 @@
-use anyhow::{bail, Result};
+use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::app::{App, FormField, Modal, TicketForm};
 use crate::config::Config;
 use crate::db::Db;
 use crate::detect::{self, SignalLevel};
 use crate::models::{Agent, Status, Ticket};
+use crate::session::{self, Prepared};
 use crate::theme::Theme;
-use crate::{agent, git, layout, slug, zellij, zellij_config};
+use crate::{git, zellij};
 
 /// Side effect the main loop must run by releasing the terminal.
 #[derive(Debug, PartialEq)]
@@ -34,15 +34,6 @@ pub enum Effect {
     SelfUpdate {
         version: String,
     },
-}
-
-/// Everything needed to launch a session, produced by `prepare_session`
-/// before any DB session/status columns are written.
-pub struct Prepared {
-    pub name: String,
-    pub layout_path: PathBuf,
-    pub worktree: PathBuf,
-    pub instrumented: bool,
 }
 
 pub struct Engine {
@@ -91,68 +82,16 @@ impl Engine {
         Ok(())
     }
 
-    fn layout_file(&self, name: &str, contents: &str) -> Result<PathBuf> {
-        static LAYOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-        let dir = std::env::temp_dir().join("kamaji-layouts");
-        std::fs::create_dir_all(&dir)?;
-        let counter = LAYOUT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!("{name}-{}-{counter}.kdl", std::process::id()));
-        std::fs::write(&path, contents)?;
-        Ok(path)
-    }
-
     /// Build the worktree + layout for a ticket without writing any DB
     /// session/status columns. Shared by foreground and background start.
     fn prepare_session(&mut self, ticket: &Ticket) -> Result<Prepared> {
-        let root = self.app.project.root_dir.clone();
-        if !git::is_git_repo(&root) {
-            bail!("project root is not a git repository: {}", root.display());
-        }
-        let name = slug::ticket_name(ticket.id, &ticket.title);
-        let base = if self.config.base_branch == "auto" {
-            git::default_branch(&root)?
-        } else {
-            self.config.base_branch.clone()
-        };
-        let worktree = self.config.worktree_dir(&root, &name);
-        if !worktree.exists() {
-            git::add_worktree(&root, &worktree, &name, &base)?;
-        }
-        let argv = agent::build_command(
-            self.config.commands_for(ticket.agent),
-            ticket.initial_prompt.as_deref(),
-        );
-        let instrumented = self.config.auto_review.enabled && ticket.agent == Agent::Claude;
-        let argv = if instrumented {
-            let marker = detect::marker_path(&self.state_dir, &name);
-            let _ = std::fs::create_dir_all(&self.state_dir);
-            let _ = std::fs::remove_file(&marker);
-            detect::inject_claude_settings(argv, &marker.to_string_lossy())
-        } else {
-            argv
-        };
-        let bar = zellij_config::resolve_bar_style(
-            &self.config.zellij_bar,
-            zellij_config::detect_default_layout().as_deref(),
-        );
-        let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv, bar);
-        let layout_path = self.layout_file(&name, &kdl)?;
-        Ok(Prepared {
-            name,
-            layout_path,
-            worktree,
-            instrumented,
-        })
+        session::prepare_session(&self.app.project, &self.config, &self.state_dir, ticket)
     }
 
     /// Create the worktree + layout for a ticket and return the RunSession effect.
     fn start_session(&mut self, ticket: &Ticket) -> Result<Effect> {
         let p = self.prepare_session(ticket)?;
-        self.db
-            .set_ticket_session(ticket.id, &p.name, &p.worktree.to_string_lossy(), &p.name)?;
-        self.db.set_ticket_instrumented(ticket.id, p.instrumented)?;
-        self.db.set_ticket_status(ticket.id, Status::InProgress)?;
+        session::commit_session(&self.db, ticket.id, &p)?;
         self.reload()?;
         Ok(Effect::RunSession {
             name: p.name,
@@ -386,14 +325,7 @@ impl Engine {
                 // On any preparation error, leave the card in Todo with a toast.
                 match self.prepare_session(&ticket) {
                     Ok(p) => {
-                        self.db.set_ticket_session(
-                            ticket.id,
-                            &p.name,
-                            &p.worktree.to_string_lossy(),
-                            &p.name,
-                        )?;
-                        self.db.set_ticket_instrumented(ticket.id, p.instrumented)?;
-                        self.db.set_ticket_status(ticket.id, Status::InProgress)?;
+                        session::commit_session(&self.db, ticket.id, &p)?;
                         self.reload()?;
                         Ok(Effect::RunSessionBackground {
                             name: p.name,
@@ -653,6 +585,7 @@ mod tests {
     use super::*;
     use crate::detect::SignalLevel;
     use crate::models::Agent;
+    use crate::slug;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
     use std::collections::HashMap;
 

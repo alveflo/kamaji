@@ -5,14 +5,17 @@ use std::str::FromStr;
 use crate::config::Config;
 use crate::db::Db;
 use crate::models::{Agent, Project};
+use crate::session;
 
 const USAGE: &str = "\
 Usage:
   kamaji
-  kamaji ticket create --prompt <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>]
-  kamaji ticket create <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>]
+  kamaji ticket create --prompt <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
+  kamaji ticket create <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
 
 Agents: claude, codex, copilot
+
+  --background, -b   also start the ticket's agent in a detached zellij session
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +33,8 @@ pub struct CreateTicketArgs {
     pub description: String,
     pub prompt: Option<String>,
     pub agent: Option<Agent>,
+    /// Opt-in: also start the ticket's detached zellij session.
+    pub background: bool,
 }
 
 impl CreateTicketArgs {
@@ -52,6 +57,31 @@ impl CreateTicketArgs {
             })?;
         Ok(prompt.lines().next().unwrap_or(prompt).trim().to_string())
     }
+}
+
+/// A prepared session the caller must launch (detached) after `run_create_ticket`
+/// has recorded it. Carries what teardown needs if the launch fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchSpec {
+    pub ticket_id: i64,
+    pub name: String,
+    pub layout_path: PathBuf,
+    pub cwd: PathBuf,
+}
+
+/// Result of `run_create_ticket`: the ticket is always created; `launch` is set
+/// only when a background session was prepared and recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateOutcome {
+    /// Summary to print to stdout (always the "Created ticket #N" line).
+    pub message: String,
+    /// Reason to print to stderr when `--background` could not be honored.
+    pub warning: Option<String>,
+    /// Some => the caller must launch this detached zellij session.
+    pub launch: Option<LaunchSpec>,
+    /// True when `--background` was requested but the session could not be
+    /// prepared; the ticket stays in Todo and the caller should exit non-zero.
+    pub background_failed: bool,
 }
 
 pub fn usage() -> &'static str {
@@ -91,6 +121,7 @@ fn parse_ticket_create(args: &[String]) -> Result<Command> {
     let mut description = String::new();
     let mut prompt = None;
     let mut agent = None;
+    let mut background = false;
     let mut positional = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -107,6 +138,9 @@ fn parse_ticket_create(args: &[String]) -> Result<Command> {
             }
             "--prompt" => {
                 prompt = Some(take_value(args, &mut i, "--prompt")?);
+            }
+            "--background" | "-b" => {
+                background = true;
             }
             "--agent" | "-a" => {
                 let value = take_value(args, &mut i, "--agent")?;
@@ -133,6 +167,7 @@ fn parse_ticket_create(args: &[String]) -> Result<Command> {
         description,
         prompt,
         agent,
+        background,
     };
     parsed.title_or_prompt()?;
     Ok(Command::CreateTicket(parsed))
@@ -151,7 +186,8 @@ pub fn run_create_ticket(
     config: &Config,
     args: &CreateTicketArgs,
     cwd: &Path,
-) -> Result<String> {
+    state_dir: &Path,
+) -> Result<CreateOutcome> {
     let project = match args.project.as_deref() {
         Some(selector) => select_project(db, selector)?,
         None => infer_project(db, cwd)?,
@@ -167,10 +203,45 @@ pub fn run_create_ticket(
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let ticket = db.create_ticket(project.id, &title, args.description.trim(), prompt, agent)?;
-    Ok(format!(
+    let message = format!(
         "Created ticket #{} in project {}: {}",
         ticket.number, project.name, ticket.title
-    ))
+    );
+
+    if !args.background {
+        return Ok(CreateOutcome {
+            message,
+            warning: None,
+            launch: None,
+            background_failed: false,
+        });
+    }
+
+    // --background: prepare + record the session here; the caller performs the
+    // detached launch. On any preparation failure the ticket is left in Todo and
+    // the caller is told to exit non-zero.
+    match session::prepare_session(&project, config, state_dir, &ticket) {
+        Ok(p) => {
+            session::commit_session(db, ticket.id, &p)?;
+            Ok(CreateOutcome {
+                message,
+                warning: None,
+                launch: Some(LaunchSpec {
+                    ticket_id: ticket.id,
+                    name: p.name,
+                    layout_path: p.layout_path,
+                    cwd: p.worktree,
+                }),
+                background_failed: false,
+            })
+        }
+        Err(e) => Ok(CreateOutcome {
+            message,
+            warning: Some(format!("could not start session: {e}")),
+            launch: None,
+            background_failed: true,
+        }),
+    }
 }
 
 fn select_project(db: &Db, selector: &str) -> Result<Project> {
@@ -284,8 +355,27 @@ mod tests {
                 description: String::new(),
                 prompt: Some("Start working on GitHub issue #12".into()),
                 agent: None,
+                background: false,
             })
         );
+    }
+
+    #[test]
+    fn background_flag_sets_background() {
+        for flag in ["-b", "--background"] {
+            let Command::CreateTicket(args) =
+                parse(["ticket", "create", flag, "--prompt", "go"]).unwrap()
+            else {
+                panic!("expected CreateTicket for {flag}");
+            };
+            assert!(args.background, "{flag} should set background");
+        }
+        // Absent: defaults off.
+        let Command::CreateTicket(args) = parse(["ticket", "create", "--prompt", "go"]).unwrap()
+        else {
+            panic!("expected CreateTicket");
+        };
+        assert!(!args.background, "background defaults off");
     }
 
     #[test]
@@ -311,6 +401,7 @@ mod tests {
                 description: String::new(),
                 prompt: Some("Start working on issue 12".into()),
                 agent: Some(Agent::Claude),
+                background: false,
             })
         );
     }
@@ -325,10 +416,13 @@ mod tests {
             description: String::new(),
             prompt: Some("Start working on issue 12".into()),
             agent: None,
+            background: false,
         };
 
-        let out = run_create_ticket(&db, &Config::default(), &args, dir.path()).unwrap();
-        assert!(out.contains("Created ticket #1"));
+        let out =
+            run_create_ticket(&db, &Config::default(), &args, dir.path(), dir.path()).unwrap();
+        assert!(out.message.contains("Created ticket #1"));
+        assert!(out.launch.is_none(), "no --background => no session");
         let project = db.list_projects().unwrap().remove(0);
         let tickets = db.list_tickets(project.id).unwrap();
         assert_eq!(tickets[0].title, "Start working on issue 12");
@@ -364,11 +458,107 @@ mod tests {
             description: String::new(),
             prompt: Some("Do the next thing".into()),
             agent: Some(Agent::Claude),
+            background: false,
         };
 
-        run_create_ticket(&db, &Config::default(), &args, &worktree).unwrap();
+        run_create_ticket(&db, &Config::default(), &args, &worktree, dir.path()).unwrap();
         let tickets = db.list_tickets(project.id).unwrap();
         assert_eq!(tickets.len(), 2);
         assert!(tickets.iter().any(|t| t.title == "Next"));
+    }
+
+    /// Initialize a real git repo with one commit at `root`.
+    fn init_repo(root: &Path) {
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap();
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "t@t.t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(root.join("f"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "i"]);
+    }
+
+    fn background_args() -> CreateTicketArgs {
+        CreateTicketArgs {
+            project: None,
+            title: Some("Add login".into()),
+            description: String::new(),
+            prompt: Some("go".into()),
+            agent: None,
+            background: true,
+        }
+    }
+
+    #[test]
+    fn background_flag_starts_session_in_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        init_repo(&root);
+
+        let db = Db::open_in_memory().unwrap();
+        db.create_project("kamaji", &root, Some(Agent::Claude))
+            .unwrap();
+        let config = Config {
+            worktree_base: dir.path().join("wts").to_string_lossy().to_string(),
+            ..Config::default()
+        };
+        let state_dir = dir.path().join("state");
+
+        let out = run_create_ticket(&db, &config, &background_args(), &root, &state_dir).unwrap();
+
+        let spec = out.launch.expect("background should produce a launch spec");
+        assert!(!out.background_failed);
+        assert!(out.warning.is_none());
+
+        let project = db.list_projects().unwrap().remove(0);
+        let ticket = db.list_tickets(project.id).unwrap().remove(0);
+        assert_eq!(ticket.status, crate::models::Status::InProgress);
+        assert_eq!(ticket.session_name.as_deref(), Some(spec.name.as_str()));
+        assert_eq!(spec.ticket_id, ticket.id);
+
+        assert!(spec.layout_path.exists());
+        let layout = std::fs::read_to_string(&spec.layout_path).unwrap();
+        assert!(
+            layout.contains("--settings"),
+            "claude layout must inject --settings: {layout}"
+        );
+        assert!(spec.cwd.ends_with(&spec.name));
+    }
+
+    #[test]
+    fn background_flag_in_non_git_root_stays_todo() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root"); // created but not a git repo
+        std::fs::create_dir_all(&root).unwrap();
+
+        let db = Db::open_in_memory().unwrap();
+        db.create_project("kamaji", &root, Some(Agent::Claude))
+            .unwrap();
+
+        let out = run_create_ticket(
+            &db,
+            &Config::default(),
+            &background_args(),
+            &root,
+            dir.path(),
+        )
+        .unwrap();
+
+        assert!(out.launch.is_none(), "no session launched");
+        assert!(out.background_failed, "background failure is signaled");
+        assert!(out.warning.is_some(), "a reason is provided for stderr");
+
+        let project = db.list_projects().unwrap().remove(0);
+        let ticket = db.list_tickets(project.id).unwrap().remove(0);
+        assert_eq!(ticket.status, crate::models::Status::Todo);
+        assert!(ticket.session_name.is_none());
     }
 }
