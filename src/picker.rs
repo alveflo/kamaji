@@ -86,6 +86,28 @@ impl ProjectForm {
         self.suggestions = dir_suggestions(&parent_expanded, partial);
         self.suggestion_idx = 0;
     }
+
+    /// Move the suggestion highlight by `delta`, clamped to the list bounds.
+    fn move_suggestion(&mut self, delta: isize) {
+        if self.suggestions.is_empty() {
+            return;
+        }
+        let max = self.suggestions.len() as isize - 1;
+        let next = (self.suggestion_idx as isize + delta).clamp(0, max);
+        self.suggestion_idx = next as usize;
+    }
+
+    /// Accept the highlighted suggestion: replace the in-progress segment with the
+    /// chosen directory name plus a trailing `/`, keeping the literal parent text
+    /// (e.g. a `~/` prefix). Then refresh suggestions for the new level.
+    fn accept_suggestion(&mut self) {
+        let Some(name) = self.suggestions.get(self.suggestion_idx).cloned() else {
+            return;
+        };
+        let (parent, _partial) = split_root(&self.root);
+        self.root = format!("{parent}{name}/");
+        self.refresh_suggestions();
+    }
 }
 
 struct PickerState {
@@ -475,6 +497,62 @@ mod tests {
 
         assert_eq!(form.suggestions, vec!["kamaji".to_string()]);
         assert_eq!(form.suggestion_idx, 0);
+    }
+
+    #[test]
+    fn move_suggestion_clamps_at_both_ends() {
+        let mut form = ProjectForm::new();
+        form.suggestions = vec!["a".into(), "b".into(), "c".into()];
+        form.suggestion_idx = 0;
+
+        form.move_suggestion(-1); // already at top
+        assert_eq!(form.suggestion_idx, 0);
+
+        form.move_suggestion(1);
+        form.move_suggestion(1);
+        assert_eq!(form.suggestion_idx, 2);
+
+        form.move_suggestion(1); // already at bottom
+        assert_eq!(form.suggestion_idx, 2);
+    }
+
+    #[test]
+    fn accept_suggestion_replaces_partial_and_appends_slash() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("kamaji")).unwrap();
+
+        let mut form = ProjectForm::new();
+        form.field = ProjectField::Root;
+        form.root = format!("{}/kam", tmp.path().display());
+        form.refresh_suggestions();
+        assert_eq!(form.suggestions, vec!["kamaji".to_string()]);
+
+        form.accept_suggestion();
+        assert_eq!(form.root, format!("{}/kamaji/", tmp.path().display()));
+    }
+
+    #[test]
+    fn accept_suggestion_preserves_tilde_parent() {
+        // No filesystem read needed: drive the suggestion list directly.
+        let mut form = ProjectForm::new();
+        form.field = ProjectField::Root;
+        form.root = "~/dev/kam".into();
+        form.suggestions = vec!["kamaji".into()];
+        form.suggestion_idx = 0;
+
+        form.accept_suggestion();
+        // Parent text (including ~/) is preserved; partial replaced + trailing slash.
+        assert!(form.root.starts_with("~/dev/kamaji/"));
+    }
+
+    #[test]
+    fn accept_suggestion_with_empty_list_is_noop() {
+        let mut form = ProjectForm::new();
+        form.field = ProjectField::Root;
+        form.root = "~/dev/".into();
+        form.suggestions.clear();
+        form.accept_suggestion();
+        assert_eq!(form.root, "~/dev/");
     }
 
     #[test]
