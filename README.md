@@ -17,16 +17,30 @@ into it. Detach and the session keeps running in the background.
 
 ## Install
 
+**Linux / macOS** (x86_64 / aarch64):
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/install.sh | sh
 ```
 
-This downloads a prebuilt binary for your platform (Linux/macOS, x86_64/aarch64)
-to `~/.local/bin`. Override the location with `KAMAJI_INSTALL_DIR`:
+This downloads a prebuilt binary for your platform to `~/.local/bin`. Override
+the location with `KAMAJI_INSTALL_DIR`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/install.sh | KAMAJI_INSTALL_DIR=/usr/local/bin sh
 ```
+
+**Windows** (x86_64, PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/alveflo/kamaji/main/install.ps1 | iex
+```
+
+This installs `kamaji.exe` to `%LOCALAPPDATA%\Programs\kamaji` and adds it to
+your user PATH. Override the location with the `KAMAJI_INSTALL_DIR` environment
+variable. kamaji drives `zellij.exe`, so you'll also need
+[zellij for Windows](https://zellij.dev/documentation/installation.html) on
+`PATH`.
 
 kamaji checks for new releases on launch. When one is available the status bar
 shows `New version vX.Y.Z available — press u to update`; press `u` to download

@@ -35,6 +35,9 @@ fn db_path() -> Result<PathBuf> {
 }
 
 fn main() -> Result<()> {
+    // Clear any binary set aside by a prior Windows self-update (no-op on Unix).
+    update::cleanup_stale_update();
+
     match cli::parse(std::env::args().skip(1))? {
         cli::Command::Tui => run_tui(),
         cli::Command::Help => {

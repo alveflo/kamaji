@@ -52,6 +52,37 @@ pub fn current_target() -> &'static str {
     {
         "aarch64-apple-darwin"
     }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        "x86_64-pc-windows-msvc"
+    }
+}
+
+/// File extension of the release archive for this platform: `zip` on Windows
+/// (Windows-idiomatic) and `tar.gz` everywhere else. Must match the names the
+/// release workflow uploads.
+pub fn asset_ext() -> &'static str {
+    if cfg!(windows) {
+        "zip"
+    } else {
+        "tar.gz"
+    }
+}
+
+/// The release asset filename for this platform, e.g.
+/// `kamaji-x86_64-unknown-linux-musl.tar.gz` or
+/// `kamaji-x86_64-pc-windows-msvc.zip`.
+pub fn asset_name() -> String {
+    format!("kamaji-{}.{}", current_target(), asset_ext())
+}
+
+/// The binary filename packed inside the archive (`kamaji.exe` on Windows).
+fn bin_name() -> &'static str {
+    if cfg!(windows) {
+        "kamaji.exe"
+    } else {
+        "kamaji"
+    }
 }
 
 /// 24h between network checks.
@@ -165,15 +196,15 @@ pub fn self_update() -> Result<()> {
     let exe = std::env::current_exe().context("locating current executable")?;
     let dir = exe.parent().context("executable has no parent dir")?;
 
-    let asset = format!("kamaji-{}.tar.gz", current_target());
+    let asset = asset_name();
     let base = "https://github.com/alveflo/kamaji/releases/latest/download";
 
     // Timeouts bound a stalled connection so an interrupted download can't hang
     // the process after the TUI has already torn down the terminal.
     let agent = download_agent();
 
-    // Download tarball bytes.
-    let tarball = http_get_bytes(&agent, &format!("{base}/{asset}"))
+    // Download archive bytes.
+    let archive_bytes = http_get_bytes(&agent, &format!("{base}/{asset}"))
         .context("downloading release archive")?;
 
     // Download + verify checksum.
@@ -189,46 +220,108 @@ pub fn self_update() -> Result<()> {
         .next()
         .context("empty checksum file")?;
     let mut hasher = Sha256::new();
-    hasher.update(&tarball);
+    hasher.update(&archive_bytes);
     let actual = hasher.finalize();
     let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
     if !actual_hex.eq_ignore_ascii_case(expected) {
         anyhow::bail!("checksum mismatch (expected {expected}, got {actual_hex})");
     }
 
-    // Extract into a temp dir on the same filesystem as the executable, so the
-    // final rename is atomic.
+    // Extract into a temp dir alongside the executable, so the final move stays
+    // on the same filesystem (atomic rename on Unix; in-place on Windows).
     let tmp = dir.join(".kamaji-update-tmp");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).context("creating temp dir")?;
     let archive = tmp.join(&asset);
-    std::fs::write(&archive, &tarball).context("writing archive")?;
+    std::fs::write(&archive, &archive_bytes).context("writing archive")?;
 
+    extract_archive(&archive, &tmp).context("extracting release archive")?;
+
+    let new_bin = tmp.join(bin_name());
+    if !new_bin.exists() {
+        anyhow::bail!("release archive did not contain a '{}' binary", bin_name());
+    }
+
+    replace_running_exe(&new_bin, &exe)?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
+/// Unpack the downloaded archive into `dest`. Unix ships `.tar.gz` (extracted
+/// via `tar`); Windows ships `.zip` (extracted with the `zip` crate, since
+/// older Windows lacks a reliable bundled unzip).
+#[cfg(not(windows))]
+fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
     let status = std::process::Command::new("tar")
         .arg("-xzf")
-        .arg(&archive)
+        .arg(archive)
         .arg("-C")
-        .arg(&tmp)
+        .arg(dest)
         .status()
         .context("running tar")?;
     if !status.success() {
         anyhow::bail!("tar extraction failed");
     }
-
-    let new_bin = tmp.join("kamaji");
-    if !new_bin.exists() {
-        anyhow::bail!("release archive did not contain a 'kamaji' binary");
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&new_bin, std::fs::Permissions::from_mode(0o755))
-            .context("setting executable bit")?;
-    }
-
-    std::fs::rename(&new_bin, &exe).context("replacing executable")?;
-    let _ = std::fs::remove_dir_all(&tmp);
     Ok(())
+}
+
+#[cfg(windows)]
+fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive).context("opening archive")?;
+    let mut zip = zip::ZipArchive::new(file).context("reading zip archive")?;
+    zip.extract(dest).context("unpacking zip archive")?;
+    Ok(())
+}
+
+/// Move the freshly extracted binary over the running executable.
+///
+/// Unix: rename is atomic and works even while the file is executing, so we set
+/// the executable bit and rename straight over the old binary.
+#[cfg(not(windows))]
+fn replace_running_exe(new_bin: &Path, exe: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(new_bin, std::fs::Permissions::from_mode(0o755))
+        .context("setting executable bit")?;
+    std::fs::rename(new_bin, exe).context("replacing executable")?;
+    Ok(())
+}
+
+/// Windows locks a running `.exe`, so it can't be overwritten in place. Move
+/// the running binary aside to `<exe>.old`, then move the new one into its
+/// place; the stale `.old` is removed on the next launch by
+/// [`cleanup_stale_update`]. On failure we roll the old binary back so the user
+/// is never left without an executable.
+#[cfg(windows)]
+fn replace_running_exe(new_bin: &Path, exe: &Path) -> Result<()> {
+    let old = stale_path(exe);
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(exe, &old).context("moving running executable aside")?;
+    if let Err(e) = std::fs::rename(new_bin, exe) {
+        // Restore the original so a failed swap doesn't strand the user.
+        let _ = std::fs::rename(&old, exe);
+        return Err(anyhow::Error::from(e).context("moving new executable into place"));
+    }
+    Ok(())
+}
+
+/// Path of the previous binary set aside by a Windows self-update (`<exe>.old`).
+#[cfg(windows)]
+fn stale_path(exe: &Path) -> PathBuf {
+    let mut p = exe.as_os_str().to_owned();
+    p.push(".old");
+    PathBuf::from(p)
+}
+
+/// Remove the leftover previous executable from a prior Windows self-update.
+/// Best-effort and called once at startup. No-op on Unix, where the update path
+/// renames over the running binary directly and leaves nothing behind.
+pub fn cleanup_stale_update() {
+    #[cfg(windows)]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::fs::remove_file(stale_path(&exe));
+        }
+    }
 }
 
 /// HTTP agent for release downloads, with timeouts so a stalled connection
@@ -287,8 +380,25 @@ mod tests {
             "aarch64-unknown-linux-musl",
             "x86_64-apple-darwin",
             "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
         ];
         assert!(known.contains(&current_target()));
+    }
+
+    #[test]
+    fn asset_name_matches_platform_archive() {
+        let name = asset_name();
+        assert!(name.starts_with("kamaji-"));
+        assert!(name.contains(current_target()));
+        if cfg!(windows) {
+            assert_eq!(asset_ext(), "zip");
+            assert!(name.ends_with(".zip"));
+            assert_eq!(bin_name(), "kamaji.exe");
+        } else {
+            assert_eq!(asset_ext(), "tar.gz");
+            assert!(name.ends_with(".tar.gz"));
+            assert_eq!(bin_name(), "kamaji");
+        }
     }
 
     #[test]

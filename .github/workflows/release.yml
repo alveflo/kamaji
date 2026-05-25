@@ -28,6 +28,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +58,8 @@ jobs:
         if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
           bin="target/${{ matrix.target }}/release/kamaji"
           asset="kamaji-${{ matrix.target }}.tar.gz"
@@ -66,9 +70,24 @@ jobs:
             shasum -a 256 "$asset" > "$asset.sha256"
           fi
 
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/kamaji.exe"
+          $asset = "kamaji-${{ matrix.target }}.zip"
+          Compress-Archive -Path $bin -DestinationPath $asset -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $asset).Hash.ToLower()
+          "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
+
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
+          # Glob both archive flavours; non-matching patterns are skipped
+          # (fail_on_unmatched_files defaults to false), so each runner uploads
+          # only the asset it actually produced.
           files: |
             kamaji-${{ matrix.target }}.tar.gz
             kamaji-${{ matrix.target }}.tar.gz.sha256
+            kamaji-${{ matrix.target }}.zip
+            kamaji-${{ matrix.target }}.zip.sha256
