@@ -6,8 +6,10 @@
 // those callers land.
 #![allow(dead_code)]
 
+use anyhow::{Context, Result};
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// This binary's version, baked in at compile time.
@@ -96,6 +98,56 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+const RELEASES_API: &str = "https://api.github.com/repos/alveflo/kamaji/releases/latest";
+
+/// On-disk cache path: `<cache_dir>/update-check.json`.
+pub fn cache_path() -> Option<PathBuf> {
+    let dirs = ProjectDirs::from("", "", "kamaji")?;
+    Some(dirs.cache_dir().join("update-check.json"))
+}
+
+/// GET the latest release tag from the GitHub API. GitHub rejects requests
+/// without a User-Agent.
+fn fetch_latest_tag() -> Result<String> {
+    let body = ureq::get(RELEASES_API)
+        .set("User-Agent", concat!("kamaji/", env!("CARGO_PKG_VERSION")))
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .context("requesting latest release")?
+        .into_string()
+        .context("reading release response")?;
+    parse_latest_tag(&body).context("no tag_name in release response")
+}
+
+/// Return `Some(version)` if a newer release than this build is available.
+/// Uses the on-disk cache (TTL `TTL_SECS`); refreshes it on a miss. Any error
+/// (network down, no cache dir, rate-limited) yields `None` — the check is
+/// best-effort and never surfaces failures.
+pub fn check(cache_path: &Path) -> Option<String> {
+    let now = now_secs();
+
+    let latest = match read_cache(cache_path) {
+        Some(entry) if is_fresh(&entry, now, TTL_SECS) => entry.latest_version,
+        _ => {
+            let tag = fetch_latest_tag().ok()?;
+            let _ = write_cache(
+                cache_path,
+                &CacheEntry {
+                    checked_at: now,
+                    latest_version: tag.clone(),
+                },
+            );
+            tag
+        }
+    };
+
+    if is_newer(&latest, current_version()) {
+        Some(latest)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
