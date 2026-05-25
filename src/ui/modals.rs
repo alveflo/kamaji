@@ -260,6 +260,7 @@ Enter     attach / start session
 m         move ticket (then ←/→, Enter)
 d         delete ticket
 t         switch theme (live preview)
+u         update kamaji (shown when a new version is available)
 p         switch project
 ?         this help
 q         quit
@@ -342,7 +343,10 @@ mod tests {
                 text.push_str(buf[Position::new(x, y)].symbol());
             }
         }
-        assert!(text.contains("kamaji"), "suggestion list should render:\n{text}");
+        assert!(
+            text.contains("kamaji"),
+            "suggestion list should render:\n{text}"
+        );
         assert!(text.contains("kafka"));
     }
 
@@ -373,10 +377,19 @@ mod tests {
             }
         }
         // Selected entry is visible; an early entry has scrolled out.
-        assert!(text.contains("dir7"), "selected entry must be visible:\n{text}");
-        assert!(!text.contains("dir0"), "early entry should scroll out of the 5-window:\n{text}");
+        assert!(
+            text.contains("dir7"),
+            "selected entry must be visible:\n{text}"
+        );
+        assert!(
+            !text.contains("dir0"),
+            "early entry should scroll out of the 5-window:\n{text}"
+        );
         // At most 5 of the dirN labels are rendered.
         let visible = (0..8).filter(|i| text.contains(&format!("dir{i}"))).count();
-        assert!(visible <= 5, "at most 5 suggestions visible, saw {visible}:\n{text}");
+        assert!(
+            visible <= 5,
+            "at most 5 suggestions visible, saw {visible}:\n{text}"
+        );
     }
 }

@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::app::{App, FormField, Modal, TicketForm};
-use crate::theme::Theme;
 use crate::config::Config;
 use crate::db::Db;
 use crate::detect::{self, SignalLevel};
 use crate::models::{Agent, Status, Ticket};
+use crate::theme::Theme;
 use crate::{agent, git, layout, slug, zellij, zellij_config};
 
 /// Side effect the main loop must run by releasing the terminal.
@@ -30,6 +30,10 @@ pub enum Effect {
     },
     /// Leave the board and return to the project picker.
     SwitchProject,
+    /// Download the latest release and replace the running binary.
+    SelfUpdate {
+        version: String,
+    },
 }
 
 /// Everything needed to launch a session, produced by `prepare_session`
@@ -581,6 +585,11 @@ impl Engine {
             KeyCode::Char('/') => self.app.search_start(),
             KeyCode::Esc if !self.app.search.is_empty() => self.app.search_clear(),
             KeyCode::Char('p') => return Ok(Effect::SwitchProject),
+            KeyCode::Char('u') => {
+                if let Some(version) = self.app.update.clone() {
+                    return Ok(Effect::SelfUpdate { version });
+                }
+            }
             KeyCode::Char('?') => self.app.modal = Modal::Help,
             KeyCode::Char('t') => {
                 let idx = Theme::index_of(&self.config.theme);
@@ -1177,8 +1186,12 @@ mod tests {
     #[test]
     fn picker_down_previews_next_theme() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.app.modal = Modal::ThemePicker { selected: 0, original: 0 };
-        e.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).unwrap();
+        e.app.modal = Modal::ThemePicker {
+            selected: 0,
+            original: 0,
+        };
+        e.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
         assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[1]().name);
         match e.app.modal {
             Modal::ThemePicker { selected, .. } => assert_eq!(selected, 1),
@@ -1192,9 +1205,13 @@ mod tests {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         e.config_path = dir.path().join("config.toml");
         let nord = crate::theme::Theme::index_of("nord");
-        e.app.modal = Modal::ThemePicker { selected: nord, original: 0 };
+        e.app.modal = Modal::ThemePicker {
+            selected: nord,
+            original: 0,
+        };
         e.app.theme = crate::theme::Theme::ALL[nord]();
-        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.config.theme, "nord");
         let saved = crate::config::load_from(&e.config_path).unwrap();
@@ -1205,9 +1222,13 @@ mod tests {
     fn picker_esc_reverts_to_original_theme() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         let nord = crate::theme::Theme::index_of("nord");
-        e.app.modal = Modal::ThemePicker { selected: nord, original: 0 };
+        e.app.modal = Modal::ThemePicker {
+            selected: nord,
+            original: 0,
+        };
         e.app.theme = crate::theme::Theme::ALL[nord]();
-        e.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
+        e.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[0]().name);
     }
@@ -1215,10 +1236,16 @@ mod tests {
     #[test]
     fn picker_up_clamps_at_first_theme() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.app.modal = Modal::ThemePicker { selected: 0, original: 0 };
-        e.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).unwrap();
+        e.app.modal = Modal::ThemePicker {
+            selected: 0,
+            original: 0,
+        };
+        e.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .unwrap();
         match e.app.modal {
-            Modal::ThemePicker { selected, .. } => assert_eq!(selected, 0, "up at index 0 stays at 0"),
+            Modal::ThemePicker { selected, .. } => {
+                assert_eq!(selected, 0, "up at index 0 stays at 0")
+            }
             ref other => panic!("expected ThemePicker, got {other:?}"),
         }
         assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[0]().name);
@@ -1232,8 +1259,12 @@ mod tests {
         // Open at the current (default) theme and confirm without moving.
         e.app.theme = crate::theme::Theme::ALL[0]();
         e.config.theme = crate::theme::Theme::ALL[0]().name.to_string();
-        e.app.modal = Modal::ThemePicker { selected: 0, original: 0 };
-        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+        e.app.modal = Modal::ThemePicker {
+            selected: 0,
+            original: 0,
+        };
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         let saved = crate::config::load_from(&e.config_path).unwrap();
         assert_eq!(saved.theme, crate::theme::Theme::ALL[0]().name);
@@ -1353,5 +1384,23 @@ mod tests {
             Status::Review,
             "a hidden ticket is still auto-moved to Needs attention"
         );
+    }
+
+    #[test]
+    fn u_triggers_self_update_when_update_available() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.app.update = Some("0.9.0".into());
+        assert_eq!(
+            e.on_key(key('u')).unwrap(),
+            Effect::SelfUpdate {
+                version: "0.9.0".into()
+            }
+        );
+    }
+
+    #[test]
+    fn u_does_nothing_without_an_update() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        assert_eq!(e.on_key(key('u')).unwrap(), Effect::None);
     }
 }

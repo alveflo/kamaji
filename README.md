@@ -12,8 +12,25 @@ into it. Detach and the session keeps running in the background.
 │ ○ #4 Dark mode││ ● #6 API docs ││               ││               │
 │               ││               ││               ││               │
 └───────────────┘└───────────────┘└───────────────┘└───────────────┘
- project: acme-api  [c]reate [m]ove [a]ttach [o]pen [d]elete [p]roject [?]help [q]uit
+ project: acme-api  [↵]attach [e]dit [c]reate [m]ove [d]elete [/]search [t]heme [p]roject [?]help [q]uit
 ```
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/install.sh | sh
+```
+
+This downloads a prebuilt binary for your platform (Linux/macOS, x86_64/aarch64)
+to `~/.local/bin`. Override the location with `KAMAJI_INSTALL_DIR`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/install.sh | KAMAJI_INSTALL_DIR=/usr/local/bin sh
+```
+
+kamaji checks for new releases on launch. When one is available the status bar
+shows `New version vX.Y.Z available — press u to update`; press `u` to download
+and replace the binary in place, then restart.
 
 ## Features
 
@@ -124,7 +141,7 @@ pressing `p`.
    kamaji resumes and the board is visible again. The agent session keeps running
    in the background.
 
-4. **Re-attach** — select the ticket and press `a` to re-enter the session.
+4. **Re-attach** — select the ticket and press `Enter` to re-enter the session.
 
 5. **Move to Review** — press `m` and navigate to **Review**, then `Enter`.
    Moves are manual (see note below).
@@ -179,12 +196,14 @@ prompt.
 | `↓` / `j` | Select ticket below |
 | `←` / `h` | Focus column to the left |
 | `→` / `l` | Focus column to the right |
+| `Enter` | Attach to the selected ticket's session, or start it (creates the worktree + zellij session and moves the ticket to In Progress) |
+| `e` | Edit selected ticket (title and description) |
 | `c` | Create ticket (opens form modal) |
 | `m` | Move selected ticket (opens move modal; use `←`/`→` to pick column, `Enter` to confirm, `Esc` to cancel) |
-| `a` | Attach to selected ticket's zellij session |
-| `o` / `Enter` | Open / edit selected ticket (title and description) |
 | `d` | Delete selected ticket (prompts for confirmation and optional cleanup) |
+| `/` | Search / filter tickets by title (`Esc` clears) |
 | `t` | Switch theme (opens a picker; `↑`/`↓` preview live, `Enter` saves, `Esc` cancels) |
+| `u` | Update kamaji (shown only when a newer release is available) |
 | `p` | Switch project (returns to the project picker) |
 | `?` | Help overlay |
 | `q` | Quit |

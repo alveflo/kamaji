@@ -29,6 +29,9 @@ struct ProjectForm {
     suggestions: Vec<String>,
     /// Highlighted entry in `suggestions`.
     suggestion_idx: usize,
+    /// `Some(path)` once the user has submitted a root directory that doesn't
+    /// exist yet and we're awaiting their confirmation to create it.
+    pending_create: Option<PathBuf>,
 }
 
 impl ProjectForm {
@@ -40,10 +43,13 @@ impl ProjectForm {
             error: None,
             suggestions: Vec::new(),
             suggestion_idx: 0,
+            pending_create: None,
         }
     }
 
     fn next_field(&mut self) {
+        // Switching fields invalidates a pending "create this directory?" prompt.
+        self.pending_create = None;
         self.field = match self.field {
             ProjectField::Name => ProjectField::Root,
             ProjectField::Root => ProjectField::Name,
@@ -56,6 +62,8 @@ impl ProjectForm {
     }
 
     fn input_char(&mut self, c: char) {
+        // Editing the path invalidates a pending confirmation against the old value.
+        self.pending_create = None;
         match self.field {
             ProjectField::Name => self.name.push(c),
             ProjectField::Root => self.root.push(c),
@@ -63,6 +71,7 @@ impl ProjectForm {
     }
 
     fn backspace(&mut self) {
+        self.pending_create = None;
         match self.field {
             ProjectField::Name => self.name.pop(),
             ProjectField::Root => self.root.pop(),
@@ -101,12 +110,59 @@ impl ProjectForm {
     /// chosen directory name plus a trailing `/`, keeping the literal parent text
     /// (e.g. a `~/` prefix). Then refresh suggestions for the new level.
     fn accept_suggestion(&mut self) {
+        // Completing the path edits the root, which invalidates a pending
+        // "create this directory?" prompt against the old value.
+        self.pending_create = None;
         let Some(name) = self.suggestions.get(self.suggestion_idx).cloned() else {
             return;
         };
         let (parent, _partial) = split_root(&self.root);
         self.root = format!("{parent}{name}/");
         self.refresh_suggestions();
+    }
+
+    /// Handle Esc. Returns `true` when the whole form should close; when a
+    /// directory-creation prompt is pending, Esc only dismisses that prompt and
+    /// returns `false` so the form stays open for editing.
+    fn escape(&mut self) -> bool {
+        if self.pending_create.is_some() {
+            self.pending_create = None;
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Create the directory awaiting confirmation (parents included) and return
+    /// it. Returns `Ok(None)` when nothing was pending.
+    fn confirm_create(&mut self) -> std::io::Result<Option<PathBuf>> {
+        match self.pending_create.take() {
+            Some(path) => {
+                std::fs::create_dir_all(&path)?;
+                Ok(Some(path))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+/// Outcome of validating a submitted root directory.
+enum RootCheck {
+    /// Exists and is a directory — ready to create the project here.
+    Ready(PathBuf),
+    /// Does not exist — offer to create it.
+    NeedsConfirm(PathBuf),
+    /// Exists but is not a directory (e.g. a file) — unusable, with a message.
+    Invalid(String),
+}
+
+fn check_root(path: PathBuf) -> RootCheck {
+    if path.is_dir() {
+        RootCheck::Ready(path)
+    } else if path.exists() {
+        RootCheck::Invalid(format!("Not a directory: {}", contract_home(&path)))
+    } else {
+        RootCheck::NeedsConfirm(path)
     }
 }
 
@@ -161,7 +217,11 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
                 _ => {}
             },
             Some(form) => match key.code {
-                KeyCode::Esc => state.form = None,
+                KeyCode::Esc => {
+                    if form.escape() {
+                        state.form = None;
+                    }
+                }
                 KeyCode::Tab => {
                     if form.field == ProjectField::Root {
                         // On Root, Tab completes the highlighted entry; with no
@@ -183,13 +243,29 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
                 KeyCode::Enter => {
                     if form.name.trim().is_empty() {
                         form.error = Some("Name is required".into());
+                    } else if form.pending_create.is_some() {
+                        // Second Enter: confirm creating the missing directory.
+                        match form.confirm_create() {
+                            Ok(Some(root)) => {
+                                let project = db.create_project(form.name.trim(), &root, None)?;
+                                return Ok(Some(project));
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                form.error = Some(format!("Couldn't create directory: {e}"));
+                            }
+                        }
                     } else {
-                        let root = form.resolved_root();
-                        if !root.is_dir() {
-                            form.error = Some(format!("Not a directory: {}", root.display()));
-                        } else {
-                            let project = db.create_project(form.name.trim(), &root, None)?;
-                            return Ok(Some(project));
+                        match check_root(form.resolved_root()) {
+                            RootCheck::Ready(root) => {
+                                let project = db.create_project(form.name.trim(), &root, None)?;
+                                return Ok(Some(project));
+                            }
+                            RootCheck::NeedsConfirm(path) => {
+                                form.error = None;
+                                form.pending_create = Some(path);
+                            }
+                            RootCheck::Invalid(msg) => form.error = Some(msg),
                         }
                     }
                 }
@@ -271,6 +347,19 @@ fn dir_suggestions(parent: &Path, partial: &str) -> Vec<String> {
     names
 }
 
+/// Contract a leading home-directory prefix to `~` for display (inverse of `shellexpand`).
+fn contract_home(path: &Path) -> String {
+    if let Some(home) = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()) {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            if rest.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return format!("~/{}", rest.display());
+        }
+    }
+    path.display().to_string()
+}
+
 /// Visible project rows before the list starts scrolling.
 const MAX_VISIBLE_ROWS: usize = 12;
 /// Fixed modal width in columns.
@@ -333,10 +422,7 @@ fn render(frame: &mut Frame, state: &PickerState) {
                 ListItem::new(Line::from(vec![
                     Span::styled(format!("{:<name_w$}", p.name), Style::new().fg(theme.text)),
                     Span::raw("  "),
-                    Span::styled(
-                        p.root_dir.display().to_string(),
-                        Style::new().fg(theme.muted),
-                    ),
+                    Span::styled(contract_home(&p.root_dir), Style::new().fg(theme.muted)),
                 ]))
             })
             .collect();
@@ -359,13 +445,30 @@ fn render(frame: &mut Frame, state: &PickerState) {
 
     // 4. The new-project form overlays everything when open.
     if let Some(form) = &state.form {
+        // While awaiting confirmation to create a missing directory, the message
+        // line warns about it and the hint explains how to respond — and the
+        // suggestion list is hidden so the prompt stands on its own.
+        let pending_msg = form
+            .pending_create
+            .as_ref()
+            .map(|p| format!("⚠ {} doesn't exist.", contract_home(p)));
         let on_root = form.field == ProjectField::Root;
-        let hint = if on_root {
-            "↑/↓ choose · Tab complete · ↵ create · Esc cancel"
-        } else {
-            "Tab/Shift-Tab: field   Enter: create   Esc: cancel"
-        };
-        let suggestions: &[String] = if on_root { &form.suggestions } else { &[] };
+        let (hint, message, suggestions): (&str, Option<&str>, &[String]) =
+            if let Some(msg) = &pending_msg {
+                ("Enter: create it   Esc: edit", Some(msg.as_str()), &[])
+            } else if on_root {
+                (
+                    "↑/↓ choose · Tab complete · ↵ create · Esc cancel",
+                    form.error.as_deref(),
+                    &form.suggestions,
+                )
+            } else {
+                (
+                    "Tab/Shift-Tab: field   Enter: create   Esc: cancel",
+                    form.error.as_deref(),
+                    &[],
+                )
+            };
         crate::ui::render_field_modal(
             frame,
             &state.theme,
@@ -379,7 +482,7 @@ fn render(frame: &mut Frame, state: &PickerState) {
                 ),
             ],
             hint,
-            form.error.as_deref(),
+            message,
             (suggestions, form.suggestion_idx),
         );
     }
@@ -499,6 +602,83 @@ mod tests {
     }
 
     #[test]
+    fn check_root_is_ready_for_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            check_root(dir.path().to_path_buf()),
+            RootCheck::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn check_root_needs_confirm_for_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does/not/exist");
+        assert!(matches!(check_root(missing), RootCheck::NeedsConfirm(_)));
+    }
+
+    #[test]
+    fn check_root_is_invalid_for_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(matches!(check_root(file), RootCheck::Invalid(_)));
+    }
+
+    #[test]
+    fn confirm_create_makes_missing_directory_with_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("new/deeply/nested");
+
+        let mut form = ProjectForm::new();
+        // Arm the prompt as the Enter handler would for a missing path.
+        form.pending_create = Some(nested.clone());
+
+        let created = form.confirm_create().unwrap();
+        assert_eq!(created.as_deref(), Some(nested.as_path()));
+        assert!(nested.is_dir(), "directory and parents should be created");
+        assert!(form.pending_create.is_none(), "pending is consumed");
+    }
+
+    #[test]
+    fn confirm_create_is_noop_without_pending() {
+        let mut form = ProjectForm::new();
+        assert!(form.confirm_create().unwrap().is_none());
+    }
+
+    #[test]
+    fn escape_dismisses_pending_before_closing_form() {
+        let mut form = ProjectForm::new();
+        form.pending_create = Some(PathBuf::from("/tmp/whatever"));
+
+        // First Esc only cancels the pending create; form stays open.
+        assert!(!form.escape());
+        assert!(form.pending_create.is_none());
+        // Next Esc closes the form.
+        assert!(form.escape());
+    }
+
+    #[test]
+    fn editing_clears_a_pending_create() {
+        let mut form = ProjectForm::new();
+
+        form.pending_create = Some(PathBuf::from("/tmp/a"));
+        form.input_char('x');
+        assert!(form.pending_create.is_none(), "typing clears pending");
+
+        form.pending_create = Some(PathBuf::from("/tmp/a"));
+        form.backspace();
+        assert!(form.pending_create.is_none(), "backspace clears pending");
+
+        form.pending_create = Some(PathBuf::from("/tmp/a"));
+        form.next_field();
+        assert!(
+            form.pending_create.is_none(),
+            "switching field clears pending"
+        );
+    }
+
+    #[test]
     fn dir_suggestions_orders_prefix_matches_first() {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
@@ -587,6 +767,27 @@ mod tests {
         form.suggestions.clear();
         form.accept_suggestion();
         assert_eq!(form.root, "~/dev/");
+    }
+
+    #[test]
+    fn contract_home_abbreviates_home_prefix() {
+        use std::path::PathBuf;
+
+        let home = directories::BaseDirs::new()
+            .map(|b| b.home_dir().to_path_buf())
+            .expect("home dir");
+
+        // A path under home is shown with a leading `~`.
+        assert_eq!(contract_home(&home.join("dev/kamaji")), "~/dev/kamaji");
+        // The home directory itself contracts to a bare `~`.
+        assert_eq!(contract_home(&home), "~");
+        // Round-trips with shellexpand, the inverse operation.
+        assert_eq!(
+            shellexpand(&contract_home(&home.join("dev/kamaji"))),
+            home.join("dev/kamaji").to_string_lossy()
+        );
+        // A path outside home is left untouched.
+        assert_eq!(contract_home(&PathBuf::from("/opt/foo")), "/opt/foo");
     }
 
     #[test]
