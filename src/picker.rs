@@ -3,7 +3,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -176,6 +176,7 @@ fn render(frame: &mut Frame, state: &PickerState) {
 
     // Reset (not Black) so the modal blends with the terminal background on themes with no forced base.
     let block = crate::ui::themed_block(theme, " kamaji ".to_string())
+        .padding(Padding::horizontal(1))
         .style(Style::new().bg(theme.base.unwrap_or(Color::Reset)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -202,12 +203,18 @@ fn render(frame: &mut Frame, state: &PickerState) {
             list_area,
         );
     } else {
+        let name_w = state
+            .projects
+            .iter()
+            .map(|p| p.name.chars().count())
+            .max()
+            .unwrap_or(0);
         let items: Vec<ListItem> = state
             .projects
             .iter()
             .map(|p| {
                 ListItem::new(Line::from(vec![
-                    Span::styled(p.name.clone(), Style::new().fg(theme.text)),
+                    Span::styled(format!("{:<name_w$}", p.name), Style::new().fg(theme.text)),
                     Span::raw("  "),
                     Span::styled(
                         p.root_dir.display().to_string(),
