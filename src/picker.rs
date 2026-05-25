@@ -542,7 +542,9 @@ mod tests {
         }
         let resolved = form.resolved_root();
         assert!(!resolved.to_string_lossy().starts_with('~'));
-        assert!(resolved.to_string_lossy().ends_with("/foo"));
+        // Assert on the final path component, not a "/foo" suffix: the separator
+        // is "\" on Windows, so a literal "/foo" check fails there.
+        assert_eq!(resolved.file_name().and_then(|s| s.to_str()), Some("foo"));
     }
 
     #[test]
