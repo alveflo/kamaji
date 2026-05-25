@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::app::{App, FormField, Modal, TicketForm};
-use crate::theme::Theme;
 use crate::config::Config;
 use crate::db::Db;
 use crate::detect::{self, SignalLevel};
 use crate::models::{Agent, Status, Ticket};
+use crate::theme::Theme;
 use crate::{agent, git, layout, slug, zellij, zellij_config};
 
 /// Side effect the main loop must run by releasing the terminal.
@@ -1177,8 +1177,12 @@ mod tests {
     #[test]
     fn picker_down_previews_next_theme() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.app.modal = Modal::ThemePicker { selected: 0, original: 0 };
-        e.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).unwrap();
+        e.app.modal = Modal::ThemePicker {
+            selected: 0,
+            original: 0,
+        };
+        e.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
         assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[1]().name);
         match e.app.modal {
             Modal::ThemePicker { selected, .. } => assert_eq!(selected, 1),
@@ -1192,9 +1196,13 @@ mod tests {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         e.config_path = dir.path().join("config.toml");
         let nord = crate::theme::Theme::index_of("nord");
-        e.app.modal = Modal::ThemePicker { selected: nord, original: 0 };
+        e.app.modal = Modal::ThemePicker {
+            selected: nord,
+            original: 0,
+        };
         e.app.theme = crate::theme::Theme::ALL[nord]();
-        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.config.theme, "nord");
         let saved = crate::config::load_from(&e.config_path).unwrap();
@@ -1205,9 +1213,13 @@ mod tests {
     fn picker_esc_reverts_to_original_theme() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         let nord = crate::theme::Theme::index_of("nord");
-        e.app.modal = Modal::ThemePicker { selected: nord, original: 0 };
+        e.app.modal = Modal::ThemePicker {
+            selected: nord,
+            original: 0,
+        };
         e.app.theme = crate::theme::Theme::ALL[nord]();
-        e.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
+        e.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[0]().name);
     }
@@ -1215,10 +1227,16 @@ mod tests {
     #[test]
     fn picker_up_clamps_at_first_theme() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.app.modal = Modal::ThemePicker { selected: 0, original: 0 };
-        e.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).unwrap();
+        e.app.modal = Modal::ThemePicker {
+            selected: 0,
+            original: 0,
+        };
+        e.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .unwrap();
         match e.app.modal {
-            Modal::ThemePicker { selected, .. } => assert_eq!(selected, 0, "up at index 0 stays at 0"),
+            Modal::ThemePicker { selected, .. } => {
+                assert_eq!(selected, 0, "up at index 0 stays at 0")
+            }
             ref other => panic!("expected ThemePicker, got {other:?}"),
         }
         assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[0]().name);
@@ -1232,8 +1250,12 @@ mod tests {
         // Open at the current (default) theme and confirm without moving.
         e.app.theme = crate::theme::Theme::ALL[0]();
         e.config.theme = crate::theme::Theme::ALL[0]().name.to_string();
-        e.app.modal = Modal::ThemePicker { selected: 0, original: 0 };
-        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+        e.app.modal = Modal::ThemePicker {
+            selected: 0,
+            original: 0,
+        };
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         let saved = crate::config::load_from(&e.config_path).unwrap();
         assert_eq!(saved.theme, crate::theme::Theme::ALL[0]().name);

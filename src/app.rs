@@ -149,13 +149,23 @@ impl TicketForm {
 pub enum Modal {
     None,
     Form(TicketForm),
-    Move { ticket_id: i64, target: Status },
-    ConfirmDone { ticket_id: i64 },
-    ConfirmDelete { ticket_id: i64 },
+    Move {
+        ticket_id: i64,
+        target: Status,
+    },
+    ConfirmDone {
+        ticket_id: i64,
+    },
+    ConfirmDelete {
+        ticket_id: i64,
+    },
     Help,
     /// Theme picker: live-previews `Theme::ALL[selected]`; `original` is the
     /// index to restore on cancel.
-    ThemePicker { selected: usize, original: usize },
+    ThemePicker {
+        selected: usize,
+        original: usize,
+    },
 }
 
 pub struct App {
