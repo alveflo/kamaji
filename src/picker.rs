@@ -25,6 +25,9 @@ struct ProjectForm {
     root: String,
     field: ProjectField,
     error: Option<String>,
+    /// `Some(path)` once the user has submitted a root directory that doesn't
+    /// exist yet and we're awaiting their confirmation to create it.
+    pending_create: Option<PathBuf>,
 }
 
 impl ProjectForm {
@@ -34,10 +37,13 @@ impl ProjectForm {
             root: String::new(),
             field: ProjectField::Name,
             error: None,
+            pending_create: None,
         }
     }
 
     fn next_field(&mut self) {
+        // Switching fields invalidates a pending "create this directory?" prompt.
+        self.pending_create = None;
         self.field = match self.field {
             ProjectField::Name => ProjectField::Root,
             ProjectField::Root => ProjectField::Name,
@@ -50,6 +56,8 @@ impl ProjectForm {
     }
 
     fn input_char(&mut self, c: char) {
+        // Editing the path invalidates a pending confirmation against the old value.
+        self.pending_create = None;
         match self.field {
             ProjectField::Name => self.name.push(c),
             ProjectField::Root => self.root.push(c),
@@ -57,6 +65,7 @@ impl ProjectForm {
     }
 
     fn backspace(&mut self) {
+        self.pending_create = None;
         match self.field {
             ProjectField::Name => self.name.pop(),
             ProjectField::Root => self.root.pop(),
@@ -66,6 +75,50 @@ impl ProjectForm {
     /// Resolve the entered root directory, expanding a leading `~`.
     fn resolved_root(&self) -> PathBuf {
         PathBuf::from(shellexpand(&self.root))
+    }
+
+    /// Handle Esc. Returns `true` when the whole form should close; when a
+    /// directory-creation prompt is pending, Esc only dismisses that prompt and
+    /// returns `false` so the form stays open for editing.
+    fn escape(&mut self) -> bool {
+        if self.pending_create.is_some() {
+            self.pending_create = None;
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Create the directory awaiting confirmation (parents included) and return
+    /// it. Returns `Ok(None)` when nothing was pending.
+    fn confirm_create(&mut self) -> std::io::Result<Option<PathBuf>> {
+        match self.pending_create.take() {
+            Some(path) => {
+                std::fs::create_dir_all(&path)?;
+                Ok(Some(path))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+/// Outcome of validating a submitted root directory.
+enum RootCheck {
+    /// Exists and is a directory — ready to create the project here.
+    Ready(PathBuf),
+    /// Does not exist — offer to create it.
+    NeedsConfirm(PathBuf),
+    /// Exists but is not a directory (e.g. a file) — unusable, with a message.
+    Invalid(String),
+}
+
+fn check_root(path: PathBuf) -> RootCheck {
+    if path.is_dir() {
+        RootCheck::Ready(path)
+    } else if path.exists() {
+        RootCheck::Invalid(format!("Not a directory: {}", contract_home(&path)))
+    } else {
+        RootCheck::NeedsConfirm(path)
     }
 }
 
@@ -120,19 +173,39 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
                 _ => {}
             },
             Some(form) => match key.code {
-                KeyCode::Esc => state.form = None,
+                KeyCode::Esc => {
+                    if form.escape() {
+                        state.form = None;
+                    }
+                }
                 KeyCode::Tab => form.next_field(),
                 KeyCode::BackTab => form.prev_field(),
                 KeyCode::Enter => {
                     if form.name.trim().is_empty() {
                         form.error = Some("Name is required".into());
+                    } else if form.pending_create.is_some() {
+                        // Second Enter: confirm creating the missing directory.
+                        match form.confirm_create() {
+                            Ok(Some(root)) => {
+                                let project = db.create_project(form.name.trim(), &root, None)?;
+                                return Ok(Some(project));
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                form.error = Some(format!("Couldn't create directory: {e}"));
+                            }
+                        }
                     } else {
-                        let root = form.resolved_root();
-                        if !root.is_dir() {
-                            form.error = Some(format!("Not a directory: {}", root.display()));
-                        } else {
-                            let project = db.create_project(form.name.trim(), &root, None)?;
-                            return Ok(Some(project));
+                        match check_root(form.resolved_root()) {
+                            RootCheck::Ready(root) => {
+                                let project = db.create_project(form.name.trim(), &root, None)?;
+                                return Ok(Some(project));
+                            }
+                            RootCheck::NeedsConfirm(path) => {
+                                form.error = None;
+                                form.pending_create = Some(path);
+                            }
+                            RootCheck::Invalid(msg) => form.error = Some(msg),
                         }
                     }
                 }
@@ -252,6 +325,19 @@ fn render(frame: &mut Frame, state: &PickerState) {
 
     // 4. The new-project form overlays everything when open.
     if let Some(form) = &state.form {
+        // While awaiting confirmation to create a missing directory, the message
+        // line warns about it and the hint explains how to respond.
+        let pending_msg = form
+            .pending_create
+            .as_ref()
+            .map(|p| format!("⚠ {} doesn't exist.", contract_home(p)));
+        let (hint, message) = match &pending_msg {
+            Some(msg) => ("Enter: create it   Esc: edit", Some(msg.as_str())),
+            None => (
+                "Tab/Shift-Tab: field   Enter: create   Esc: cancel",
+                form.error.as_deref(),
+            ),
+        };
         crate::ui::render_field_modal(
             frame,
             &state.theme,
@@ -264,8 +350,8 @@ fn render(frame: &mut Frame, state: &PickerState) {
                     form.field == ProjectField::Root,
                 ),
             ],
-            "Tab/Shift-Tab: field   Enter: create   Esc: cancel",
-            form.error.as_deref(),
+            hint,
+            message,
         );
     }
 }
@@ -327,6 +413,83 @@ mod tests {
         let resolved = form.resolved_root();
         assert!(!resolved.to_string_lossy().starts_with('~'));
         assert!(resolved.to_string_lossy().ends_with("/foo"));
+    }
+
+    #[test]
+    fn check_root_is_ready_for_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            check_root(dir.path().to_path_buf()),
+            RootCheck::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn check_root_needs_confirm_for_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does/not/exist");
+        assert!(matches!(check_root(missing), RootCheck::NeedsConfirm(_)));
+    }
+
+    #[test]
+    fn check_root_is_invalid_for_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(matches!(check_root(file), RootCheck::Invalid(_)));
+    }
+
+    #[test]
+    fn confirm_create_makes_missing_directory_with_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("new/deeply/nested");
+
+        let mut form = ProjectForm::new();
+        // Arm the prompt as the Enter handler would for a missing path.
+        form.pending_create = Some(nested.clone());
+
+        let created = form.confirm_create().unwrap();
+        assert_eq!(created.as_deref(), Some(nested.as_path()));
+        assert!(nested.is_dir(), "directory and parents should be created");
+        assert!(form.pending_create.is_none(), "pending is consumed");
+    }
+
+    #[test]
+    fn confirm_create_is_noop_without_pending() {
+        let mut form = ProjectForm::new();
+        assert!(form.confirm_create().unwrap().is_none());
+    }
+
+    #[test]
+    fn escape_dismisses_pending_before_closing_form() {
+        let mut form = ProjectForm::new();
+        form.pending_create = Some(PathBuf::from("/tmp/whatever"));
+
+        // First Esc only cancels the pending create; form stays open.
+        assert!(!form.escape());
+        assert!(form.pending_create.is_none());
+        // Next Esc closes the form.
+        assert!(form.escape());
+    }
+
+    #[test]
+    fn editing_clears_a_pending_create() {
+        let mut form = ProjectForm::new();
+
+        form.pending_create = Some(PathBuf::from("/tmp/a"));
+        form.input_char('x');
+        assert!(form.pending_create.is_none(), "typing clears pending");
+
+        form.pending_create = Some(PathBuf::from("/tmp/a"));
+        form.backspace();
+        assert!(form.pending_create.is_none(), "backspace clears pending");
+
+        form.pending_create = Some(PathBuf::from("/tmp/a"));
+        form.next_field();
+        assert!(
+            form.pending_create.is_none(),
+            "switching field clears pending"
+        );
     }
 
     #[test]
