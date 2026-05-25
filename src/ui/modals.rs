@@ -105,7 +105,9 @@ pub fn render_form(frame: &mut Frame, theme: &Theme, form: &TicketForm) {
             .flat_map(|a| {
                 let sel = a == form.agent && form.field == FormField::Agent;
                 let style = if sel {
-                    Style::new().fg(theme.base.unwrap_or(Color::Black)).bg(theme.accent())
+                    Style::new()
+                        .fg(theme.base.unwrap_or(Color::Black))
+                        .bg(theme.accent())
                 } else if a == form.agent {
                     Style::new().fg(theme.accent())
                 } else {
@@ -233,6 +235,7 @@ Enter     attach / start session
 m         move ticket (then ←/→, Enter)
 d         delete ticket
 t         switch theme (live preview)
+u         update kamaji (shown when a new version is available)
 p         switch project
 ?         this help
 q         quit
@@ -262,10 +265,12 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         // Some cell must carry the theme's border color (the modal frame).
-        let found = (0..buf.area.height).any(|y| {
-            (0..buf.area.width).any(|x| buf[Position::new(x, y)].fg == theme.border)
-        });
-        assert!(found, "confirm modal should draw its border in theme.border");
+        let found = (0..buf.area.height)
+            .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].fg == theme.border));
+        assert!(
+            found,
+            "confirm modal should draw its border in theme.border"
+        );
     }
 
     #[test]
