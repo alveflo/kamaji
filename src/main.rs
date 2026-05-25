@@ -53,8 +53,29 @@ fn main() -> Result<()> {
             let config = config::load_or_init()?;
             let db = Db::open(&db_path()?)?;
             let cwd = std::env::current_dir().context("determining current directory")?;
-            let message = cli::run_create_ticket(&db, &config, &args, &cwd)?;
-            println!("{message}");
+            let state_dir = detect::default_state_dir();
+            let outcome = cli::run_create_ticket(&db, &config, &args, &cwd, &state_dir)?;
+            println!("{}", outcome.message);
+            if let Some(spec) = outcome.launch {
+                match zellij::create_session_background(&spec.name, &spec.layout_path, &spec.cwd) {
+                    Ok(()) => println!("Started '{}' in the background", spec.name),
+                    Err(e) => {
+                        eprintln!("could not start session: {e}");
+                        // Tear down the half-started session so the card is left
+                        // clean (no session, back in Todo) and recoverable.
+                        zellij::terminate_session(&spec.name);
+                        let _ = std::fs::remove_file(detect::marker_path(&state_dir, &spec.name));
+                        db.clear_ticket_session(spec.ticket_id)?;
+                        db.set_ticket_status(spec.ticket_id, models::Status::Todo)?;
+                        std::process::exit(1);
+                    }
+                }
+            } else if outcome.background_failed {
+                if let Some(warning) = outcome.warning {
+                    eprintln!("{warning}");
+                }
+                std::process::exit(1);
+            }
             Ok(())
         }
     }
