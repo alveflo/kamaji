@@ -9,6 +9,8 @@
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -154,6 +156,80 @@ pub fn check(cache_path: &Path) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Download the latest release asset for this platform, verify its checksum,
+/// and atomically replace the running executable. The new binary takes effect
+/// on the next launch (the caller should ask the user to restart).
+pub fn self_update() -> Result<()> {
+    let exe = std::env::current_exe().context("locating current executable")?;
+    let dir = exe.parent().context("executable has no parent dir")?;
+
+    let asset = format!("kamaji-{}.tar.gz", current_target());
+    let base = "https://github.com/alveflo/kamaji/releases/latest/download";
+
+    // Download tarball bytes.
+    let tarball =
+        http_get_bytes(&format!("{base}/{asset}")).context("downloading release archive")?;
+
+    // Download + verify checksum.
+    let sums = ureq::get(&format!("{base}/{asset}.sha256"))
+        .set("User-Agent", concat!("kamaji/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .context("downloading checksum")?
+        .into_string()
+        .context("reading checksum")?;
+    let expected = sums
+        .split_whitespace()
+        .next()
+        .context("empty checksum file")?;
+    let mut hasher = Sha256::new();
+    hasher.update(&tarball);
+    let actual = hasher.finalize();
+    let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+    if !actual_hex.eq_ignore_ascii_case(expected) {
+        anyhow::bail!("checksum mismatch (expected {expected}, got {actual_hex})");
+    }
+
+    // Extract into a temp dir on the same filesystem as the executable, so the
+    // final rename is atomic.
+    let tmp = dir.join(".kamaji-update-tmp");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).context("creating temp dir")?;
+    let archive = tmp.join(&asset);
+    std::fs::write(&archive, &tarball).context("writing archive")?;
+
+    let status = std::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&tmp)
+        .status()
+        .context("running tar")?;
+    if !status.success() {
+        anyhow::bail!("tar extraction failed");
+    }
+
+    let new_bin = tmp.join("kamaji");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&new_bin, std::fs::Permissions::from_mode(0o755))
+            .context("setting executable bit")?;
+    }
+
+    std::fs::rename(&new_bin, &exe).context("replacing executable")?;
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
+fn http_get_bytes(url: &str) -> Result<Vec<u8>> {
+    let resp = ureq::get(url)
+        .set("User-Agent", concat!("kamaji/", env!("CARGO_PKG_VERSION")))
+        .call()?;
+    let mut buf = Vec::new();
+    resp.into_reader().read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 #[cfg(test)]

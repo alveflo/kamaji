@@ -175,6 +175,19 @@ fn run_board(
                     }
                 }
             }
+            Effect::SelfUpdate { version } => {
+                ratatui::restore();
+                match update::self_update() {
+                    Ok(()) => {
+                        println!("Updated to v{version} — restart kamaji to use it.");
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("update failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
         }
 
         if engine.app.should_quit {
