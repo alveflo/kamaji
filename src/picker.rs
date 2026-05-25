@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::db::Db;
@@ -154,6 +154,19 @@ fn shellexpand(input: &str) -> String {
     input.to_string()
 }
 
+/// Contract a leading home-directory prefix to `~` for display (inverse of `shellexpand`).
+fn contract_home(path: &Path) -> String {
+    if let Some(home) = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()) {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            if rest.as_os_str().is_empty() {
+                return "~".to_string();
+            }
+            return format!("~/{}", rest.display());
+        }
+    }
+    path.display().to_string()
+}
+
 /// Visible project rows before the list starts scrolling.
 const MAX_VISIBLE_ROWS: usize = 12;
 /// Fixed modal width in columns.
@@ -216,10 +229,7 @@ fn render(frame: &mut Frame, state: &PickerState) {
                 ListItem::new(Line::from(vec![
                     Span::styled(format!("{:<name_w$}", p.name), Style::new().fg(theme.text)),
                     Span::raw("  "),
-                    Span::styled(
-                        p.root_dir.display().to_string(),
-                        Style::new().fg(theme.muted),
-                    ),
+                    Span::styled(contract_home(&p.root_dir), Style::new().fg(theme.muted)),
                 ]))
             })
             .collect();
@@ -317,6 +327,27 @@ mod tests {
         let resolved = form.resolved_root();
         assert!(!resolved.to_string_lossy().starts_with('~'));
         assert!(resolved.to_string_lossy().ends_with("/foo"));
+    }
+
+    #[test]
+    fn contract_home_abbreviates_home_prefix() {
+        use std::path::PathBuf;
+
+        let home = directories::BaseDirs::new()
+            .map(|b| b.home_dir().to_path_buf())
+            .expect("home dir");
+
+        // A path under home is shown with a leading `~`.
+        assert_eq!(contract_home(&home.join("dev/kamaji")), "~/dev/kamaji");
+        // The home directory itself contracts to a bare `~`.
+        assert_eq!(contract_home(&home), "~");
+        // Round-trips with shellexpand, the inverse operation.
+        assert_eq!(
+            shellexpand(&contract_home(&home.join("dev/kamaji"))),
+            home.join("dev/kamaji").to_string_lossy()
+        );
+        // A path outside home is left untouched.
+        assert_eq!(contract_home(&PathBuf::from("/opt/foo")), "/opt/foo");
     }
 
     #[test]
