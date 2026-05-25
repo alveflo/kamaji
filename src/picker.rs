@@ -25,6 +25,10 @@ struct ProjectForm {
     root: String,
     field: ProjectField,
     error: Option<String>,
+    /// Subdirectory names matching the current Root field segment.
+    suggestions: Vec<String>,
+    /// Highlighted entry in `suggestions`.
+    suggestion_idx: usize,
 }
 
 impl ProjectForm {
@@ -34,6 +38,8 @@ impl ProjectForm {
             root: String::new(),
             field: ProjectField::Name,
             error: None,
+            suggestions: Vec::new(),
+            suggestion_idx: 0,
         }
     }
 
@@ -66,6 +72,19 @@ impl ProjectForm {
     /// Resolve the entered root directory, expanding a leading `~`.
     fn resolved_root(&self) -> PathBuf {
         PathBuf::from(shellexpand(&self.root))
+    }
+
+    /// Recompute suggestions for the Root field from its current text, expanding a
+    /// leading `~` only to read the filesystem. Resets the highlight to the top.
+    fn refresh_suggestions(&mut self) {
+        let (parent, partial) = split_root(&self.root);
+        let parent_expanded = if parent.is_empty() {
+            PathBuf::from(".")
+        } else {
+            PathBuf::from(shellexpand(parent))
+        };
+        self.suggestions = dir_suggestions(&parent_expanded, partial);
+        self.suggestion_idx = 0;
     }
 }
 
@@ -440,6 +459,22 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("does-not-exist");
         assert!(dir_suggestions(&missing, "x").is_empty());
+    }
+
+    #[test]
+    fn refresh_suggestions_lists_subdirs_of_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("kamaji")).unwrap();
+        std::fs::create_dir(tmp.path().join("other")).unwrap();
+
+        let mut form = ProjectForm::new();
+        form.field = ProjectField::Root;
+        // Type an absolute parent path with partial "kam".
+        form.root = format!("{}/kam", tmp.path().display());
+        form.refresh_suggestions();
+
+        assert_eq!(form.suggestions, vec!["kamaji".to_string()]);
+        assert_eq!(form.suggestion_idx, 0);
     }
 
     #[test]
