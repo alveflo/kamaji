@@ -9,6 +9,7 @@ mod git;
 mod layout;
 mod models;
 mod picker;
+mod session;
 mod slug;
 mod theme;
 mod ui;
