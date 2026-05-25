@@ -161,6 +161,10 @@ pub fn check(cache_path: &Path) -> Option<String> {
 /// Download the latest release asset for this platform, verify its checksum,
 /// and atomically replace the running executable. The new binary takes effect
 /// on the next launch (the caller should ask the user to restart).
+///
+/// The `.sha256` is fetched from the same origin, so it guards integrity (a
+/// corrupted or truncated download) but not authenticity — it trusts whoever
+/// publishes the repo's GitHub releases, exactly as `install.sh` does.
 pub fn self_update() -> Result<()> {
     let exe = std::env::current_exe().context("locating current executable")?;
     let dir = exe.parent().context("executable has no parent dir")?;
@@ -168,12 +172,17 @@ pub fn self_update() -> Result<()> {
     let asset = format!("kamaji-{}.tar.gz", current_target());
     let base = "https://github.com/alveflo/kamaji/releases/latest/download";
 
+    // Timeouts bound a stalled connection so an interrupted download can't hang
+    // the process after the TUI has already torn down the terminal.
+    let agent = download_agent();
+
     // Download tarball bytes.
-    let tarball =
-        http_get_bytes(&format!("{base}/{asset}")).context("downloading release archive")?;
+    let tarball = http_get_bytes(&agent, &format!("{base}/{asset}"))
+        .context("downloading release archive")?;
 
     // Download + verify checksum.
-    let sums = ureq::get(&format!("{base}/{asset}.sha256"))
+    let sums = agent
+        .get(&format!("{base}/{asset}.sha256"))
         .set("User-Agent", concat!("kamaji/", env!("CARGO_PKG_VERSION")))
         .call()
         .context("downloading checksum")?
@@ -211,6 +220,9 @@ pub fn self_update() -> Result<()> {
     }
 
     let new_bin = tmp.join("kamaji");
+    if !new_bin.exists() {
+        anyhow::bail!("release archive did not contain a 'kamaji' binary");
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -223,12 +235,25 @@ pub fn self_update() -> Result<()> {
     Ok(())
 }
 
-fn http_get_bytes(url: &str) -> Result<Vec<u8>> {
-    let resp = ureq::get(url)
+/// HTTP agent for release downloads, with timeouts so a stalled connection
+/// aborts rather than hanging indefinitely.
+fn download_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout_read(std::time::Duration::from_secs(30))
+        .build()
+}
+
+fn http_get_bytes(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>> {
+    // Cap the body so a wrong/huge URL can't exhaust memory. Release binaries
+    // are a few MB; 200 MB is comfortably above any real asset.
+    const MAX_BYTES: u64 = 200 * 1024 * 1024;
+    let resp = agent
+        .get(url)
         .set("User-Agent", concat!("kamaji/", env!("CARGO_PKG_VERSION")))
         .call()?;
     let mut buf = Vec::new();
-    resp.into_reader().read_to_end(&mut buf)?;
+    resp.into_reader().take(MAX_BYTES).read_to_end(&mut buf)?;
     Ok(buf)
 }
 
