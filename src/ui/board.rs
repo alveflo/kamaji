@@ -91,10 +91,18 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
     } else {
         Span::raw("")
     };
+    let update_span = match &app.update {
+        Some(v) => Span::styled(
+            format!(" New version v{v} available — press [u] to update "),
+            Style::new().fg(theme.active),
+        ),
+        None => Span::raw(""),
+    };
     let msg = app.status_message.clone().unwrap_or_default();
     let status_line = Paragraph::new(Line::from(vec![
         Span::styled(left, Style::new().fg(theme.accent())),
         search_span,
+        update_span,
         Span::styled(msg, Style::new().fg(theme.error)),
         Span::styled(hints, Style::new().fg(theme.muted)),
     ]));
@@ -500,6 +508,16 @@ mod tests {
         let buf = render(&app, &HashMap::new(), 120, 20);
         let text = buffer_text(&buf);
         assert!(text.contains("[/]search"), "search hint present:\n{text}");
+    }
+
+    #[test]
+    fn status_bar_shows_update_banner_when_available() {
+        let mut app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        app.update = Some("0.9.0".to_string());
+        let buf = render(&app, &HashMap::new(), 120, 20);
+        let text = buffer_text(&buf);
+        assert!(text.contains("0.9.0"), "version present:\n{text}");
+        assert!(text.contains("[u]"), "update hint present:\n{text}");
     }
 
     #[test]

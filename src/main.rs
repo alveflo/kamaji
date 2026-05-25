@@ -12,6 +12,7 @@ mod picker;
 mod slug;
 mod theme;
 mod ui;
+mod update;
 mod zellij;
 mod zellij_config;
 
@@ -21,6 +22,7 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use app::App;
@@ -39,6 +41,10 @@ fn main() -> Result<()> {
             print!("{}", cli::usage());
             Ok(())
         }
+        cli::Command::Version => {
+            println!("kamaji {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         cli::Command::CreateTicket(args) => {
             let config = config::load_or_init()?;
             let db = Db::open(&db_path()?)?;
@@ -53,13 +59,33 @@ fn main() -> Result<()> {
 fn run_tui() -> Result<()> {
     let config = config::load_or_init()?;
     let db = Db::open(&db_path()?)?;
+
+    // Background, best-effort "newer version available" check. Never blocks the
+    // UI; failures are silent. Result lands in this shared slot.
+    let update_status: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    if let Some(path) = update::cache_path() {
+        let slot = Arc::clone(&update_status);
+        std::thread::spawn(move || {
+            if let Some(v) = update::check(&path) {
+                if let Ok(mut guard) = slot.lock() {
+                    *guard = Some(v);
+                }
+            }
+        });
+    }
+
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, db, config);
+    let result = run(&mut terminal, db, config, update_status);
     ratatui::restore();
     result
 }
 
-fn run(terminal: &mut DefaultTerminal, mut db: Db, mut config: config::Config) -> Result<()> {
+fn run(
+    terminal: &mut DefaultTerminal,
+    mut db: Db,
+    mut config: config::Config,
+    update_status: Arc<Mutex<Option<String>>>,
+) -> Result<()> {
     loop {
         let theme = crate::theme::Theme::by_name(&config.theme);
         let Some(project) = picker::run(terminal, &db, theme)? else {
@@ -73,7 +99,7 @@ fn run(terminal: &mut DefaultTerminal, mut db: Db, mut config: config::Config) -
         // Drop any recorded sessions that no longer exist in zellij.
         engine.reconcile()?;
 
-        let switch_project = run_board(terminal, &mut engine)?;
+        let switch_project = run_board(terminal, &mut engine, &update_status)?;
 
         // Reclaim db + config for the next project (or to drop on quit).
         db = engine.db;
@@ -87,9 +113,16 @@ fn run(terminal: &mut DefaultTerminal, mut db: Db, mut config: config::Config) -
 
 /// Run the board event loop for one project. Returns `true` if the user asked to
 /// switch projects (return to the picker), `false` to quit the app.
-fn run_board(terminal: &mut DefaultTerminal, engine: &mut Engine) -> Result<bool> {
+fn run_board(
+    terminal: &mut DefaultTerminal,
+    engine: &mut Engine,
+    update_status: &Arc<Mutex<Option<String>>>,
+) -> Result<bool> {
     let mut last_tick = Instant::now();
     loop {
+        if let Ok(guard) = update_status.lock() {
+            engine.app.update = guard.clone();
+        }
         if engine.config.auto_review.enabled && last_tick.elapsed() >= engine.config.poll_interval()
         {
             engine.detect_tick()?;
@@ -139,6 +172,19 @@ fn run_board(terminal: &mut DefaultTerminal, engine: &mut Engine) -> Result<bool
                         // Progress; recoverable via Enter, which starts fresh).
                         zellij::terminate_session(&name);
                         engine.reconcile()?;
+                    }
+                }
+            }
+            Effect::SelfUpdate { version } => {
+                ratatui::restore();
+                match update::self_update() {
+                    Ok(()) => {
+                        println!("Updated to v{version} — restart kamaji to use it.");
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("update failed: {e}");
+                        std::process::exit(1);
                     }
                 }
             }

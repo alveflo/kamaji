@@ -235,6 +235,7 @@ Enter     attach / start session
 m         move ticket (then ←/→, Enter)
 d         delete ticket
 t         switch theme (live preview)
+u         update kamaji (shown when a new version is available)
 p         switch project
 ?         this help
 q         quit

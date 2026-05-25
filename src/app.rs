@@ -178,6 +178,9 @@ pub struct App {
     pub search: Search,
     pub should_quit: bool,
     pub theme: Theme,
+    /// Newer version available (set by the background update check), shown in
+    /// the status bar and triggering self-update on `u`.
+    pub update: Option<String>,
 }
 
 impl App {
@@ -192,6 +195,7 @@ impl App {
             search: Search::default(),
             should_quit: false,
             theme: Theme::default(),
+            update: None,
         }
     }
 
@@ -378,6 +382,12 @@ mod tests {
         assert!(!f.start_in_background);
         f.toggle_background();
         assert!(f.start_in_background);
+    }
+
+    #[test]
+    fn new_app_has_no_update() {
+        let app = App::new(project(), vec![]);
+        assert!(app.update.is_none());
     }
 
     #[test]

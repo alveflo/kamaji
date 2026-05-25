@@ -15,6 +15,23 @@ into it. Detach and the session keeps running in the background.
  project: acme-api  [c]reate [m]ove [a]ttach [o]pen [d]elete [p]roject [?]help [q]uit
 ```
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/install.sh | sh
+```
+
+This downloads a prebuilt binary for your platform (Linux/macOS, x86_64/aarch64)
+to `~/.local/bin`. Override the location with `KAMAJI_INSTALL_DIR`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/install.sh | KAMAJI_INSTALL_DIR=/usr/local/bin sh
+```
+
+kamaji checks for new releases on launch. When one is available the status bar
+shows `New version vX.Y.Z available — press u to update`; press `u` to download
+and replace the binary in place, then restart.
+
 ## Features
 
 - Four-column board: **Todo → In Progress → Review → Done**

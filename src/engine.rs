@@ -30,6 +30,10 @@ pub enum Effect {
     },
     /// Leave the board and return to the project picker.
     SwitchProject,
+    /// Download the latest release and replace the running binary.
+    SelfUpdate {
+        version: String,
+    },
 }
 
 /// Everything needed to launch a session, produced by `prepare_session`
@@ -581,6 +585,11 @@ impl Engine {
             KeyCode::Char('/') => self.app.search_start(),
             KeyCode::Esc if !self.app.search.is_empty() => self.app.search_clear(),
             KeyCode::Char('p') => return Ok(Effect::SwitchProject),
+            KeyCode::Char('u') => {
+                if let Some(version) = self.app.update.clone() {
+                    return Ok(Effect::SelfUpdate { version });
+                }
+            }
             KeyCode::Char('?') => self.app.modal = Modal::Help,
             KeyCode::Char('t') => {
                 let idx = Theme::index_of(&self.config.theme);
@@ -1375,5 +1384,23 @@ mod tests {
             Status::Review,
             "a hidden ticket is still auto-moved to Needs attention"
         );
+    }
+
+    #[test]
+    fn u_triggers_self_update_when_update_available() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.app.update = Some("0.9.0".into());
+        assert_eq!(
+            e.on_key(key('u')).unwrap(),
+            Effect::SelfUpdate {
+                version: "0.9.0".into()
+            }
+        );
+    }
+
+    #[test]
+    fn u_does_nothing_without_an_update() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        assert_eq!(e.on_key(key('u')).unwrap(), Effect::None);
     }
 }
