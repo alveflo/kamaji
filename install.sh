@@ -5,9 +5,17 @@
 set -eu
 
 REPO="alveflo/kamaji"
-INSTALL_DIR="${KAMAJI_INSTALL_DIR:-$HOME/.local/bin}"
 
 err() { printf 'error: %s\n' "$1" >&2; exit 1; }
+
+# Default to ~/.local/bin, but only if HOME is set (minimal envs may lack it).
+if [ -n "${KAMAJI_INSTALL_DIR:-}" ]; then
+  INSTALL_DIR="$KAMAJI_INSTALL_DIR"
+elif [ -n "${HOME:-}" ]; then
+  INSTALL_DIR="$HOME/.local/bin"
+else
+  err "HOME is not set; set KAMAJI_INSTALL_DIR to choose an install directory"
+fi
 
 # Pick a downloader.
 if command -v curl >/dev/null 2>&1; then
@@ -56,6 +64,7 @@ fi
 
 printf 'Installing to %s ...\n' "$INSTALL_DIR"
 tar -xzf "${tmp}/${asset}" -C "$tmp"
+[ -f "${tmp}/kamaji" ] || err "archive did not contain a 'kamaji' binary"
 mkdir -p "$INSTALL_DIR"
 mv "${tmp}/kamaji" "${INSTALL_DIR}/kamaji"
 chmod +x "${INSTALL_DIR}/kamaji"
