@@ -109,9 +109,15 @@ pub fn cache_path() -> Option<PathBuf> {
 }
 
 /// GET the latest release tag from the GitHub API. GitHub rejects requests
-/// without a User-Agent.
+/// without a User-Agent. Timeouts bound the worst-case lifetime of the
+/// background check thread if a connection hangs.
 fn fetch_latest_tag() -> Result<String> {
-    let body = ureq::get(RELEASES_API)
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(5))
+        .timeout_read(std::time::Duration::from_secs(10))
+        .build();
+    let body = agent
+        .get(RELEASES_API)
         .set("User-Agent", concat!("kamaji/", env!("CARGO_PKG_VERSION")))
         .set("Accept", "application/vnd.github+json")
         .call()
