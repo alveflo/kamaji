@@ -154,6 +154,16 @@ fn shellexpand(input: &str) -> String {
     input.to_string()
 }
 
+/// Split a raw path string at its last `/` into `(parent, partial)`.
+/// `parent` keeps its trailing slash (or is empty when there is no slash);
+/// `partial` is the in-progress final segment.
+fn split_root(raw: &str) -> (&str, &str) {
+    match raw.rfind('/') {
+        Some(i) => (&raw[..=i], &raw[i + 1..]),
+        None => ("", raw),
+    }
+}
+
 /// Visible project rows before the list starts scrolling.
 const MAX_VISIBLE_ROWS: usize = 12;
 /// Fixed modal width in columns.
@@ -317,6 +327,19 @@ mod tests {
         let resolved = form.resolved_root();
         assert!(!resolved.to_string_lossy().starts_with('~'));
         assert!(resolved.to_string_lossy().ends_with("/foo"));
+    }
+
+    #[test]
+    fn split_root_splits_at_last_slash() {
+        assert_eq!(split_root("~/dev/kam"), ("~/dev/", "kam"));
+        assert_eq!(split_root("~/dev/"), ("~/dev/", ""));
+        assert_eq!(split_root("/abs/path/to/x"), ("/abs/path/to/", "x"));
+    }
+
+    #[test]
+    fn split_root_with_no_slash_has_empty_parent() {
+        assert_eq!(split_root("kam"), ("", "kam"));
+        assert_eq!(split_root(""), ("", ""));
     }
 
     #[test]
