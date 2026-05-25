@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::db::Db;
@@ -177,6 +177,31 @@ fn fuzzy_subsequence(partial: &str, candidate: &str) -> bool {
         return false;
     }
     true
+}
+
+/// List subdirectory names of `parent` whose name fuzzy-matches `partial`.
+/// Names that start with `partial` (case-insensitive) sort first; the rest
+/// follow, each group alphabetical (case-insensitive). A parent that cannot be
+/// read yields an empty list.
+fn dir_suggestions(parent: &Path, partial: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let lower_partial = partial.to_lowercase();
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| fuzzy_subsequence(partial, name))
+        .collect();
+    names.sort_by(|a, b| {
+        let a_pref = a.to_lowercase().starts_with(&lower_partial);
+        let b_pref = b.to_lowercase().starts_with(&lower_partial);
+        b_pref
+            .cmp(&a_pref)
+            .then_with(|| a.to_lowercase().cmp(&b.to_lowercase()))
+    });
+    names
 }
 
 /// Visible project rows before the list starts scrolling.
@@ -375,6 +400,46 @@ mod tests {
     fn fuzzy_subsequence_empty_partial_matches_everything() {
         assert!(fuzzy_subsequence("", "anything"));
         assert!(fuzzy_subsequence("", ""));
+    }
+
+    #[test]
+    fn dir_suggestions_returns_only_matching_subdirs_sorted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        std::fs::create_dir(base.join("kamaji")).unwrap();
+        std::fs::create_dir(base.join("kafka")).unwrap();
+        std::fs::create_dir(base.join("zzz")).unwrap();
+        std::fs::write(base.join("kamfile.txt"), b"x").unwrap(); // a file, must be excluded
+
+        // partial "ka" matches the two k-dirs (prefix matches first, alphabetical)
+        let got = dir_suggestions(base, "ka");
+        assert_eq!(got, vec!["kafka".to_string(), "kamaji".to_string()]);
+
+        // empty partial lists all subdirs, prefix group is empty so plain alphabetical
+        let all = dir_suggestions(base, "");
+        assert_eq!(
+            all,
+            vec!["kafka".to_string(), "kamaji".to_string(), "zzz".to_string()]
+        );
+    }
+
+    #[test]
+    fn dir_suggestions_orders_prefix_matches_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        std::fs::create_dir(base.join("alpha")).unwrap();
+        std::fs::create_dir(base.join("banana")).unwrap();
+        std::fs::create_dir(base.join("ant")).unwrap();
+        // partial "an": "ant" is a prefix match, "banana" only a subsequence match.
+        let got = dir_suggestions(base, "an");
+        assert_eq!(got, vec!["ant".to_string(), "banana".to_string()]);
+    }
+
+    #[test]
+    fn dir_suggestions_nonexistent_parent_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        assert!(dir_suggestions(&missing, "x").is_empty());
     }
 
     #[test]
