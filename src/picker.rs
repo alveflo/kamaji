@@ -377,8 +377,7 @@ fn render(frame: &mut Frame, state: &PickerState) {
             ],
             hint,
             form.error.as_deref(),
-            suggestions,
-            form.suggestion_idx,
+            (suggestions, form.suggestion_idx),
         );
     }
 }

@@ -43,9 +43,9 @@ pub(crate) fn render_field_modal(
     fields: &[(&str, &str, bool)],
     hint: &str,
     error: Option<&str>,
-    suggestions: &[String],
-    selected: usize,
+    suggestions: (&[String], usize),
 ) {
+    let (suggestions, selected) = suggestions;
     let area = centered_rect(70, 60, frame.area());
     frame.render_widget(Clear, area);
 
@@ -325,8 +325,7 @@ mod tests {
                     &[("Name", "x", false), ("Root", "~/dev/kam", true)],
                     "hint",
                     None,
-                    &suggestions,
-                    0,
+                    (&suggestions, 0),
                 )
             })
             .unwrap();
