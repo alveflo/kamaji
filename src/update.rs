@@ -1,11 +1,5 @@
 //! Version checking and self-update against GitHub Releases.
 
-// These functions are public API for later tasks (5, 6, 9) that add the
-// network check and update flow.  They are exercised by the unit tests
-// below; allow dead_code so clippy stays clean on the binary crate until
-// those callers land.
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
