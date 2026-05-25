@@ -74,5 +74,6 @@ printf 'Installed: '
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
+  # shellcheck disable=SC2016  # literal $PATH is intentional in the printed hint
   *) printf '\nNote: %s is not on your PATH. Add it, e.g.:\n  export PATH="%s:$PATH"\n' "$INSTALL_DIR" "$INSTALL_DIR" ;;
 esac

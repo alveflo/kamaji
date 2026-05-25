@@ -217,10 +217,8 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
                 _ => {}
             },
             Some(form) => match key.code {
-                KeyCode::Esc => {
-                    if form.escape() {
-                        state.form = None;
-                    }
+                KeyCode::Esc if form.escape() => {
+                    state.form = None;
                 }
                 KeyCode::Tab => {
                     if form.field == ProjectField::Root {
