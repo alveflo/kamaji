@@ -146,7 +146,9 @@ pub fn check(cache_path: &Path) -> Option<String> {
     };
 
     if is_newer(&latest, current_version()) {
-        Some(latest)
+        // Return the bare version (release tags are `v`-prefixed); display
+        // sites add their own `v` so they never render "vv0.3.0".
+        Some(latest.strip_prefix('v').unwrap_or(&latest).to_string())
     } else {
         None
     }
