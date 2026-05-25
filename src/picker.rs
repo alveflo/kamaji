@@ -2,7 +2,8 @@ use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Paragraph};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -153,55 +154,93 @@ fn shellexpand(input: &str) -> String {
     input.to_string()
 }
 
+/// Visible project rows before the list starts scrolling.
+const MAX_VISIBLE_ROWS: usize = 12;
+/// Fixed modal width in columns.
+const MODAL_WIDTH: u16 = 52;
+
 fn render(frame: &mut Frame, state: &PickerState) {
-    let [title_area, body_area, hint_area] = Layout::vertical([
+    let theme = &state.theme;
+
+    // 1. Dimmed backdrop over the whole screen so the modal reads as elevated.
+    frame.render_widget(
+        Block::default().style(Style::new().bg(theme.backdrop())),
+        frame.area(),
+    );
+
+    // 2. Centered, fixed-size, content-aware modal box.
+    //    height = border(2) + subtitle(1) + blank(1) + rows + blank(1) + hint(1)
+    let rows = state.projects.len().clamp(1, MAX_VISIBLE_ROWS) as u16;
+    let area = crate::ui::centered_fixed(MODAL_WIDTH, rows + 6, frame.area());
+    frame.render_widget(Clear, area);
+
+    // Reset (not Black) so the modal blends with the terminal background on themes with no forced base.
+    let block = crate::ui::themed_block(theme, " kamaji ".to_string())
+        .padding(Padding::horizontal(1))
+        .style(Style::new().bg(theme.base.unwrap_or(Color::Reset)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // 3. Inner layout: subtitle, blank, list, blank, hint.
+    let [subtitle_area, _, list_area, _, hint_area] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
+        Constraint::Length(1),
     ])
-    .areas(frame.area());
-
-    let theme = &state.theme;
+    .areas(inner);
 
     frame.render_widget(
-        Paragraph::new(" kamaji — select a project").style(Style::new().fg(theme.accent())),
-        title_area,
+        Paragraph::new("Select a project").style(Style::new().fg(theme.muted)),
+        subtitle_area,
     );
 
-    // The project list is always rendered; the new-project form (when open)
-    // overlays it as a centered modal, matching the ticket create/edit modal.
-    let items: Vec<ListItem> = state
-        .projects
-        .iter()
-        .map(|p| {
-            ListItem::new(format!("{}  ({})", p.name, p.root_dir.display()))
-                .style(Style::new().fg(theme.text))
-        })
-        .collect();
-    let mut list_state = ListState::default();
-    if !state.projects.is_empty() {
+    if state.projects.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No projects yet — press n to create one.")
+                .style(Style::new().fg(theme.muted)),
+            list_area,
+        );
+    } else {
+        let name_w = state
+            .projects
+            .iter()
+            .map(|p| p.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        let items: Vec<ListItem> = state
+            .projects
+            .iter()
+            .map(|p| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{:<name_w$}", p.name), Style::new().fg(theme.text)),
+                    Span::raw("  "),
+                    Span::styled(
+                        p.root_dir.display().to_string(),
+                        Style::new().fg(theme.muted),
+                    ),
+                ]))
+            })
+            .collect();
+        let mut list_state = ListState::default();
         list_state.select(Some(state.selected));
-    }
-    let list = List::new(items)
-        .block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::new().fg(theme.border))
-                .title(" Projects "),
-        )
-        .highlight_style(
+        // Black fallback matches modals.rs: dark text on the accent highlight bar.
+        let list = List::new(items).highlight_symbol("› ").highlight_style(
             Style::new()
                 .fg(theme.base.unwrap_or(Color::Black))
                 .bg(theme.accent())
                 .add_modifier(Modifier::BOLD),
         );
-    frame.render_stateful_widget(list, body_area, &mut list_state);
+        frame.render_stateful_widget(list, list_area, &mut list_state);
+    }
+
     frame.render_widget(
-        Paragraph::new(" ↑/↓ select   Enter open   n new   q quit")
-            .style(Style::new().fg(theme.muted)),
+        Paragraph::new("↑/↓ select · ↵ open · n new · q quit").style(Style::new().fg(theme.muted)),
         hint_area,
     );
 
+    // 4. The new-project form overlays everything when open.
     if let Some(form) = &state.form {
         crate::ui::render_field_modal(
             frame,
@@ -278,5 +317,41 @@ mod tests {
         let resolved = form.resolved_root();
         assert!(!resolved.to_string_lossy().starts_with('~'));
         assert!(resolved.to_string_lossy().ends_with("/foo"));
+    }
+
+    #[test]
+    fn picker_renders_as_centered_modal() {
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Position;
+        use ratatui::Terminal;
+        use std::path::PathBuf;
+
+        let theme = Theme::by_name("catppuccin");
+        let state = PickerState {
+            projects: vec![Project {
+                id: 1,
+                name: "kamaji".into(),
+                root_dir: PathBuf::from("/home/u/dev/kamaji"),
+                default_agent: None,
+                created_at: String::new(),
+            }],
+            selected: 0,
+            form: None,
+            theme,
+        };
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // (a) The modal frame is drawn in the theme's border color.
+        let border_found = (0..buf.area.height)
+            .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].fg == theme.border));
+        assert!(border_found, "modal frame should use theme.border");
+
+        // (b) The top-left corner lies outside the centered modal and carries
+        // the dimmed backdrop — proving it is a modal, not full-screen.
+        assert_eq!(buf[Position::new(0, 0)].bg, theme.backdrop());
     }
 }

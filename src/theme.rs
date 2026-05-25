@@ -56,6 +56,19 @@ impl Theme {
         self.in_progress
     }
 
+    /// The dimmed backdrop drawn behind a full-screen modal (the picker).
+    /// A darkened variant of `base`; black when the theme forces no background.
+    pub fn backdrop(&self) -> Color {
+        match self.base {
+            Some(Color::Rgb(r, g, b)) => Color::Rgb(
+                (r as f32 * 0.6) as u8,
+                (g as f32 * 0.6) as u8,
+                (b as f32 * 0.6) as u8,
+            ),
+            _ => Color::Black,
+        }
+    }
+
     /// All built-ins in picker display order. The default (terminal) theme is
     /// first; Catppuccin is the out-of-box default (index 1).
     pub const ALL: &'static [fn() -> Theme] =
@@ -211,6 +224,14 @@ mod tests {
         // Named themes paint a background.
         assert!(catppuccin().base.is_some());
         assert!(nord().base.is_some());
+    }
+
+    #[test]
+    fn backdrop_darkens_base_and_is_black_without_one() {
+        // Catppuccin base 0x1e,0x1e,0x2e darkened by ~0.6.
+        assert_eq!(catppuccin().backdrop(), Color::Rgb(0x12, 0x12, 0x1b));
+        // The terminal theme forces no background, so the backdrop is black.
+        assert_eq!(default_ansi().backdrop(), Color::Black);
     }
 
     #[test]

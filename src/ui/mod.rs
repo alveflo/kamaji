@@ -9,7 +9,7 @@ use ratatui::Frame;
 use crate::app::{App, Modal};
 use crate::detect::SignalLevel;
 
-pub(crate) use modals::render_field_modal;
+pub(crate) use modals::{render_field_modal, themed_block};
 
 pub fn render(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) {
     board::render_board(frame, app, levels);
@@ -51,6 +51,19 @@ pub fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
     area
 }
 
+/// A centered rect of fixed `width` x `height`, clamped to fit `area`.
+pub fn centered_fixed(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    let [area] = Layout::vertical([Constraint::Length(h)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [area] = Layout::horizontal([Constraint::Length(w)])
+        .flex(Flex::Center)
+        .areas(area);
+    area
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +84,14 @@ mod tests {
         let rect = centered_rect(50, 50, area);
 
         assert_eq!(rect, Rect::new(30, 10, 40, 10));
+    }
+
+    #[test]
+    fn centered_fixed_centers_and_clamps() {
+        let area = Rect::new(0, 0, 100, 40);
+        // 52x12 centered in 100x40 -> x=(100-52)/2=24, y=(40-12)/2=14.
+        assert_eq!(centered_fixed(52, 12, area), Rect::new(24, 14, 52, 12));
+        // Requested size larger than the area is clamped to the area.
+        assert_eq!(centered_fixed(200, 80, area), Rect::new(0, 0, 100, 40));
     }
 }
