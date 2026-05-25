@@ -199,13 +199,14 @@ impl Engine {
     fn detect_tick_with(&mut self, levels: &HashMap<i64, SignalLevel>) -> Result<()> {
         let mut changed = false;
         for (&id, &level) in levels {
-            // Copy out the status so we don't hold an app borrow across the db write.
-            let Some(status) = self
+            // Copy out the status and per-project display number so we don't
+            // hold an app borrow across the db write.
+            let Some((status, number)) = self
                 .app
                 .tickets
                 .iter()
                 .find(|t| t.id == id)
-                .map(|t| t.status)
+                .map(|t| (t.status, t.number))
             else {
                 continue;
             };
@@ -217,14 +218,14 @@ impl Engine {
                     Status::Review => {
                         self.db.set_ticket_auto_reviewed(id, true)?;
                         self.auto_review_ids.insert(id);
-                        self.app.status_message =
-                            Some(format!("#{id} → Needs attention (agent idle)"));
+                        self.app
+                            .set_info(format!("#{number} → Needs attention (agent idle)"));
                     }
                     Status::InProgress => {
                         self.db.set_ticket_auto_reviewed(id, false)?;
                         self.auto_review_ids.remove(&id);
-                        self.app.status_message =
-                            Some(format!("#{id} → In Progress (agent active)"));
+                        self.app
+                            .set_info(format!("#{number} → In Progress (agent active)"));
                     }
                     _ => {}
                 }
@@ -333,7 +334,8 @@ impl Engine {
                         })
                     }
                     Err(err) => {
-                        self.app.status_message = Some(format!("could not start session: {err}"));
+                        self.app
+                            .set_error(format!("could not start session: {err}"));
                         Ok(Effect::None)
                     }
                 }
@@ -355,7 +357,7 @@ impl Engine {
                             return self.submit_form(&form);
                         } else {
                             self.app.modal = Modal::Form(form);
-                            self.app.status_message = Some("Title is required".into());
+                            self.app.set_error("Title is required");
                         }
                     }
                     KeyCode::Tab => {
@@ -475,7 +477,7 @@ impl Engine {
                     self.config.theme = chosen.name.to_string();
                     match crate::config::save_to(&self.config_path, &self.config) {
                         Ok(()) => {
-                            self.app.status_message = Some(format!("theme: {}", chosen.label));
+                            self.app.set_info(format!("theme: {}", chosen.label));
                         }
                         Err(e) => {
                             // Persisting failed: revert live + config state to the original so
@@ -483,7 +485,7 @@ impl Engine {
                             let orig = Theme::ALL[original]();
                             self.app.theme = orig;
                             self.config.theme = orig.name.to_string();
-                            self.app.status_message = Some(format!("could not save theme: {e}"));
+                            self.app.set_error(format!("could not save theme: {e}"));
                         }
                     }
                     Ok(Effect::None)
@@ -725,13 +727,11 @@ mod tests {
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
         assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
         assert!(e.auto_review_ids.contains(&id));
-        // The toast names the column as the user sees it ("Needs attention").
-        assert!(e
-            .app
-            .status_message
-            .as_deref()
-            .unwrap()
-            .contains("Needs attention"));
+        // The toast names the column as the user sees it ("Needs attention"),
+        // and an automatic status transition is informational, not an error.
+        let msg = e.app.status_message.as_ref().unwrap();
+        assert!(msg.text.contains("Needs attention"));
+        assert_eq!(msg.kind, crate::app::StatusKind::Info);
     }
 
     #[test]
@@ -1097,7 +1097,12 @@ mod tests {
         assert_eq!(e.app.tickets.len(), 1);
         assert_eq!(e.app.tickets[0].status, Status::Todo);
         assert_eq!(e.app.tickets[0].session_name, None);
-        assert!(e.app.status_message.is_some(), "an error toast is shown");
+        let msg = e
+            .app
+            .status_message
+            .as_ref()
+            .expect("an error toast is shown");
+        assert_eq!(msg.kind, crate::app::StatusKind::Error);
     }
 
     #[test]
