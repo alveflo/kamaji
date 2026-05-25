@@ -164,6 +164,21 @@ fn split_root(raw: &str) -> (&str, &str) {
     }
 }
 
+/// Case-insensitive subsequence test: are all chars of `partial` found in
+/// `candidate` in order (not necessarily contiguous)? Empty `partial` matches.
+fn fuzzy_subsequence(partial: &str, candidate: &str) -> bool {
+    let mut cand = candidate.chars().flat_map(char::to_lowercase);
+    'outer: for pc in partial.chars().flat_map(char::to_lowercase) {
+        for cc in cand.by_ref() {
+            if cc == pc {
+                continue 'outer;
+            }
+        }
+        return false;
+    }
+    true
+}
+
 /// Visible project rows before the list starts scrolling.
 const MAX_VISIBLE_ROWS: usize = 12;
 /// Fixed modal width in columns.
@@ -340,6 +355,26 @@ mod tests {
     fn split_root_with_no_slash_has_empty_parent() {
         assert_eq!(split_root("kam"), ("", "kam"));
         assert_eq!(split_root(""), ("", ""));
+    }
+
+    #[test]
+    fn fuzzy_subsequence_matches_in_order() {
+        assert!(fuzzy_subsequence("km", "kamaji"));
+        assert!(fuzzy_subsequence("kam", "kamaji"));
+        assert!(!fuzzy_subsequence("mk", "kamaji")); // wrong order
+        assert!(!fuzzy_subsequence("xyz", "kamaji"));
+    }
+
+    #[test]
+    fn fuzzy_subsequence_is_case_insensitive() {
+        assert!(fuzzy_subsequence("KM", "kamaji"));
+        assert!(fuzzy_subsequence("km", "KamAji"));
+    }
+
+    #[test]
+    fn fuzzy_subsequence_empty_partial_matches_everything() {
+        assert!(fuzzy_subsequence("", "anything"));
+        assert!(fuzzy_subsequence("", ""));
     }
 
     #[test]
