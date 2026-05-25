@@ -333,6 +333,13 @@ fn render(frame: &mut Frame, state: &PickerState) {
 
     // 4. The new-project form overlays everything when open.
     if let Some(form) = &state.form {
+        let on_root = form.field == ProjectField::Root;
+        let hint = if on_root {
+            "↑/↓ choose · Tab complete · ↵ create · Esc cancel"
+        } else {
+            "Tab/Shift-Tab: field   Enter: create   Esc: cancel"
+        };
+        let suggestions: &[String] = if on_root { &form.suggestions } else { &[] };
         crate::ui::render_field_modal(
             frame,
             &state.theme,
@@ -345,8 +352,10 @@ fn render(frame: &mut Frame, state: &PickerState) {
                     form.field == ProjectField::Root,
                 ),
             ],
-            "Tab/Shift-Tab: field   Enter: create   Esc: cancel",
+            hint,
             form.error.as_deref(),
+            suggestions,
+            form.suggestion_idx,
         );
     }
 }

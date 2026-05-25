@@ -43,6 +43,8 @@ pub(crate) fn render_field_modal(
     fields: &[(&str, &str, bool)],
     hint: &str,
     error: Option<&str>,
+    suggestions: &[String],
+    selected: usize,
 ) {
     let area = centered_rect(70, 60, frame.area());
     frame.render_widget(Clear, area);
@@ -58,6 +60,23 @@ pub(crate) fn render_field_modal(
         }
         lines.push(field_line(theme, label, value, *active));
     }
+
+    if !suggestions.is_empty() {
+        lines.push(Line::raw(""));
+        for (i, name) in suggestions.iter().enumerate() {
+            let style = if i == selected {
+                Style::new()
+                    .fg(theme.base.unwrap_or(Color::Black))
+                    .bg(theme.accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(theme.text)
+            };
+            let marker = if i == selected { "› " } else { "  " };
+            lines.push(Line::styled(format!("{marker}{name}"), style));
+        }
+    }
+
     lines.push(Line::raw(""));
     if let Some(err) = error {
         lines.push(Line::styled(err.to_string(), Style::new().fg(theme.error)));
@@ -289,5 +308,36 @@ mod tests {
             text.contains("search"),
             "help should mention search:\n{text}"
         );
+    }
+
+    #[test]
+    fn field_modal_draws_suggestions() {
+        let theme = Theme::by_name("catppuccin");
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let suggestions = ["kamaji".to_string(), "kafka".to_string()];
+        terminal
+            .draw(|f| {
+                render_field_modal(
+                    f,
+                    &theme,
+                    "New project",
+                    &[("Name", "x", false), ("Root", "~/dev/kam", true)],
+                    "hint",
+                    None,
+                    &suggestions,
+                    0,
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[Position::new(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("kamaji"), "suggestion list should render:\n{text}");
+        assert!(text.contains("kafka"));
     }
 }
