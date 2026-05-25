@@ -12,6 +12,7 @@ mod picker;
 mod slug;
 mod theme;
 mod ui;
+mod update;
 mod zellij;
 mod zellij_config;
 
