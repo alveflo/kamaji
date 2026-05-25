@@ -274,11 +274,11 @@ fn render_card(
         None => Span::raw(marker),
     };
 
-    // The id deliberately keeps the column's status accent even on unselected
-    // (otherwise muted) cards, acting as a small per-column color swatch.
+    // The number deliberately keeps the column's status accent even on
+    // unselected (otherwise muted) cards, acting as a small per-column swatch.
     let line = Line::from(vec![
         marker_span,
-        Span::styled(format!(" #{} ", ticket.id), Style::new().fg(accent)),
+        Span::styled(format!(" #{} ", ticket.number), Style::new().fg(accent)),
         Span::styled(ticket.title.clone(), Style::new().fg(theme.text)),
     ])
     .style(base_text);
@@ -344,6 +344,7 @@ mod tests {
         Ticket {
             id,
             project_id: 1,
+            number: id,
             title: format!("title{id}"),
             description: String::new(),
             initial_prompt: None,

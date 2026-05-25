@@ -347,6 +347,7 @@ mod tests {
         Ticket {
             id,
             project_id: 1,
+            number: id,
             title: format!("t{id}"),
             description: String::new(),
             initial_prompt: None,
