@@ -168,13 +168,30 @@ pub enum Modal {
     },
 }
 
+/// Severity of a transient status-bar message, controlling its color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusKind {
+    /// Informational / success — a neutral color, not alarming.
+    Info,
+    /// Something went wrong — rendered in the theme's error color.
+    Error,
+}
+
+/// A transient message shown in the status bar, tagged with a severity so the
+/// renderer can color errors differently from ordinary status updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusMessage {
+    pub kind: StatusKind,
+    pub text: String,
+}
+
 pub struct App {
     pub project: Project,
     pub tickets: Vec<Ticket>,
     pub selected_col: usize,
     pub selected_row: usize,
     pub modal: Modal,
-    pub status_message: Option<String>,
+    pub status_message: Option<StatusMessage>,
     pub search: Search,
     pub should_quit: bool,
     pub theme: Theme,
@@ -197,6 +214,23 @@ impl App {
             theme: Theme::default(),
             update: None,
         }
+    }
+
+    /// Show a neutral informational status message (e.g. a confirmation or an
+    /// automatic status transition). Not colored as an error.
+    pub fn set_info(&mut self, text: impl Into<String>) {
+        self.status_message = Some(StatusMessage {
+            kind: StatusKind::Info,
+            text: text.into(),
+        });
+    }
+
+    /// Show an error status message, rendered in the theme's error color.
+    pub fn set_error(&mut self, text: impl Into<String>) {
+        self.status_message = Some(StatusMessage {
+            kind: StatusKind::Error,
+            text: text.into(),
+        });
     }
 
     pub fn selected_status(&self) -> Status {
@@ -388,6 +422,20 @@ mod tests {
     fn new_app_has_no_update() {
         let app = App::new(project(), vec![]);
         assert!(app.update.is_none());
+    }
+
+    #[test]
+    fn status_helpers_tag_severity() {
+        let mut app = App::new(project(), vec![]);
+        app.set_error("boom");
+        let m = app.status_message.as_ref().unwrap();
+        assert_eq!(m.kind, StatusKind::Error);
+        assert_eq!(m.text, "boom");
+
+        app.set_info("all good");
+        let m = app.status_message.as_ref().unwrap();
+        assert_eq!(m.kind, StatusKind::Info);
+        assert_eq!(m.text, "all good");
     }
 
     #[test]
