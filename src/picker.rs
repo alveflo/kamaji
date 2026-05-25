@@ -162,8 +162,21 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
             },
             Some(form) => match key.code {
                 KeyCode::Esc => state.form = None,
-                KeyCode::Tab => form.next_field(),
-                KeyCode::BackTab => form.prev_field(),
+                KeyCode::Tab => {
+                    if form.field == ProjectField::Root && !form.suggestions.is_empty() {
+                        // On Root with matches, Tab completes the highlighted entry.
+                        form.accept_suggestion();
+                    } else {
+                        form.next_field();
+                        form.refresh_suggestions();
+                    }
+                }
+                KeyCode::BackTab => {
+                    form.prev_field();
+                    form.refresh_suggestions();
+                }
+                KeyCode::Up if form.field == ProjectField::Root => form.move_suggestion(-1),
+                KeyCode::Down if form.field == ProjectField::Root => form.move_suggestion(1),
                 KeyCode::Enter => {
                     if form.name.trim().is_empty() {
                         form.error = Some("Name is required".into());
@@ -177,8 +190,18 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
                         }
                     }
                 }
-                KeyCode::Backspace => form.backspace(),
-                KeyCode::Char(c) => form.input_char(c),
+                KeyCode::Backspace => {
+                    form.backspace();
+                    if form.field == ProjectField::Root {
+                        form.refresh_suggestions();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    form.input_char(c);
+                    if form.field == ProjectField::Root {
+                        form.refresh_suggestions();
+                    }
+                }
                 _ => {}
             },
         }
