@@ -9,7 +9,7 @@ use ratatui::Frame;
 use crate::app::{App, Modal};
 use crate::detect::SignalLevel;
 
-pub(crate) use modals::render_field_modal;
+pub(crate) use modals::{render_field_modal, themed_block};
 
 pub fn render(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) {
     board::render_board(frame, app, levels);

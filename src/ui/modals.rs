@@ -10,7 +10,7 @@ use crate::theme::Theme;
 use crate::ui::centered_rect;
 
 /// A rounded modal frame titled `title`, bordered in the theme's border color.
-fn themed_block(theme: &Theme, title: String) -> Block<'static> {
+pub(crate) fn themed_block(theme: &Theme, title: String) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme.border))
@@ -105,7 +105,9 @@ pub fn render_form(frame: &mut Frame, theme: &Theme, form: &TicketForm) {
             .flat_map(|a| {
                 let sel = a == form.agent && form.field == FormField::Agent;
                 let style = if sel {
-                    Style::new().fg(theme.base.unwrap_or(Color::Black)).bg(theme.accent())
+                    Style::new()
+                        .fg(theme.base.unwrap_or(Color::Black))
+                        .bg(theme.accent())
                 } else if a == form.agent {
                     Style::new().fg(theme.accent())
                 } else {
@@ -262,10 +264,12 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         // Some cell must carry the theme's border color (the modal frame).
-        let found = (0..buf.area.height).any(|y| {
-            (0..buf.area.width).any(|x| buf[Position::new(x, y)].fg == theme.border)
-        });
-        assert!(found, "confirm modal should draw its border in theme.border");
+        let found = (0..buf.area.height)
+            .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].fg == theme.border));
+        assert!(
+            found,
+            "confirm modal should draw its border in theme.border"
+        );
     }
 
     #[test]
