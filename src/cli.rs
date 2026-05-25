@@ -19,6 +19,7 @@ Agents: claude, codex, copilot
 pub enum Command {
     Tui,
     Help,
+    Version,
     CreateTicket(CreateTicketArgs),
 }
 
@@ -68,6 +69,9 @@ where
     }
     if args == ["--help"] || args == ["-h"] || args == ["help"] {
         return Ok(Command::Help);
+    }
+    if args == ["--version"] || args == ["-V"] || args == ["version"] {
+        return Ok(Command::Version);
     }
     match args.as_slice() {
         [scope, action, rest @ ..] if scope == "ticket" || scope == "tickets" => {
@@ -249,6 +253,13 @@ mod tests {
         db.create_project("kamaji", root, Some(Agent::Codex))
             .unwrap();
         db
+    }
+
+    #[test]
+    fn parses_version_flag() {
+        assert_eq!(parse(["--version"]).unwrap(), Command::Version);
+        assert_eq!(parse(["-V"]).unwrap(), Command::Version);
+        assert_eq!(parse(["version"]).unwrap(), Command::Version);
     }
 
     #[test]

@@ -39,6 +39,10 @@ fn main() -> Result<()> {
             print!("{}", cli::usage());
             Ok(())
         }
+        cli::Command::Version => {
+            println!("kamaji {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         cli::Command::CreateTicket(args) => {
             let config = config::load_or_init()?;
             let db = Db::open(&db_path()?)?;
