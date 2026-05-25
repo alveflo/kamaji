@@ -162,11 +162,14 @@ fn run_board(
             } => {
                 match zellij::create_session_background(&name, &layout_path, &cwd) {
                     Ok(()) => {
-                        engine.app.status_message =
-                            Some(format!("Started '{name}' in the background"));
+                        engine
+                            .app
+                            .set_info(format!("Started '{name}' in the background"));
                     }
                     Err(e) => {
-                        engine.app.status_message = Some(format!("background session failed: {e}"));
+                        engine
+                            .app
+                            .set_error(format!("background session failed: {e}"));
                         // Tear down any partially-created session first: zellij
                         // may have made the session before erroring, and
                         // reconcile only clears sessions ABSENT from
@@ -212,7 +215,7 @@ where
     }
     *terminal = ratatui::init();
     if let Err(e) = outcome {
-        engine.app.status_message = Some(format!("zellij error: {e}"));
+        engine.app.set_error(format!("zellij error: {e}"));
     }
     // reconcile() reloads tickets and drops any sessions that vanished.
     engine.reconcile()?;

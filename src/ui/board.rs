@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use std::collections::HashMap;
 
-use crate::app::App;
+use crate::app::{App, StatusKind};
 use crate::detect::SignalLevel;
 use crate::models::{Status, Ticket};
 use crate::theme::Theme;
@@ -98,12 +98,22 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
         ),
         None => Span::raw(""),
     };
-    let msg = app.status_message.clone().unwrap_or_default();
+    // Errors stay red; ordinary status updates use the (non-alarming) accent.
+    let msg_span = match &app.status_message {
+        Some(msg) => {
+            let color = match msg.kind {
+                StatusKind::Error => theme.error,
+                StatusKind::Info => theme.accent(),
+            };
+            Span::styled(msg.text.clone(), Style::new().fg(color))
+        }
+        None => Span::raw(""),
+    };
     let status_line = Paragraph::new(Line::from(vec![
         Span::styled(left, Style::new().fg(theme.accent())),
         search_span,
         update_span,
-        Span::styled(msg, Style::new().fg(theme.error)),
+        msg_span,
         Span::styled(hints, Style::new().fg(theme.muted)),
     ]));
     frame.render_widget(status_line, status_area);
