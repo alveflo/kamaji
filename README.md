@@ -102,14 +102,17 @@ theme = "catppuccin"
 [agents.claude]
 with_prompt = ["claude", "{prompt}"]
 no_prompt = ["claude"]
+resume = ["claude", "--continue"]
 
 [agents.codex]
 with_prompt = ["codex", "{prompt}"]
 no_prompt = ["codex"]
+resume = ["codex", "resume", "--last"]
 
 [agents.copilot]
 with_prompt = ["copilot", "{prompt}"]
 no_prompt = ["copilot"]
+resume = ["copilot", "--continue"]
 ```
 
 **Key settings:**
@@ -123,6 +126,7 @@ no_prompt = ["copilot"]
 | `theme` | Colorscheme: `catppuccin` (default), `tokyonight`, `gruvbox`, `nord`, or `default` (uses your terminal's own 16 colors). Switch live from the board with `t` (the choice is saved back here). Unknown names fall back to `catppuccin`. |
 | `agents.<name>.with_prompt` | Argv array used when the ticket has an initial prompt. `{prompt}` is replaced with the prompt text. |
 | `agents.<name>.no_prompt` | Argv array used when no initial prompt is set. |
+| `agents.<name>.resume` | Argv array used to resume a session that survived a reboot (see [Persistent sessions](#persistent-sessions)). If omitted, kamaji derives a default from the binary (`<bin> --continue`, or `codex resume --last`). |
 
 Command templates are passed directly as argv (no shell). Add or edit agent
 entries to support other CLIs.
@@ -199,6 +203,24 @@ prompt.
 - A filled circle `●` next to a ticket title means a session has been created
   for it (the session name is recorded on the ticket); an empty circle `○` means
   none has been started yet.
+
+### Persistent sessions
+
+Sessions survive a reboot. kamaji records each ticket's session in its SQLite
+database, and zellij serializes its own sessions to disk, so after a restart a
+ticket still maps to its (now exited) zellij session and its git worktree is
+still on disk.
+
+When you `Enter` (or move to In Progress) a ticket whose zellij session is in
+the exited/resurrectable state — which is how sessions appear after the machine
+restarts — kamaji recreates the session in the *same worktree* but launches the
+agent with its **resume** command (`agents.<name>.resume`, e.g. `claude
+--continue`) instead of replaying the original prompt. The agent picks up its
+previous conversation rather than starting fresh. Live sessions still attach
+unchanged, and a session that is truly gone starts a new conversation.
+
+This relies on zellij's session serialization, which is on by default. If you
+have disabled it in your zellij config, exited sessions won't be recoverable.
 
 ## Keybindings
 

@@ -28,6 +28,37 @@ pub fn prepare_session(
     state_dir: &Path,
     ticket: &Ticket,
 ) -> Result<Prepared> {
+    let argv = agent::build_command(
+        config.commands_for(ticket.agent),
+        ticket.initial_prompt.as_deref(),
+    );
+    prepare_with_argv(project, config, state_dir, ticket, argv)
+}
+
+/// Build the worktree + layout to *resume* a ticket whose persisted session was
+/// resurrected (e.g. after a reboot). Identical to [`prepare_session`] except
+/// the agent runs its resume command — continuing the prior conversation —
+/// instead of replaying the initial prompt, and the existing worktree is reused.
+pub fn prepare_resume_session(
+    project: &Project,
+    config: &Config,
+    state_dir: &Path,
+    ticket: &Ticket,
+    resume_argv: Vec<String>,
+) -> Result<Prepared> {
+    prepare_with_argv(project, config, state_dir, ticket, resume_argv)
+}
+
+/// Shared core: resolve the worktree (creating it only if absent), instrument
+/// Claude with idle hooks, render the layout, and return the [`Prepared`]. The
+/// only thing that differs between a fresh start and a resume is `argv`.
+fn prepare_with_argv(
+    project: &Project,
+    config: &Config,
+    state_dir: &Path,
+    ticket: &Ticket,
+    argv: Vec<String>,
+) -> Result<Prepared> {
     let root = project.root_dir.clone();
     if !git::is_git_repo(&root) {
         bail!("project root is not a git repository: {}", root.display());
@@ -42,10 +73,6 @@ pub fn prepare_session(
     if !worktree.exists() {
         git::add_worktree(&root, &worktree, &name, &base)?;
     }
-    let argv = agent::build_command(
-        config.commands_for(ticket.agent),
-        ticket.initial_prompt.as_deref(),
-    );
     let instrumented = config.auto_review.enabled && ticket.agent == Agent::Claude;
     let argv = if instrumented {
         let marker = detect::marker_path(state_dir, &name);
