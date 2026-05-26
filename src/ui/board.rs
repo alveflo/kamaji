@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Padding, Paragraph};
 use ratatui::Frame;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::app::{App, StatusKind};
 use crate::detect::SignalLevel;
@@ -18,7 +18,7 @@ const CARD_GAP: u16 = 1;
 
 /// Per-column display parameters passed to `render_column`. Bundling them
 /// avoids the `too_many_arguments` lint.
-struct ColumnParams {
+struct ColumnParams<'a> {
     /// Total tickets in the column, ignoring the active search filter.
     total: usize,
     /// `true` when a non-empty search query is active.
@@ -27,6 +27,8 @@ struct ColumnParams {
     focused: bool,
     /// The currently selected card row (used only when `focused`).
     selected_row: usize,
+    /// Ticket ids in the multi-select set (marks cards across all columns).
+    selected_ids: &'a HashSet<i64>,
 }
 
 /// The fg color for a ticket's bullet, or `None` to inherit the card's text
@@ -63,6 +65,7 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
             filtering,
             focused: col_idx == app.selected_col,
             selected_row: app.selected_row,
+            selected_ids: &app.selected_ids,
         };
         render_column(
             frame,
@@ -76,8 +79,18 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
     }
 
     let hints =
-        " [↵]attach [e]dit [c]reate [m]ove [d]elete [/]search [t]heme [p]roject [?]help [q]uit";
+        " [↵]attach [s]main [e]dit [c]reate [m]ove [d]elete [space]select [D]close [/]search [t]heme [p]roject [?]help [q]uit";
     let left = format!(" project: {} ", app.project.name);
+    // While cards are multi-selected, surface the count so the user knows a bulk
+    // close will act on more than the focused card.
+    let selected_span = if app.selected_ids.is_empty() {
+        Span::raw("")
+    } else {
+        Span::styled(
+            format!("{} selected ", app.selected_ids.len()),
+            Style::new().fg(theme.accent()),
+        )
+    };
     let search_span = if app.search.editing {
         Span::styled(
             format!("search: {}_ ", app.search.query),
@@ -111,6 +124,7 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
     };
     let status_line = Paragraph::new(Line::from(vec![
         Span::styled(left, Style::new().fg(theme.accent())),
+        selected_span,
         search_span,
         update_span,
         msg_span,
@@ -200,8 +214,9 @@ fn render_column(
             height,
         };
         let selected = params.focused && i == params.selected_row;
+        let multi_selected = params.selected_ids.contains(&ticket.id);
         let level = levels.get(&ticket.id).copied();
-        render_card(frame, theme, card, ticket, selected, level);
+        render_card(frame, theme, card, ticket, selected, multi_selected, level);
     }
 }
 
@@ -239,6 +254,7 @@ fn render_card(
     area: Rect,
     ticket: &Ticket,
     selected: bool,
+    multi_selected: bool,
     level: Option<SignalLevel>,
 ) {
     let accent = theme.status_color(ticket.status);
@@ -252,6 +268,10 @@ fn render_card(
                 .bg(theme.surface)
                 .add_modifier(Modifier::BOLD),
         )
+    } else if multi_selected {
+        // A multi-selected card under no cursor still reads as picked: an accent
+        // border (no fill) marks it across columns.
+        (accent, None, Style::new().fg(theme.text))
     } else {
         (theme.border, None, Style::new().fg(theme.muted))
     };
@@ -276,12 +296,20 @@ fn render_card(
 
     // The number deliberately keeps the column's status accent even on
     // unselected (otherwise muted) cards, acting as a small per-column swatch.
-    let line = Line::from(vec![
-        marker_span,
-        Span::styled(format!(" #{} ", ticket.number), Style::new().fg(accent)),
-        Span::styled(ticket.title.clone(), Style::new().fg(theme.text)),
-    ])
-    .style(base_text);
+    let mut spans = Vec::new();
+    if multi_selected {
+        spans.push(Span::styled("✓ ", Style::new().fg(accent)));
+    }
+    spans.push(marker_span);
+    spans.push(Span::styled(
+        format!(" #{} ", ticket.number),
+        Style::new().fg(accent),
+    ));
+    spans.push(Span::styled(
+        ticket.title.clone(),
+        Style::new().fg(theme.text),
+    ));
+    let line = Line::from(spans).style(base_text);
 
     frame.render_widget(Paragraph::new(line).block(block), area);
 }
@@ -522,6 +550,17 @@ mod tests {
     }
 
     #[test]
+    fn status_bar_lists_the_main_session_hint() {
+        let app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        let buf = render(&app, &HashMap::new(), 120, 20);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("[s]main"),
+            "main-session hint present:\n{text}"
+        );
+    }
+
+    #[test]
     fn status_bar_shows_update_banner_when_available() {
         let mut app = App::new(project(), vec![ticket(1, Status::Todo)]);
         app.update = Some("0.9.0".to_string());
@@ -615,6 +654,44 @@ mod tests {
         assert!(
             !has_surface,
             "an unselected card must not be filled with theme.surface"
+        );
+    }
+
+    #[test]
+    fn multi_selected_card_shows_a_check_glyph() {
+        let mut app = app_with_theme(vec![ticket(1, Status::Todo)], "catppuccin");
+        app.selected_ids.insert(1);
+        let buf = render(&app, &HashMap::new(), 120, 20);
+        assert!(
+            buffer_text(&buf).contains('✓'),
+            "a multi-selected card should show a check glyph:\n{}",
+            buffer_text(&buf)
+        );
+    }
+
+    #[test]
+    fn unselected_card_has_no_check_glyph() {
+        let app = app_with_theme(vec![ticket(1, Status::Todo)], "catppuccin");
+        let buf = render(&app, &HashMap::new(), 120, 20);
+        assert!(
+            !buffer_text(&buf).contains('✓'),
+            "an unselected card must not show a check glyph"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_the_selected_count() {
+        let mut app = app_with_theme(
+            vec![ticket(1, Status::Todo), ticket(2, Status::Todo)],
+            "catppuccin",
+        );
+        app.selected_ids.insert(1);
+        app.selected_ids.insert(2);
+        let buf = render(&app, &HashMap::new(), 120, 20);
+        assert!(
+            buffer_text(&buf).contains("2 selected"),
+            "status bar should show the selected count:\n{}",
+            buffer_text(&buf)
         );
     }
 }

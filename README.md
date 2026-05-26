@@ -12,7 +12,7 @@ into it. Detach and the session keeps running in the background.
 │ ○ #4 Dark mode││ ● #6 API docs ││               ││               │
 │               ││               ││               ││               │
 └───────────────┘└───────────────┘└───────────────┘└───────────────┘
- project: acme-api  [↵]attach [e]dit [c]reate [m]ove [d]elete [/]search [t]heme [p]roject [?]help [q]uit
+ project: acme-api  [↵]attach [s]main [e]dit [c]reate [m]ove [d]elete [/]search [t]heme [p]roject [?]help [q]uit
 ```
 
 ## Install
@@ -110,8 +110,8 @@ no_prompt = ["codex"]
 resume = ["codex", "resume", "--last"]
 
 [agents.copilot]
-with_prompt = ["copilot", "{prompt}"]
-no_prompt = ["copilot"]
+with_prompt = ["copilot", "-i", "{prompt}"]
+no_prompt = ["copilot", "-i"]
 resume = ["copilot", "--continue"]
 ```
 
@@ -233,6 +233,7 @@ have disabled it in your zellij config, exited sessions won't be recoverable.
 | `←` / `h` | Focus column to the left |
 | `→` / `l` | Focus column to the right |
 | `Enter` | Attach to the selected ticket's session, or start it (creates the worktree + zellij session and moves the ticket to In Progress) |
+| `s` | Open the project's **main session** — a workspace not tied to any ticket. Runs the project's default agent in the project root (no worktree); attaches if it's already running |
 | `e` | Edit selected ticket (title and description) |
 | `c` | Create ticket (opens form modal) |
 | `m` | Move selected ticket (opens move modal; use `←`/`→` to pick column, `Enter` to confirm, `Esc` to cancel) |
