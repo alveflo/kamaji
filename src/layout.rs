@@ -76,6 +76,16 @@ pub fn render_layout(cwd: &str, command: &[String], bar: BarStyle) -> String {
     format!("layout {{\n{template}    tab {{\n{pane}    }}\n}}\n")
 }
 
+/// Render a zellij KDL layout that opens a plain shell in `cwd` with no command,
+/// drawing the bars selected by `bar`. Used for a project's "main" session — a
+/// bare workspace with no agent. New tabs inherit the same bars-only template.
+pub fn render_shell_layout(cwd: &str, bar: BarStyle) -> String {
+    let cwd_esc = kdl_escape(cwd);
+    let pane = format!("        pane cwd=\"{cwd_esc}\"\n");
+    let template = tab_template(bar);
+    format!("layout {{\n{template}    tab {{\n{pane}    }}\n}}\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +220,36 @@ layout {
             );
             assert!(rest.contains("command=\"claude\""));
         }
+    }
+
+    /// The shell layout opens a bare pane (no `command=`) in `cwd`, so the
+    /// session starts the user's default shell with no agent. Bars still render.
+    #[test]
+    fn shell_layout_has_no_command() {
+        let out = render_shell_layout("/wt", BarStyle::Default);
+        assert_eq!(
+            out,
+            "\
+layout {
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location=\"tab-bar\"
+        }
+        children
+        pane size=1 borderless=true {
+            plugin location=\"status-bar\"
+        }
+    }
+    tab {
+        pane cwd=\"/wt\"
+    }
+}
+"
+        );
+        assert!(
+            !out.contains("command="),
+            "shell layout must launch no agent"
+        );
     }
 
     /// Regression for #2: a custom layout replaces zellij's default, so the
