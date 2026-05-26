@@ -289,14 +289,13 @@ impl Engine {
     fn detect_tick_with(&mut self, levels: &HashMap<i64, SignalLevel>) -> Result<()> {
         let mut changed = false;
         for (&id, &level) in levels {
-            // Copy out the status and per-project display number so we don't
-            // hold an app borrow across the db write.
-            let Some((status, number)) = self
+            // Copy out the status so we don't hold an app borrow across the db write.
+            let Some(status) = self
                 .app
                 .tickets
                 .iter()
                 .find(|t| t.id == id)
-                .map(|t| (t.status, t.number))
+                .map(|t| t.status)
             else {
                 continue;
             };
@@ -309,13 +308,13 @@ impl Engine {
                         self.db.set_ticket_auto_reviewed(id, true)?;
                         self.auto_review_ids.insert(id);
                         self.app
-                            .set_info(format!("#{number} → Needs attention (agent idle)"));
+                            .set_info(format!("#{id} → Needs attention (agent idle)"));
                     }
                     Status::InProgress => {
                         self.db.set_ticket_auto_reviewed(id, false)?;
                         self.auto_review_ids.remove(&id);
                         self.app
-                            .set_info(format!("#{number} → In Progress (agent active)"));
+                            .set_info(format!("#{id} → In Progress (agent active)"));
                     }
                     _ => {}
                 }

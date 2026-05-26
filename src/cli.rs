@@ -205,7 +205,7 @@ pub fn run_create_ticket(
     let ticket = db.create_ticket(project.id, &title, args.description.trim(), prompt, agent)?;
     let message = format!(
         "Created ticket #{} in project {}: {}",
-        ticket.number, project.name, ticket.title
+        ticket.id, project.name, ticket.title
     );
 
     if !args.background {

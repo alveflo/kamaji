@@ -107,10 +107,6 @@ pub struct Ticket {
     pub id: i64,
     #[allow(dead_code)]
     pub project_id: i64,
-    /// Per-project sequential number shown to the user (`#1`, `#2`, …). Unlike
-    /// `id` (a global surrogate key), this restarts at 1 for each project and is
-    /// never reused within a project.
-    pub number: i64,
     pub title: String,
     pub description: String,
     pub initial_prompt: Option<String>,
