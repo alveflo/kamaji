@@ -177,6 +177,15 @@ fn run_board(
             Effect::Attach { name } => {
                 run_zellij(terminal, engine, |_| zellij::attach_session(&name))?;
             }
+            Effect::ResumeSession { name, layout_path } => {
+                // Drop the stale exited/resurrectable session so zellij doesn't
+                // refuse the name or replay the original (fresh) command, then
+                // recreate it from the resume layout and attach.
+                run_zellij(terminal, engine, |_| {
+                    zellij::terminate_session(&name);
+                    zellij::create_session(&name, &layout_path)
+                })?;
+            }
             Effect::RunSessionBackground {
                 name,
                 layout_path,

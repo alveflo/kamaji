@@ -28,6 +28,14 @@ pub enum Effect {
     Attach {
         name: String,
     },
+    /// Resume a persisted session that zellij has as exited/resurrectable: the
+    /// stale exited session is deleted and recreated from `layout_path` (which
+    /// runs the agent's resume command), then attached. Used after a reboot so
+    /// the agent continues its prior conversation instead of restarting fresh.
+    ResumeSession {
+        name: String,
+        layout_path: PathBuf,
+    },
     /// Leave the board and return to the project picker.
     SwitchProject,
     /// Download the latest release and replace the running binary.
@@ -126,6 +134,40 @@ impl Engine {
         })
     }
 
+    /// Re-enter a ticket that already has a recorded session: attach if it is
+    /// live, or *resume* it if zellij holds it as exited/resurrectable (e.g.
+    /// after a reboot). `list` is the current `zellij list-sessions` output;
+    /// `None` (couldn't ask) or no known resume command falls back to a plain
+    /// attach, preserving the prior behavior.
+    fn enter_session(
+        &mut self,
+        ticket: &Ticket,
+        name: String,
+        list: Option<&str>,
+    ) -> Result<Effect> {
+        let exited = list
+            .map(|l| zellij::session_exited(l, &name))
+            .unwrap_or(false);
+        if exited {
+            if let Some(resume_argv) = self.config.resume_command_for(ticket.agent) {
+                let p = session::prepare_resume_session(
+                    &self.app.project,
+                    &self.config,
+                    &self.state_dir,
+                    ticket,
+                    resume_argv,
+                )?;
+                session::commit_session(&self.db, ticket.id, &p)?;
+                self.reload()?;
+                return Ok(Effect::ResumeSession {
+                    name: p.name,
+                    layout_path: p.layout_path,
+                });
+            }
+        }
+        Ok(Effect::Attach { name })
+    }
+
     /// Apply a column move to the currently-selected ticket.
     #[allow(dead_code)]
     pub fn move_selected(&mut self, target: Status) -> Result<Effect> {
@@ -155,7 +197,8 @@ impl Engine {
                 Some(name) => {
                     self.db.set_ticket_status(ticket.id, Status::InProgress)?;
                     self.reload()?;
-                    Ok(Effect::Attach { name })
+                    let list = zellij::list_sessions();
+                    self.enter_session(&ticket, name, list.as_deref())
                 }
                 None => self.start_session(&ticket),
             };
@@ -669,13 +712,17 @@ impl Engine {
                     self.app.modal = Modal::ConfirmDelete { ticket_id: t.id };
                 }
             }
-            // Enter "enters" the ticket: attach to its session if one exists,
+            // Enter "enters" the ticket: attach to its session if one exists
+            // (resuming it if zellij holds it as exited, e.g. after a reboot),
             // otherwise start one (creating the worktree + session and moving
             // the ticket to In Progress).
             KeyCode::Enter => {
                 if let Some(t) = self.app.selected_ticket().cloned() {
                     return match t.session_name.clone() {
-                        Some(name) => Ok(Effect::Attach { name }),
+                        Some(name) => {
+                            let list = zellij::list_sessions();
+                            self.enter_session(&t, name, list.as_deref())
+                        }
                         None => self.start_session(&t),
                     };
                 }
@@ -1072,6 +1119,66 @@ mod tests {
         assert_eq!(
             e.db.get_ticket(t.id).unwrap().unwrap().status,
             Status::Review
+        );
+    }
+
+    /// A live session attaches as before; a session zellij reports as
+    /// exited/resurrectable (e.g. after a reboot) resumes — recreating the
+    /// layout to run the agent's resume command — while still keeping Claude's
+    /// idle-detection hooks. An unqueryable zellij falls back to a plain attach.
+    #[test]
+    fn enter_session_resumes_only_when_exited() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        init_repo(&root);
+
+        let mut e = engine_with_project(root.clone());
+        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.state_dir = dir.path().join("state");
+        let t =
+            e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
+                .unwrap();
+        e.reload().unwrap();
+        // Start the session so the worktree + session columns exist.
+        e.move_selected(Status::InProgress).unwrap();
+        let ticket = e.db.get_ticket(t.id).unwrap().unwrap();
+        let name = ticket.session_name.clone().unwrap();
+
+        // Live session → plain attach.
+        let live = format!("{name} [Created 1s ago]\n");
+        assert_eq!(
+            e.enter_session(&ticket, name.clone(), Some(&live)).unwrap(),
+            Effect::Attach { name: name.clone() }
+        );
+
+        // Exited/resurrectable session → resume.
+        let exited = format!("{name} [Created 1h ago] (EXITED - attach to resurrect)\n");
+        match e
+            .enter_session(&ticket, name.clone(), Some(&exited))
+            .unwrap()
+        {
+            Effect::ResumeSession {
+                name: n,
+                layout_path,
+            } => {
+                assert_eq!(n, name);
+                let layout = std::fs::read_to_string(&layout_path).unwrap();
+                assert!(
+                    layout.contains("--continue"),
+                    "resume layout must run the resume command:\n{layout}"
+                );
+                assert!(
+                    layout.contains("--settings"),
+                    "resume layout must keep Claude idle hooks:\n{layout}"
+                );
+            }
+            other => panic!("expected ResumeSession, got {other:?}"),
+        }
+
+        // Couldn't query zellij → safe fallback to attach.
+        assert_eq!(
+            e.enter_session(&ticket, name.clone(), None).unwrap(),
+            Effect::Attach { name }
         );
     }
 

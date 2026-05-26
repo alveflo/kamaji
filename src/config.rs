@@ -10,6 +10,12 @@ use crate::models::Agent;
 pub struct AgentCommands {
     pub with_prompt: Vec<String>,
     pub no_prompt: Vec<String>,
+    /// Argv used to resume a previous conversation when a persisted session is
+    /// resurrected (e.g. after a reboot). Empty falls back to a built-in
+    /// per-agent default (see [`Config::resume_command_for`]); configs written
+    /// before this key existed therefore still resume.
+    #[serde(default)]
+    pub resume: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,9 +90,10 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let cmd = |bin: &str| AgentCommands {
+        let cmd = |bin: &str, resume: &[&str]| AgentCommands {
             with_prompt: vec![bin.to_string(), "{prompt}".to_string()],
             no_prompt: vec![bin.to_string()],
+            resume: resume.iter().map(|s| s.to_string()).collect(),
         };
         Config {
             default_agent: "claude".to_string(),
@@ -95,8 +102,8 @@ impl Default for Config {
             zellij_bar: default_zellij_bar(),
             theme: default_theme(),
             agents: Agents {
-                claude: cmd("claude"),
-                codex: cmd("codex"),
+                claude: cmd("claude", &["claude", "--continue"]),
+                codex: cmd("codex", &["codex", "resume", "--last"]),
                 // copilot rejects a bare positional prompt ("Invalid command
                 // format"); it needs `-i` to start an interactive session,
                 // optionally seeded with a prompt.
@@ -107,6 +114,7 @@ impl Default for Config {
                         "{prompt}".to_string(),
                     ],
                     no_prompt: vec!["copilot".to_string(), "-i".to_string()],
+                    resume: vec!["copilot".to_string(), "--continue".to_string()],
                 },
             },
             auto_review: AutoReview::default(),
@@ -125,6 +133,29 @@ impl Config {
 
     pub fn default_agent(&self) -> Agent {
         self.default_agent.parse().unwrap_or(Agent::Claude)
+    }
+
+    /// Argv to resume `agent`'s previous conversation when its persisted session
+    /// is resurrected. Uses the configured `resume` if set; otherwise derives a
+    /// built-in default from the agent's binary so configs predating the key
+    /// still resume. `None` only if no binary is known (empty `no_prompt`),
+    /// in which case the caller plainly re-attaches instead.
+    pub fn resume_command_for(&self, agent: Agent) -> Option<Vec<String>> {
+        let cmds = self.commands_for(agent);
+        if !cmds.resume.is_empty() {
+            return Some(cmds.resume.clone());
+        }
+        let bin = cmds
+            .no_prompt
+            .first()
+            .or_else(|| cmds.with_prompt.first())?;
+        let flags: &[&str] = match agent {
+            Agent::Claude | Agent::Copilot => &["--continue"],
+            Agent::Codex => &["resume", "--last"],
+        };
+        let mut argv = vec![bin.clone()];
+        argv.extend(flags.iter().map(|s| s.to_string()));
+        Some(argv)
     }
 
     /// Scrape idle-substrings for `agent`. Claude uses launch-injected hooks
@@ -285,6 +316,99 @@ mod tests {
     #[test]
     fn default_config_theme_is_catppuccin() {
         assert_eq!(Config::default().theme, "catppuccin");
+    }
+
+    #[test]
+    fn default_config_has_resume_commands() {
+        let c = Config::default();
+        assert_eq!(
+            c.commands_for(Agent::Claude).resume,
+            vec!["claude", "--continue"]
+        );
+        assert_eq!(
+            c.resume_command_for(Agent::Claude),
+            Some(vec!["claude".to_string(), "--continue".to_string()])
+        );
+    }
+
+    /// A config written before `resume` existed loads with an empty `resume`,
+    /// and `resume_command_for` derives a default from the agent binary so the
+    /// session still resumes rather than restarting fresh.
+    fn agent_commands_without_resume(bin: &str) -> AgentCommands {
+        AgentCommands {
+            with_prompt: vec![bin.into(), "{prompt}".into()],
+            no_prompt: vec![bin.into()],
+            resume: vec![],
+        }
+    }
+
+    #[test]
+    fn resume_command_falls_back_to_binary_default() {
+        let mut c = Config::default();
+        c.agents.claude = agent_commands_without_resume("claude");
+        c.agents.codex = agent_commands_without_resume("codex");
+        assert_eq!(
+            c.resume_command_for(Agent::Claude),
+            Some(vec!["claude".to_string(), "--continue".to_string()])
+        );
+        assert_eq!(
+            c.resume_command_for(Agent::Codex),
+            Some(vec![
+                "codex".to_string(),
+                "resume".to_string(),
+                "--last".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn resume_default_respects_custom_binary() {
+        let mut c = Config::default();
+        c.agents.claude = agent_commands_without_resume("my-claude-wrapper");
+        assert_eq!(
+            c.resume_command_for(Agent::Claude),
+            Some(vec![
+                "my-claude-wrapper".to_string(),
+                "--continue".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn explicit_resume_overrides_default() {
+        let mut c = Config::default();
+        c.agents.claude.resume = vec!["claude".into(), "--resume".into(), "abc123".into()];
+        assert_eq!(
+            c.resume_command_for(Agent::Claude),
+            Some(vec![
+                "claude".to_string(),
+                "--resume".to_string(),
+                "abc123".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn config_without_resume_key_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // A config written before the `resume` key existed: agent tables have
+        // only with_prompt/no_prompt.
+        std::fs::write(
+            &path,
+            "default_agent = \"claude\"\nworktree_base = \"{root}/../wt\"\nbase_branch = \"auto\"\n\
+             [agents.claude]\nwith_prompt = [\"claude\", \"{prompt}\"]\nno_prompt = [\"claude\"]\n\
+             [agents.codex]\nwith_prompt = [\"codex\", \"{prompt}\"]\nno_prompt = [\"codex\"]\n\
+             [agents.copilot]\nwith_prompt = [\"copilot\", \"{prompt}\"]\nno_prompt = [\"copilot\"]\n",
+        )
+        .unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert!(loaded.commands_for(Agent::Claude).resume.is_empty());
+        // Fallback still yields a usable resume command.
+        assert_eq!(
+            loaded.resume_command_for(Agent::Claude),
+            Some(vec!["claude".to_string(), "--continue".to_string()])
+        );
     }
 
     #[test]

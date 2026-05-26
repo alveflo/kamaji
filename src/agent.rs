@@ -21,6 +21,7 @@ mod tests {
         AgentCommands {
             with_prompt: vec!["claude".into(), "{prompt}".into()],
             no_prompt: vec!["claude".into()],
+            resume: vec!["claude".into(), "--continue".into()],
         }
     }
 
