@@ -244,6 +244,34 @@ pub fn render_theme_picker(frame: &mut Frame, theme: &Theme, selected: usize) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
+pub fn render_agent_picker(frame: &mut Frame, theme: &Theme, selected: usize) {
+    let area = centered_rect(40, 50, frame.area());
+    frame.render_widget(Clear, area);
+    let block = themed_block(theme, " Default agent ".to_string());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, agent) in Agent::all().iter().enumerate() {
+        let marker = if i == selected { "▸ " } else { "  " };
+        let style = if i == selected {
+            Style::new()
+                .fg(theme.base.unwrap_or(Color::Black))
+                .bg(theme.accent())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme.text)
+        };
+        lines.push(Line::styled(format!("{marker}{}", agent.label()), style));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "↑/↓ select · ↵ save · Esc cancel",
+        Style::new().fg(theme.muted),
+    ));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
 pub fn render_help(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(50, 60, frame.area());
     frame.render_widget(Clear, area);
@@ -262,6 +290,7 @@ d         delete ticket
 Space     toggle multi-select on a ticket
 Shift+D   close selected tickets (or the focused one)
 t         switch theme (live preview)
+a         set default agent
 u         update kamaji (shown when a new version is available)
 p         switch project
 ?         this help
@@ -298,6 +327,34 @@ mod tests {
             found,
             "confirm modal should draw its border in theme.border"
         );
+    }
+
+    #[test]
+    fn agent_picker_lists_agents_and_titled_border() {
+        let theme = Theme::by_name("nord");
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_agent_picker(f, &theme, 0))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[Position::new(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("Default agent"), "titled border:\n{text}");
+        for agent in Agent::all() {
+            assert!(
+                text.contains(agent.label()),
+                "lists {}:\n{text}",
+                agent.label()
+            );
+        }
+        let bordered = (0..buf.area.height)
+            .any(|y| (0..buf.area.width).any(|x| buf[Position::new(x, y)].fg == theme.border));
+        assert!(bordered, "agent picker should draw its themed border");
     }
 
     #[test]

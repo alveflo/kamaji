@@ -169,6 +169,12 @@ pub enum Modal {
         selected: usize,
         original: usize,
     },
+    /// Global default-agent picker: `selected` indexes `Agent::all()`. Unlike
+    /// the theme picker there is no live preview (nothing changes on the board),
+    /// so there is no `original` to restore — Esc simply closes.
+    AgentPicker {
+        selected: usize,
+    },
 }
 
 /// Severity of a transient status-bar message, controlling its color.

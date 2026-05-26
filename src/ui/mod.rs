@@ -44,6 +44,9 @@ pub fn render(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) 
         Modal::ThemePicker { selected, .. } => {
             modals::render_theme_picker(frame, &app.theme, *selected)
         }
+        Modal::AgentPicker { selected } => {
+            modals::render_agent_picker(frame, &app.theme, *selected)
+        }
     }
 }
 

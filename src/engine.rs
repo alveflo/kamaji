@@ -508,6 +508,42 @@ impl Engine {
                     Ok(Effect::None)
                 }
             },
+            Modal::AgentPicker { mut selected } => match key.code {
+                KeyCode::Esc => Ok(Effect::None), // close without saving
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = selected.saturating_sub(1);
+                    self.app.modal = Modal::AgentPicker { selected };
+                    Ok(Effect::None)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = (selected + 1).min(Agent::all().len() - 1);
+                    self.app.modal = Modal::AgentPicker { selected };
+                    Ok(Effect::None)
+                }
+                KeyCode::Enter => {
+                    let chosen = Agent::all()[selected];
+                    let previous = std::mem::replace(
+                        &mut self.config.default_agent,
+                        chosen.as_str().to_string(),
+                    );
+                    match crate::config::save_to(&self.config_path, &self.config) {
+                        Ok(()) => self
+                            .app
+                            .set_info(format!("default agent: {}", chosen.label())),
+                        Err(e) => {
+                            // Persisting failed: revert so config matches what loads next launch.
+                            self.config.default_agent = previous;
+                            self.app
+                                .set_error(format!("could not save default agent: {e}"));
+                        }
+                    }
+                    Ok(Effect::None)
+                }
+                _ => {
+                    self.app.modal = Modal::AgentPicker { selected };
+                    Ok(Effect::None)
+                }
+            },
         }
     }
 
@@ -564,6 +600,11 @@ impl Engine {
                 self.app.modal = Modal::ThemePicker {
                     selected: idx,
                     original: idx,
+                };
+            }
+            KeyCode::Char('a') => {
+                self.app.modal = Modal::AgentPicker {
+                    selected: self.config.default_agent().index(),
                 };
             }
             KeyCode::Left | KeyCode::Char('h') => self.app.left(),
@@ -1240,6 +1281,74 @@ mod tests {
         assert!(matches!(e.app.modal, Modal::None));
         let saved = crate::config::load_from(&e.config_path).unwrap();
         assert_eq!(saved.theme, crate::theme::Theme::ALL[0]().name);
+    }
+
+    #[test]
+    fn a_opens_agent_picker_at_current_default() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config.default_agent = "codex".to_string();
+        e.on_key(key('a')).unwrap();
+        match e.app.modal {
+            Modal::AgentPicker { selected } => {
+                assert_eq!(selected, Agent::Codex.index());
+            }
+            ref other => panic!("expected AgentPicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_picker_down_moves_selection() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.app.modal = Modal::AgentPicker { selected: 0 };
+        e.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+        match e.app.modal {
+            Modal::AgentPicker { selected } => assert_eq!(selected, 1),
+            ref other => panic!("expected AgentPicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_picker_down_clamps_at_last() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let last = Agent::all().len() - 1;
+        e.app.modal = Modal::AgentPicker { selected: last };
+        e.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+        match e.app.modal {
+            Modal::AgentPicker { selected } => assert_eq!(selected, last),
+            ref other => panic!("expected AgentPicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_picker_enter_persists_default_to_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config_path = dir.path().join("config.toml");
+        e.app.modal = Modal::AgentPicker {
+            selected: Agent::Copilot.index(),
+        };
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(e.app.modal, Modal::None));
+        assert_eq!(e.config.default_agent, "copilot");
+        let saved = crate::config::load_from(&e.config_path).unwrap();
+        assert_eq!(saved.default_agent, "copilot");
+        assert_eq!(saved.default_agent().index(), Agent::Copilot.index());
+    }
+
+    #[test]
+    fn agent_picker_esc_leaves_config_unchanged() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config.default_agent = "claude".to_string();
+        e.app.modal = Modal::AgentPicker {
+            selected: Agent::Codex.index(),
+        };
+        e.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(e.app.modal, Modal::None));
+        assert_eq!(e.config.default_agent, "claude");
     }
 
     #[test]
