@@ -1,3 +1,4 @@
+use crate::dir_select::DirField;
 use crate::models::{Agent, Project, Status, Ticket};
 use crate::theme::Theme;
 use std::collections::HashSet;
@@ -146,6 +147,26 @@ impl TicketForm {
     }
 }
 
+/// State for the worktree-location selector: a single directory field with the
+/// same fuzzy subdirectory search as the project-root field, plus an optional
+/// validation error.
+#[derive(Debug, Clone, Default)]
+pub struct WorktreeForm {
+    pub dir: DirField,
+    pub error: Option<String>,
+}
+
+impl WorktreeForm {
+    /// Open the form, pre-filling `current` (the existing configured location,
+    /// if any) so the user edits rather than retypes it.
+    pub fn new(current: Option<&str>) -> Self {
+        WorktreeForm {
+            dir: DirField::with_value(current.unwrap_or_default()),
+            error: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Modal {
     None,
@@ -175,6 +196,9 @@ pub enum Modal {
     AgentPicker {
         selected: usize,
     },
+    /// Directory selector for the worktree location (issue #48). Reuses the
+    /// project-root fuzzy search; on confirm it persists `config.worktree_base`.
+    WorktreeLocation(WorktreeForm),
 }
 
 /// Severity of a transient status-bar message, controlling its color.

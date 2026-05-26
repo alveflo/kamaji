@@ -507,7 +507,7 @@ mod tests {
         db.create_project("kamaji", &root, Some(Agent::Claude))
             .unwrap();
         let config = Config {
-            worktree_base: dir.path().join("wts").to_string_lossy().to_string(),
+            worktree_base: Some(dir.path().join("wts").to_string_lossy().to_string()),
             ..Config::default()
         };
         let state_dir = dir.path().join("state");

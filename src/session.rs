@@ -69,7 +69,9 @@ fn prepare_with_argv(
     } else {
         config.base_branch.clone()
     };
-    let worktree = config.worktree_dir(&root, &name);
+    let Some(worktree) = config.worktree_dir(&root, &name) else {
+        bail!("no worktree location configured; set one in the TUI (press w) or in config.toml");
+    };
     if !worktree.exists() {
         git::add_worktree(&root, &worktree, &name, &base)?;
     }

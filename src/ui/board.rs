@@ -79,7 +79,7 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
     }
 
     let hints =
-        " [↵]attach [s]main [e]dit [c]reate [m]ove [d]elete [space]select [D]close [/]search [t]heme [p]roject [?]help [q]uit";
+        " [↵]attach [s]main [e]dit [c]reate [m]ove [d]elete [space]select [D]close [/]search [t]heme [w]orktree [p]roject [?]help [q]uit";
     let left = format!(" project: {} ", app.project.name);
     // While cards are multi-selected, surface the count so the user knows a bulk
     // close will act on more than the focused card.

@@ -3,10 +3,11 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::app::{App, FormField, Modal, TicketForm};
+use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm};
 use crate::config::Config;
 use crate::db::Db;
 use crate::detect::{self, SignalLevel};
+use crate::dir_select::{self, RootCheck};
 use crate::models::{Agent, Status, Ticket};
 use crate::session::{self, Prepared};
 use crate::theme::Theme;
@@ -123,6 +124,20 @@ impl Engine {
         }
     }
 
+    /// True once a worktree location is configured. When it isn't, this opens
+    /// the worktree-location selector and shows a hint, so a session start that
+    /// would otherwise fail instead guides the user to set the location first
+    /// (issue #48: the location has no default and is set via the TUI).
+    fn ensure_worktree_location(&mut self) -> bool {
+        if self.config.worktree_base.is_some() {
+            return true;
+        }
+        self.app.modal = Modal::WorktreeLocation(WorktreeForm::new(None));
+        self.app
+            .set_info("Choose where worktrees live, then start the session again.");
+        false
+    }
+
     /// Create the worktree + layout for a ticket and return the RunSession effect.
     fn start_session(&mut self, ticket: &Ticket) -> Result<Effect> {
         let p = self.prepare_session(ticket)?;
@@ -200,7 +215,12 @@ impl Engine {
                     let list = zellij::list_sessions();
                     self.enter_session(&ticket, name, list.as_deref())
                 }
-                None => self.start_session(&ticket),
+                None => {
+                    if !self.ensure_worktree_location() {
+                        return Ok(Effect::None);
+                    }
+                    self.start_session(&ticket)
+                }
             };
         }
         self.db.set_ticket_status(ticket.id, target)?;
@@ -389,6 +409,11 @@ impl Engine {
                 )?;
                 self.reload()?;
                 if !form.start_in_background {
+                    return Ok(Effect::None);
+                }
+                if !self.ensure_worktree_location() {
+                    // No location yet: the card is created in Todo and the
+                    // selector opens so the user can set one and start it later.
                     return Ok(Effect::None);
                 }
                 // Background start: prepare the session, then commit DB state.
@@ -613,6 +638,86 @@ impl Engine {
                     Ok(Effect::None)
                 }
             },
+            Modal::WorktreeLocation(mut form) => {
+                match key.code {
+                    KeyCode::Esc => {
+                        // Esc dismisses a pending create-confirm first; only a
+                        // second Esc (nothing pending) closes the modal.
+                        if !form.dir.escape() {
+                            self.app.modal = Modal::WorktreeLocation(form);
+                        }
+                    }
+                    KeyCode::Tab => {
+                        if !form.dir.suggestions.is_empty() {
+                            form.dir.accept_suggestion();
+                        }
+                        self.app.modal = Modal::WorktreeLocation(form);
+                    }
+                    KeyCode::Up => {
+                        form.dir.move_suggestion(-1);
+                        self.app.modal = Modal::WorktreeLocation(form);
+                    }
+                    KeyCode::Down => {
+                        form.dir.move_suggestion(1);
+                        self.app.modal = Modal::WorktreeLocation(form);
+                    }
+                    KeyCode::Backspace => {
+                        form.dir.backspace();
+                        self.app.modal = Modal::WorktreeLocation(form);
+                    }
+                    KeyCode::Enter => {
+                        if form.dir.pending_create.is_some() {
+                            // Second Enter: create the missing directory, then save.
+                            match form.dir.confirm_create() {
+                                Ok(Some(path)) => self.save_worktree_location(&path),
+                                Ok(None) => self.app.modal = Modal::WorktreeLocation(form),
+                                Err(e) => {
+                                    form.error = Some(format!("Couldn't create directory: {e}"));
+                                    self.app.modal = Modal::WorktreeLocation(form);
+                                }
+                            }
+                        } else {
+                            match dir_select::check_root(form.dir.resolved()) {
+                                RootCheck::Ready(path) => self.save_worktree_location(&path),
+                                RootCheck::NeedsConfirm(path) => {
+                                    form.error = None;
+                                    form.dir.pending_create = Some(path);
+                                    self.app.modal = Modal::WorktreeLocation(form);
+                                }
+                                RootCheck::Invalid(msg) => {
+                                    form.error = Some(msg);
+                                    self.app.modal = Modal::WorktreeLocation(form);
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        form.dir.input_char(c);
+                        self.app.modal = Modal::WorktreeLocation(form);
+                    }
+                    _ => self.app.modal = Modal::WorktreeLocation(form),
+                }
+                Ok(Effect::None)
+            }
+        }
+    }
+
+    /// Persist a chosen worktree location to the config file and toast the
+    /// result. On a write failure the previous value is restored so the
+    /// in-memory config and disk agree.
+    fn save_worktree_location(&mut self, path: &std::path::Path) {
+        let prev = self.config.worktree_base.take();
+        self.config.worktree_base = Some(path.to_string_lossy().to_string());
+        match crate::config::save_to(&self.config_path, &self.config) {
+            Ok(()) => self.app.set_info(format!(
+                "worktree location: {}",
+                dir_select::contract_home(path)
+            )),
+            Err(e) => {
+                self.config.worktree_base = prev;
+                self.app
+                    .set_error(format!("could not save worktree location: {e}"));
+            }
         }
     }
 
@@ -681,6 +786,11 @@ impl Engine {
                     selected: self.config.default_agent().index(),
                 };
             }
+            KeyCode::Char('w') => {
+                self.app.modal = Modal::WorktreeLocation(WorktreeForm::new(
+                    self.config.worktree_base.as_deref(),
+                ));
+            }
             KeyCode::Left | KeyCode::Char('h') => self.app.left(),
             KeyCode::Right | KeyCode::Char('l') => self.app.right(),
             KeyCode::Up | KeyCode::Char('k') => self.app.up(),
@@ -723,7 +833,12 @@ impl Engine {
                             let list = zellij::list_sessions();
                             self.enter_session(&t, name, list.as_deref())
                         }
-                        None => self.start_session(&t),
+                        None => {
+                            if !self.ensure_worktree_location() {
+                                return Ok(Effect::None);
+                            }
+                            self.start_session(&t)
+                        }
                     };
                 }
             }
@@ -815,7 +930,7 @@ mod tests {
 
         let mut e = engine_with_project(root.clone());
         // Point worktrees somewhere isolated under tempdir.
-        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
         e.state_dir = dir.path().join("state");
         let t =
             e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
@@ -1068,7 +1183,7 @@ mod tests {
         init_repo(&root);
 
         let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
         e.config.zellij_bar = "compact".to_string();
         e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
             .unwrap();
@@ -1133,7 +1248,7 @@ mod tests {
         init_repo(&root);
 
         let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
         e.state_dir = dir.path().join("state");
         let t =
             e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
@@ -1191,7 +1306,7 @@ mod tests {
         init_repo(&root);
 
         let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
         let t =
             e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
                 .unwrap();
@@ -1221,7 +1336,7 @@ mod tests {
         init_repo(&root);
 
         let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
         e.state_dir = dir.path().join("state");
 
         e.on_key(key('c')).unwrap();
@@ -1263,7 +1378,7 @@ mod tests {
         let root = dir.path().to_path_buf();
         init_repo(&root);
         let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = dir.path().join("wts").to_string_lossy().to_string();
+        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
 
         e.on_key(key('c')).unwrap();
         for ch in "Plan only".chars() {
@@ -1295,6 +1410,9 @@ mod tests {
     #[test]
     fn create_with_background_toggle_in_non_git_root_stays_todo() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        // A location is set so the failure under test is the non-git root, not
+        // the missing-worktree-location guard.
+        e.config.worktree_base = Some("/tmp/wts".to_string());
         e.on_key(key('c')).unwrap();
         for ch in "No repo".chars() {
             e.on_key(key(ch)).unwrap();
@@ -1834,5 +1952,115 @@ mod tests {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         e.on_key(key('D')).unwrap();
         assert!(matches!(e.app.modal, Modal::None));
+    }
+
+    /// `w` opens the worktree-location selector, pre-filled from config.
+    #[test]
+    fn w_opens_worktree_location_picker() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config.worktree_base = Some("/wt".to_string());
+        e.on_key(key('w')).unwrap();
+        match &e.app.modal {
+            Modal::WorktreeLocation(form) => assert_eq!(form.dir.value, "/wt"),
+            other => panic!("expected WorktreeLocation, got {other:?}"),
+        }
+    }
+
+    /// Starting a session with no worktree location configured must not fail or
+    /// create anything: it opens the selector and leaves the card in Todo.
+    #[test]
+    fn enter_without_worktree_location_opens_picker() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        init_repo(&root);
+        let mut e = engine_with_project(root);
+        // worktree_base stays None (the default).
+        assert!(e.config.worktree_base.is_none());
+        let t =
+            e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
+                .unwrap();
+        e.reload().unwrap();
+
+        let effect = e.on_key(enter()).unwrap();
+        assert_eq!(effect, Effect::None, "no session is started");
+        assert!(matches!(e.app.modal, Modal::WorktreeLocation(_)));
+        assert_eq!(
+            e.db.get_ticket(t.id).unwrap().unwrap().status,
+            Status::Todo,
+            "the card stays in Todo"
+        );
+        let msg = e
+            .app
+            .status_message
+            .as_ref()
+            .expect("an info toast is shown");
+        assert_eq!(msg.kind, crate::app::StatusKind::Info);
+    }
+
+    /// Confirming an existing directory in the selector saves it to the config
+    /// file and closes the modal.
+    #[test]
+    fn worktree_picker_enter_saves_existing_dir_to_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("worktrees");
+        std::fs::create_dir(&target).unwrap();
+
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config_path = dir.path().join("config.toml");
+        e.on_key(key('w')).unwrap();
+        for c in target.to_string_lossy().chars() {
+            e.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap();
+        }
+        e.on_key(enter()).unwrap();
+
+        assert!(matches!(e.app.modal, Modal::None), "modal closes on save");
+        assert_eq!(
+            e.config.worktree_base,
+            Some(target.to_string_lossy().to_string())
+        );
+        let saved = crate::config::load_from(&e.config_path).unwrap();
+        assert_eq!(saved.worktree_base, e.config.worktree_base);
+    }
+
+    /// A missing directory is not saved on the first Enter; it arms a
+    /// create-confirm prompt instead.
+    #[test]
+    fn worktree_picker_missing_dir_arms_confirm_before_saving() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("does-not-exist-yet");
+
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config_path = dir.path().join("config.toml");
+        e.on_key(key('w')).unwrap();
+        for c in target.to_string_lossy().chars() {
+            e.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap();
+        }
+        // First Enter arms the confirmation; nothing is saved yet.
+        e.on_key(enter()).unwrap();
+        assert!(e.config.worktree_base.is_none(), "not saved before confirm");
+        match &e.app.modal {
+            Modal::WorktreeLocation(form) => assert!(form.dir.pending_create.is_some()),
+            other => panic!("expected WorktreeLocation, got {other:?}"),
+        }
+        // Second Enter creates the directory and saves.
+        e.on_key(enter()).unwrap();
+        assert!(target.is_dir(), "directory is created on confirm");
+        assert_eq!(
+            e.config.worktree_base,
+            Some(target.to_string_lossy().to_string())
+        );
+        assert!(matches!(e.app.modal, Modal::None));
+    }
+
+    /// Esc closes the selector without touching the config.
+    #[test]
+    fn worktree_picker_esc_closes_without_saving() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('w')).unwrap();
+        e.on_key(esc()).unwrap();
+        assert!(matches!(e.app.modal, Modal::None));
+        assert!(e.config.worktree_base.is_none());
     }
 }

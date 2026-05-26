@@ -47,6 +47,7 @@ pub fn render(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) 
         Modal::AgentPicker { selected } => {
             modals::render_agent_picker(frame, &app.theme, *selected)
         }
+        Modal::WorktreeLocation(form) => modals::render_worktree_location(frame, &app.theme, form),
     }
 }
 

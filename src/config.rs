@@ -71,7 +71,13 @@ impl Default for AutoReview {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub default_agent: String,
-    pub worktree_base: String,
+    /// Parent directory under which per-ticket worktrees are created. Has **no
+    /// default**: a fresh config leaves it unset (`None`) so kamaji makes no
+    /// assumption about where worktrees live. When unset, the TUI prompts the
+    /// user to pick a location (see the worktree-location selector). A `{root}`
+    /// token, if present, is expanded to the project root at use time.
+    #[serde(default)]
+    pub worktree_base: Option<String>,
     pub base_branch: String,
     /// Bar style for spawned zellij sessions: `auto` (match the user's zellij
     /// `default_layout`), `compact`, `default`, or `none`. Defaults to `auto`,
@@ -97,7 +103,7 @@ impl Default for Config {
         };
         Config {
             default_agent: "claude".to_string(),
-            worktree_base: "{root}/../kamaji-worktrees".to_string(),
+            worktree_base: None,
             base_branch: "auto".to_string(),
             zellij_bar: default_zellij_bar(),
             theme: default_theme(),
@@ -173,12 +179,14 @@ impl Config {
         std::time::Duration::from_secs(self.auto_review.poll_interval_secs.max(1))
     }
 
-    /// Absolute worktree directory for `name`, with `{root}` expanded.
-    pub fn worktree_dir(&self, root: &Path, name: &str) -> PathBuf {
+    /// Absolute worktree directory for `name`, with `{root}` expanded. Returns
+    /// `None` when no worktree location has been configured yet.
+    pub fn worktree_dir(&self, root: &Path, name: &str) -> Option<PathBuf> {
         let base = self
             .worktree_base
+            .as_ref()?
             .replace("{root}", &root.to_string_lossy());
-        PathBuf::from(base).join(name)
+        Some(PathBuf::from(base).join(name))
     }
 }
 
@@ -238,13 +246,63 @@ mod tests {
     }
 
     #[test]
-    fn worktree_dir_expands_root() {
+    fn worktree_base_has_no_default() {
+        // The worktree location makes no assumptions: a fresh config leaves it
+        // unset so the user must choose where worktrees live.
+        assert_eq!(Config::default().worktree_base, None);
+    }
+
+    #[test]
+    fn worktree_dir_is_none_when_unset() {
         let c = Config::default();
+        assert_eq!(
+            c.worktree_dir(&PathBuf::from("/home/u/proj"), "kamaji-1-x"),
+            None
+        );
+    }
+
+    #[test]
+    fn worktree_dir_expands_root_when_set() {
+        let c = Config {
+            worktree_base: Some("{root}/../kamaji-worktrees".to_string()),
+            ..Config::default()
+        };
         let p = c.worktree_dir(&PathBuf::from("/home/u/proj"), "kamaji-1-x");
         assert_eq!(
             p,
-            PathBuf::from("/home/u/proj/../kamaji-worktrees/kamaji-1-x")
+            Some(PathBuf::from("/home/u/proj/../kamaji-worktrees/kamaji-1-x"))
         );
+    }
+
+    #[test]
+    fn missing_worktree_base_loads_as_none() {
+        // A config.toml without a worktree_base key must load, leaving it unset
+        // rather than erroring.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "default_agent = \"claude\"\nbase_branch = \"auto\"\n\
+             [agents.claude]\nwith_prompt = [\"claude\", \"{prompt}\"]\nno_prompt = [\"claude\"]\n\
+             [agents.codex]\nwith_prompt = [\"codex\", \"{prompt}\"]\nno_prompt = [\"codex\"]\n\
+             [agents.copilot]\nwith_prompt = [\"copilot\", \"{prompt}\"]\nno_prompt = [\"copilot\"]\n",
+        )
+        .unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(loaded.worktree_base, None);
+    }
+
+    #[test]
+    fn set_worktree_base_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let c = Config {
+            worktree_base: Some("/wt".to_string()),
+            ..Config::default()
+        };
+        save_to(&path, &c).unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(loaded.worktree_base, Some("/wt".to_string()));
     }
 
     #[test]

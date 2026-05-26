@@ -4,7 +4,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{FormField, TicketForm};
+use crate::app::{FormField, TicketForm, WorktreeForm};
+use crate::dir_select;
 use crate::models::{Agent, Status};
 use crate::theme::Theme;
 use crate::ui::centered_rect;
@@ -272,6 +273,36 @@ pub fn render_agent_picker(frame: &mut Frame, theme: &Theme, selected: usize) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
+/// Render the worktree-location selector: a single directory field with the
+/// same fuzzy suggestion list and create-confirm flow as the project-root
+/// field, so the two selectors feel identical (issue #48).
+pub fn render_worktree_location(frame: &mut Frame, theme: &Theme, form: &WorktreeForm) {
+    let pending_msg = form
+        .dir
+        .pending_create
+        .as_ref()
+        .map(|p| format!("⚠ {} doesn't exist.", dir_select::contract_home(p)));
+    let (hint, message, suggestions): (&str, Option<&str>, &[String]) =
+        if let Some(msg) = &pending_msg {
+            ("Enter: create it   Esc: edit", Some(msg.as_str()), &[])
+        } else {
+            (
+                "↑/↓ choose · Tab complete · ↵ save · Esc cancel",
+                form.error.as_deref(),
+                &form.dir.suggestions,
+            )
+        };
+    render_field_modal(
+        frame,
+        theme,
+        "Worktree location",
+        &[("Directory (~ ok)", &form.dir.value, true)],
+        hint,
+        message,
+        (suggestions, form.dir.suggestion_idx),
+    );
+}
+
 pub fn render_help(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(50, 60, frame.area());
     frame.render_widget(Clear, area);
@@ -292,6 +323,7 @@ Space     toggle multi-select on a ticket
 Shift+D   close selected tickets (or the focused one)
 t         switch theme (live preview)
 a         set default agent
+w         set worktree location (where worktrees are created)
 u         update kamaji (shown when a new version is available)
 p         switch project
 ?         this help
@@ -488,6 +520,32 @@ mod tests {
         assert!(
             visible <= 5,
             "at most 5 suggestions visible, saw {visible}:\n{text}"
+        );
+    }
+
+    #[test]
+    fn worktree_location_modal_shows_title_and_value() {
+        let theme = Theme::by_name("catppuccin");
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let form = WorktreeForm::new(Some("~/code/worktrees"));
+        terminal
+            .draw(|f| render_worktree_location(f, &theme, &form))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[Position::new(x, y)].symbol());
+            }
+        }
+        assert!(
+            text.contains("Worktree location"),
+            "modal should be titled:\n{text}"
+        );
+        assert!(
+            text.contains("~/code/worktrees"),
+            "the pre-filled location should render:\n{text}"
         );
     }
 }
