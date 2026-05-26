@@ -26,6 +26,10 @@ impl Agent {
     pub fn all() -> [Agent; 3] {
         [Agent::Claude, Agent::Codex, Agent::Copilot]
     }
+    /// Position of `self` within `Agent::all()`; the inverse of indexing it.
+    pub fn index(self) -> usize {
+        Agent::all().iter().position(|a| *a == self).unwrap_or(0)
+    }
 }
 
 impl FromStr for Agent {
@@ -141,6 +145,14 @@ mod tests {
             assert_eq!(Agent::from_str(a.as_str()).unwrap(), a);
         }
         assert!(Agent::from_str("nope").is_err());
+    }
+
+    #[test]
+    fn agent_index_inverts_all() {
+        for (i, a) in Agent::all().into_iter().enumerate() {
+            assert_eq!(a.index(), i);
+            assert_eq!(Agent::all()[a.index()], a);
+        }
     }
 
     #[test]
