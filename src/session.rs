@@ -69,6 +69,33 @@ pub fn prepare_session(
     })
 }
 
+/// Everything needed to launch a project's "main" session — a workspace not
+/// tied to any ticket. There is no worktree and no DB state, so unlike
+/// [`Prepared`] this carries only the session name and its layout.
+pub struct MainPrepared {
+    pub name: String,
+    pub layout_path: PathBuf,
+}
+
+/// Build the layout for a project's "main" session: the project's default agent
+/// (no initial prompt) running directly in the project root. Creates no worktree
+/// and writes no DB state, so it works in any directory and is fully derived from
+/// the project + config — its existence is tracked only by zellij itself.
+pub fn prepare_main_session(project: &Project, config: &Config) -> Result<MainPrepared> {
+    let name = slug::main_session_name(project.id);
+    let agent = project
+        .default_agent
+        .unwrap_or_else(|| config.default_agent());
+    let argv = agent::build_command(config.commands_for(agent), None);
+    let bar = zellij_config::resolve_bar_style(
+        &config.zellij_bar,
+        zellij_config::detect_default_layout().as_deref(),
+    );
+    let kdl = layout::render_layout(&project.root_dir.to_string_lossy(), &argv, bar);
+    let layout_path = layout_file(&name, &kdl)?;
+    Ok(MainPrepared { name, layout_path })
+}
+
 /// Record a prepared session on the ticket: session columns, the instrumented
 /// flag, and a move to In Progress.
 pub fn commit_session(db: &Db, ticket_id: i64, p: &Prepared) -> Result<()> {
@@ -88,4 +115,71 @@ fn layout_file(name: &str, contents: &str) -> Result<PathBuf> {
     let path = dir.join(format!("{name}-{}-{counter}.kdl", std::process::id()));
     std::fs::write(&path, contents)?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(id: i64, root: PathBuf, default_agent: Option<Agent>) -> Project {
+        Project {
+            id,
+            name: "proj".into(),
+            root_dir: root,
+            default_agent,
+            created_at: String::new(),
+        }
+    }
+
+    /// The main session launches the configured default agent directly in the
+    /// project root (no worktree), under the project's main-session name.
+    #[test]
+    fn prepare_main_session_runs_default_agent_in_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let p = prepare_main_session(&project(7, root.clone(), None), &Config::default()).unwrap();
+
+        assert_eq!(p.name, slug::main_session_name(7));
+        assert!(p.layout_path.exists());
+        let kdl = std::fs::read_to_string(&p.layout_path).unwrap();
+        assert!(
+            kdl.contains("command=\"claude\""),
+            "default agent should be launched:\n{kdl}"
+        );
+        assert!(
+            kdl.contains(&format!("cwd=\"{}\"", root.to_string_lossy())),
+            "agent should run in the project root, not a worktree:\n{kdl}"
+        );
+        // No initial prompt: the agent is launched bare for ad-hoc work.
+        assert!(
+            !kdl.contains("args"),
+            "main session takes no prompt:\n{kdl}"
+        );
+    }
+
+    /// A project-level default agent overrides the global config default.
+    #[test]
+    fn prepare_main_session_honors_project_default_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let p = prepare_main_session(&project(1, root, Some(Agent::Codex)), &Config::default())
+            .unwrap();
+        let kdl = std::fs::read_to_string(&p.layout_path).unwrap();
+        assert!(
+            kdl.contains("command=\"codex\""),
+            "project default agent should win:\n{kdl}"
+        );
+    }
+
+    /// Unlike ticket sessions, the main session must not require the project
+    /// root to be a git repository (there is no worktree to create).
+    #[test]
+    fn prepare_main_session_works_outside_a_git_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(prepare_main_session(
+            &project(2, dir.path().to_path_buf(), None),
+            &Config::default()
+        )
+        .is_ok());
+    }
 }

@@ -256,6 +256,7 @@ pub fn render_help(frame: &mut Frame, theme: &Theme) {
 c         create ticket (auto-starts a background session)
 e         edit ticket
 Enter     attach / start session
+s         open main session (project-wide, no ticket)
 /         search / filter tickets (Esc clears)
 m         move ticket (then ←/→, Enter)
 d         delete ticket
@@ -314,6 +315,25 @@ mod tests {
         assert!(
             text.contains("search"),
             "help should mention search:\n{text}"
+        );
+    }
+
+    #[test]
+    fn help_lists_the_main_session_key() {
+        let theme = Theme::by_name("catppuccin");
+        let backend = TestBackend::new(60, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render_help(f, &theme)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[Position::new(x, y)].symbol());
+            }
+        }
+        assert!(
+            text.contains("main session"),
+            "help should mention the main session:\n{text}"
         );
     }
 
