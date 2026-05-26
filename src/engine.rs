@@ -10,7 +10,7 @@ use crate::detect::{self, SignalLevel};
 use crate::models::{Agent, Status, Ticket};
 use crate::session::{self, Prepared};
 use crate::theme::Theme;
-use crate::{git, zellij};
+use crate::{git, slug, zellij};
 
 /// Side effect the main loop must run by releasing the terminal.
 #[derive(Debug, PartialEq)]
@@ -87,6 +87,32 @@ impl Engine {
     /// session/status columns. Shared by foreground and background start.
     fn prepare_session(&mut self, ticket: &Ticket) -> Result<Prepared> {
         session::prepare_session(&self.app.project, &self.config, &self.state_dir, ticket)
+    }
+
+    /// Attach to the project's "main" session — a workspace not tied to any
+    /// ticket — if zellij already has it, otherwise start it. `sessions` is the
+    /// raw `zellij list-sessions` output (or `None` if it couldn't be queried);
+    /// when unavailable we start rather than risk attaching to a missing session.
+    /// On a preparation error the board stays put with an error toast.
+    fn main_session_effect(&mut self, sessions: Option<&str>) -> Result<Effect> {
+        let name = slug::main_session_name(self.app.project.id);
+        if sessions
+            .map(|list| zellij::session_in_list(list, &name))
+            .unwrap_or(false)
+        {
+            return Ok(Effect::Attach { name });
+        }
+        match session::prepare_main_session(&self.app.project, &self.config) {
+            Ok(p) => Ok(Effect::RunSession {
+                name: p.name,
+                layout_path: p.layout_path,
+            }),
+            Err(err) => {
+                self.app
+                    .set_error(format!("could not start main session: {err}"));
+                Ok(Effect::None)
+            }
+        }
     }
 
     /// Create the worktree + layout for a ticket and return the RunSession effect.
@@ -589,6 +615,11 @@ impl Engine {
                 }
             }
             KeyCode::Char('p') => return Ok(Effect::SwitchProject),
+            // Open the project's main session (not tied to any ticket): attach
+            // if it's already running, otherwise start it in the project root.
+            KeyCode::Char('s') => {
+                return self.main_session_effect(zellij::list_sessions().as_deref());
+            }
             KeyCode::Char('u') => {
                 if let Some(version) = self.app.update.clone() {
                     return Ok(Effect::SelfUpdate { version });
@@ -1483,6 +1514,65 @@ mod tests {
     fn u_does_nothing_without_an_update() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         assert_eq!(e.on_key(key('u')).unwrap(), Effect::None);
+    }
+
+    /// With no existing main session, `main_session_effect` starts one: a
+    /// RunSession carrying the project's main-session name and a real layout.
+    #[test]
+    fn main_session_effect_creates_when_absent() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let name = slug::main_session_name(e.app.project.id);
+        match e
+            .main_session_effect(Some("kamaji-9-other [Created]\n"))
+            .unwrap()
+        {
+            Effect::RunSession {
+                name: n,
+                layout_path,
+            } => {
+                assert_eq!(n, name);
+                assert!(layout_path.exists());
+            }
+            other => panic!("expected RunSession, got {other:?}"),
+        }
+    }
+
+    /// When the main session already exists in zellij, `s` attaches to it
+    /// instead of creating a duplicate.
+    #[test]
+    fn main_session_effect_attaches_when_present() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let name = slug::main_session_name(e.app.project.id);
+        let list = format!("{name} [Created 1m ago]\n");
+        assert_eq!(
+            e.main_session_effect(Some(&list)).unwrap(),
+            Effect::Attach { name }
+        );
+    }
+
+    /// If zellij can't be queried (None), fall back to starting a session rather
+    /// than wrongly attaching to one that may not exist.
+    #[test]
+    fn main_session_effect_creates_when_zellij_unavailable() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        assert!(matches!(
+            e.main_session_effect(None).unwrap(),
+            Effect::RunSession { .. }
+        ));
+    }
+
+    /// `s` on the board targets the project's main session regardless of whether
+    /// zellij reports it as already running (attach) or not (start).
+    #[test]
+    fn s_targets_the_main_session() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let name = slug::main_session_name(e.app.project.id);
+        let got = match e.on_key(key('s')).unwrap() {
+            Effect::RunSession { name, .. } => name,
+            Effect::Attach { name } => name,
+            other => panic!("expected a main-session effect, got {other:?}"),
+        };
+        assert_eq!(got, name);
     }
 
     /// Three Todo tickets with the cursor on the first; returns their ids.

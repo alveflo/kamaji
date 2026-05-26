@@ -79,7 +79,7 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
     }
 
     let hints =
-        " [↵]attach [e]dit [c]reate [m]ove [d]elete [space]select [D]close [/]search [t]heme [p]roject [?]help [q]uit";
+        " [↵]attach [s]main [e]dit [c]reate [m]ove [d]elete [space]select [D]close [/]search [t]heme [p]roject [?]help [q]uit";
     let left = format!(" project: {} ", app.project.name);
     // While cards are multi-selected, surface the count so the user knows a bulk
     // close will act on more than the focused card.
@@ -547,6 +547,17 @@ mod tests {
         let buf = render(&app, &HashMap::new(), 120, 20);
         let text = buffer_text(&buf);
         assert!(text.contains("[/]search"), "search hint present:\n{text}");
+    }
+
+    #[test]
+    fn status_bar_lists_the_main_session_hint() {
+        let app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        let buf = render(&app, &HashMap::new(), 120, 20);
+        let text = buffer_text(&buf);
+        assert!(
+            text.contains("[s]main"),
+            "main-session hint present:\n{text}"
+        );
     }
 
     #[test]
