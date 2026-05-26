@@ -97,7 +97,17 @@ impl Default for Config {
             agents: Agents {
                 claude: cmd("claude"),
                 codex: cmd("codex"),
-                copilot: cmd("copilot"),
+                // copilot rejects a bare positional prompt ("Invalid command
+                // format"); it needs `-i` to start an interactive session,
+                // optionally seeded with a prompt.
+                copilot: AgentCommands {
+                    with_prompt: vec![
+                        "copilot".to_string(),
+                        "-i".to_string(),
+                        "{prompt}".to_string(),
+                    ],
+                    no_prompt: vec!["copilot".to_string(), "-i".to_string()],
+                },
             },
             auto_review: AutoReview::default(),
         }
@@ -184,6 +194,16 @@ mod tests {
             c.commands_for(Agent::Codex).with_prompt,
             vec!["codex", "{prompt}"]
         );
+    }
+
+    /// copilot needs `-i` for an interactive session; a bare positional prompt
+    /// is rejected with "Invalid command format". See GitHub issue #44.
+    #[test]
+    fn copilot_default_uses_interactive_flag() {
+        let c = Config::default();
+        let copilot = c.commands_for(Agent::Copilot);
+        assert_eq!(copilot.with_prompt, vec!["copilot", "-i", "{prompt}"]);
+        assert_eq!(copilot.no_prompt, vec!["copilot", "-i"]);
     }
 
     #[test]
