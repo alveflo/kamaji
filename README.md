@@ -108,8 +108,8 @@ with_prompt = ["codex", "{prompt}"]
 no_prompt = ["codex"]
 
 [agents.copilot]
-with_prompt = ["copilot", "{prompt}"]
-no_prompt = ["copilot"]
+with_prompt = ["copilot", "-i", "{prompt}"]
+no_prompt = ["copilot", "-i"]
 ```
 
 **Key settings:**

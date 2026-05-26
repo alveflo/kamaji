@@ -79,6 +79,7 @@ impl Engine {
             .map(|t| t.id)
             .collect();
         self.app.reclamp();
+        self.app.prune_selection();
         Ok(())
     }
 
@@ -443,7 +444,9 @@ impl Engine {
                 }
                 KeyCode::Enter => {
                     if target == Status::Done {
-                        self.app.modal = Modal::ConfirmDone { ticket_id };
+                        self.app.modal = Modal::ConfirmDone {
+                            ticket_ids: vec![ticket_id],
+                        };
                         Ok(Effect::None)
                     } else {
                         self.move_ticket(ticket_id, target)
@@ -454,19 +457,29 @@ impl Engine {
                     Ok(Effect::None)
                 }
             },
-            Modal::ConfirmDone { ticket_id } => match key.code {
+            Modal::ConfirmDone { ticket_ids } => match key.code {
                 KeyCode::Char('y') => {
-                    self.cleanup_ticket(ticket_id)?;
-                    self.db.set_ticket_status(ticket_id, Status::Done)?;
+                    for id in &ticket_ids {
+                        self.cleanup_ticket(*id)?;
+                        self.db.set_ticket_status(*id, Status::Done)?;
+                    }
+                    self.app.clear_selection();
                     self.reload()?;
                     Ok(Effect::None)
                 }
                 KeyCode::Char('n') => {
-                    self.db.set_ticket_status(ticket_id, Status::Done)?;
+                    for id in &ticket_ids {
+                        self.db.set_ticket_status(*id, Status::Done)?;
+                    }
+                    self.app.clear_selection();
                     self.reload()?;
                     Ok(Effect::None)
                 }
-                _ => Ok(Effect::None), // Esc cancels
+                _ => {
+                    // Esc cancels: restore the modal-less board but keep the
+                    // selection so the user can retry.
+                    Ok(Effect::None)
+                }
             },
             Modal::ConfirmDelete { ticket_id } => match key.code {
                 KeyCode::Char('y') => {
@@ -521,6 +534,42 @@ impl Engine {
                     Ok(Effect::None)
                 }
             },
+            Modal::AgentPicker { mut selected } => match key.code {
+                KeyCode::Esc => Ok(Effect::None), // close without saving
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = selected.saturating_sub(1);
+                    self.app.modal = Modal::AgentPicker { selected };
+                    Ok(Effect::None)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    selected = (selected + 1).min(Agent::all().len() - 1);
+                    self.app.modal = Modal::AgentPicker { selected };
+                    Ok(Effect::None)
+                }
+                KeyCode::Enter => {
+                    let chosen = Agent::all()[selected];
+                    let previous = std::mem::replace(
+                        &mut self.config.default_agent,
+                        chosen.as_str().to_string(),
+                    );
+                    match crate::config::save_to(&self.config_path, &self.config) {
+                        Ok(()) => self
+                            .app
+                            .set_info(format!("default agent: {}", chosen.label())),
+                        Err(e) => {
+                            // Persisting failed: revert so config matches what loads next launch.
+                            self.config.default_agent = previous;
+                            self.app
+                                .set_error(format!("could not save default agent: {e}"));
+                        }
+                    }
+                    Ok(Effect::None)
+                }
+                _ => {
+                    self.app.modal = Modal::AgentPicker { selected };
+                    Ok(Effect::None)
+                }
+            },
         }
     }
 
@@ -543,7 +592,28 @@ impl Engine {
         match key.code {
             KeyCode::Char('q') => self.app.should_quit = true,
             KeyCode::Char('/') => self.app.search_start(),
+            // Esc clears the multi-selection first, then (on a second press) the
+            // active search filter.
+            KeyCode::Esc if !self.app.selected_ids.is_empty() => self.app.clear_selection(),
             KeyCode::Esc if !self.app.search.is_empty() => self.app.search_clear(),
+            // Space toggles the focused card in/out of the multi-select set.
+            KeyCode::Char(' ') => self.app.toggle_selected(),
+            // Shift-D closes the selected tickets (or the focused one when the
+            // selection is empty) by moving them to Done after a confirm.
+            KeyCode::Char('D') => {
+                let ids: Vec<i64> = if self.app.selected_ids.is_empty() {
+                    self.app
+                        .selected_ticket()
+                        .map(|t| t.id)
+                        .into_iter()
+                        .collect()
+                } else {
+                    self.app.selected_ids.iter().copied().collect()
+                };
+                if !ids.is_empty() {
+                    self.app.modal = Modal::ConfirmDone { ticket_ids: ids };
+                }
+            }
             KeyCode::Char('p') => return Ok(Effect::SwitchProject),
             // Open the project's main session (not tied to any ticket): attach
             // if it's already running, otherwise start it in the project root.
@@ -561,6 +631,11 @@ impl Engine {
                 self.app.modal = Modal::ThemePicker {
                     selected: idx,
                     original: idx,
+                };
+            }
+            KeyCode::Char('a') => {
+                self.app.modal = Modal::AgentPicker {
+                    selected: self.config.default_agent().index(),
                 };
             }
             KeyCode::Left | KeyCode::Char('h') => self.app.left(),
@@ -1240,6 +1315,74 @@ mod tests {
     }
 
     #[test]
+    fn a_opens_agent_picker_at_current_default() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config.default_agent = "codex".to_string();
+        e.on_key(key('a')).unwrap();
+        match e.app.modal {
+            Modal::AgentPicker { selected } => {
+                assert_eq!(selected, Agent::Codex.index());
+            }
+            ref other => panic!("expected AgentPicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_picker_down_moves_selection() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.app.modal = Modal::AgentPicker { selected: 0 };
+        e.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+        match e.app.modal {
+            Modal::AgentPicker { selected } => assert_eq!(selected, 1),
+            ref other => panic!("expected AgentPicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_picker_down_clamps_at_last() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let last = Agent::all().len() - 1;
+        e.app.modal = Modal::AgentPicker { selected: last };
+        e.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+        match e.app.modal {
+            Modal::AgentPicker { selected } => assert_eq!(selected, last),
+            ref other => panic!("expected AgentPicker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_picker_enter_persists_default_to_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config_path = dir.path().join("config.toml");
+        e.app.modal = Modal::AgentPicker {
+            selected: Agent::Copilot.index(),
+        };
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(e.app.modal, Modal::None));
+        assert_eq!(e.config.default_agent, "copilot");
+        let saved = crate::config::load_from(&e.config_path).unwrap();
+        assert_eq!(saved.default_agent, "copilot");
+        assert_eq!(saved.default_agent().index(), Agent::Copilot.index());
+    }
+
+    #[test]
+    fn agent_picker_esc_leaves_config_unchanged() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.config.default_agent = "claude".to_string();
+        e.app.modal = Modal::AgentPicker {
+            selected: Agent::Codex.index(),
+        };
+        e.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(e.app.modal, Modal::None));
+        assert_eq!(e.config.default_agent, "claude");
+    }
+
+    #[test]
     fn space_toggles_background_field_in_form() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
@@ -1430,5 +1573,159 @@ mod tests {
             other => panic!("expected a main-session effect, got {other:?}"),
         };
         assert_eq!(got, name);
+    }
+
+    /// Three Todo tickets with the cursor on the first; returns their ids.
+    fn three_todo(e: &mut Engine) -> Vec<i64> {
+        let ids: Vec<i64> = (0..3)
+            .map(|i| {
+                e.db.create_ticket(e.app.project.id, &format!("t{i}"), "", None, Agent::Claude)
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        e.reload().unwrap();
+        ids
+    }
+
+    #[test]
+    fn space_toggles_multi_selection_of_focused_ticket() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let ids = three_todo(&mut e);
+        e.on_key(key(' ')).unwrap();
+        assert!(
+            e.app.selected_ids.contains(&ids[0]),
+            "space selects the focused card"
+        );
+        e.on_key(key(' ')).unwrap();
+        assert!(
+            !e.app.selected_ids.contains(&ids[0]),
+            "space again deselects"
+        );
+    }
+
+    #[test]
+    fn shift_d_with_selection_opens_confirm_done_with_all_ids() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let ids = three_todo(&mut e);
+        // Select the first two cards.
+        e.on_key(key(' ')).unwrap();
+        e.on_key(key('j')).unwrap();
+        e.on_key(key(' ')).unwrap();
+        e.on_key(key('D')).unwrap();
+        match &e.app.modal {
+            Modal::ConfirmDone { ticket_ids } => {
+                let mut got = ticket_ids.clone();
+                got.sort();
+                assert_eq!(got, vec![ids[0], ids[1]]);
+            }
+            other => panic!("expected ConfirmDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_d_without_selection_targets_focused_ticket() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let ids = three_todo(&mut e);
+        e.on_key(key('D')).unwrap();
+        match &e.app.modal {
+            Modal::ConfirmDone { ticket_ids } => assert_eq!(ticket_ids, &vec![ids[0]]),
+            other => panic!("expected ConfirmDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn confirm_done_yes_closes_all_and_clears_selection() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let ids = three_todo(&mut e);
+        e.app.modal = Modal::ConfirmDone {
+            ticket_ids: vec![ids[0], ids[1]],
+        };
+        e.app.selected_ids.insert(ids[0]);
+        e.app.selected_ids.insert(ids[1]);
+        e.on_key(key('y')).unwrap();
+        assert_eq!(
+            e.db.get_ticket(ids[0]).unwrap().unwrap().status,
+            Status::Done
+        );
+        assert_eq!(
+            e.db.get_ticket(ids[1]).unwrap().unwrap().status,
+            Status::Done
+        );
+        assert_eq!(
+            e.db.get_ticket(ids[2]).unwrap().unwrap().status,
+            Status::Todo,
+            "an unselected ticket is untouched"
+        );
+        assert!(
+            e.app.selected_ids.is_empty(),
+            "selection is cleared after closing"
+        );
+    }
+
+    #[test]
+    fn confirm_done_no_marks_done_without_cleanup_and_clears_selection() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let ids = three_todo(&mut e);
+        e.app.modal = Modal::ConfirmDone {
+            ticket_ids: vec![ids[0]],
+        };
+        e.app.selected_ids.insert(ids[0]);
+        e.on_key(key('n')).unwrap();
+        assert_eq!(
+            e.db.get_ticket(ids[0]).unwrap().unwrap().status,
+            Status::Done
+        );
+        assert!(e.app.selected_ids.is_empty());
+    }
+
+    #[test]
+    fn confirm_done_esc_cancels_and_keeps_selection() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let ids = three_todo(&mut e);
+        e.app.modal = Modal::ConfirmDone {
+            ticket_ids: vec![ids[0]],
+        };
+        e.app.selected_ids.insert(ids[0]);
+        e.on_key(esc()).unwrap();
+        assert_eq!(
+            e.db.get_ticket(ids[0]).unwrap().unwrap().status,
+            Status::Todo,
+            "Esc leaves the ticket open"
+        );
+        assert!(
+            e.app.selected_ids.contains(&ids[0]),
+            "Esc keeps the selection so the user can retry"
+        );
+    }
+
+    #[test]
+    fn esc_clears_selection_before_clearing_search() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        three_todo(&mut e);
+        e.app.search.query = "t".into();
+        e.on_key(key(' ')).unwrap(); // select focused card
+        assert!(!e.app.selected_ids.is_empty());
+        e.on_key(esc()).unwrap();
+        assert!(
+            e.app.selected_ids.is_empty(),
+            "first Esc clears the selection"
+        );
+        assert_eq!(
+            e.app.search.query, "t",
+            "the search filter survives the first Esc"
+        );
+        e.on_key(esc()).unwrap();
+        assert!(
+            e.app.search.query.is_empty(),
+            "second Esc clears the filter"
+        );
+    }
+
+    #[test]
+    fn shift_d_with_no_tickets_does_nothing() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('D')).unwrap();
+        assert!(matches!(e.app.modal, Modal::None));
     }
 }

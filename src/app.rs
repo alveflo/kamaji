@@ -1,5 +1,6 @@
 use crate::models::{Agent, Project, Status, Ticket};
 use crate::theme::Theme;
+use std::collections::HashSet;
 
 /// Board search/filter state. An empty query means no filter is applied.
 #[derive(Debug, Clone, Default)]
@@ -153,8 +154,10 @@ pub enum Modal {
         ticket_id: i64,
         target: Status,
     },
+    /// Confirm closing (moving to Done) one or more tickets. Carries every id
+    /// so a single close and a bulk close share one flow.
     ConfirmDone {
-        ticket_id: i64,
+        ticket_ids: Vec<i64>,
     },
     ConfirmDelete {
         ticket_id: i64,
@@ -165,6 +168,12 @@ pub enum Modal {
     ThemePicker {
         selected: usize,
         original: usize,
+    },
+    /// Global default-agent picker: `selected` indexes `Agent::all()`. Unlike
+    /// the theme picker there is no live preview (nothing changes on the board),
+    /// so there is no `original` to restore — Esc simply closes.
+    AgentPicker {
+        selected: usize,
     },
 }
 
@@ -198,6 +207,9 @@ pub struct App {
     /// Newer version available (set by the background update check), shown in
     /// the status bar and triggering self-update on `u`.
     pub update: Option<String>,
+    /// Ticket ids in the multi-select set, for bulk actions (e.g. close
+    /// several at once). Independent of the cursor and of the search filter.
+    pub selected_ids: HashSet<i64>,
 }
 
 impl App {
@@ -213,7 +225,30 @@ impl App {
             should_quit: false,
             theme: Theme::default(),
             update: None,
+            selected_ids: HashSet::new(),
         }
+    }
+
+    /// Toggle the focused ticket's membership in the multi-select set. A no-op
+    /// when no ticket is focused (e.g. an empty column).
+    pub fn toggle_selected(&mut self) {
+        if let Some(id) = self.selected_ticket().map(|t| t.id) {
+            if !self.selected_ids.remove(&id) {
+                self.selected_ids.insert(id);
+            }
+        }
+    }
+
+    /// Empty the multi-select set.
+    pub fn clear_selection(&mut self) {
+        self.selected_ids.clear();
+    }
+
+    /// Drop any selected ids that no longer correspond to a live ticket (called
+    /// after a reload so closed/deleted tickets don't linger in the set).
+    pub fn prune_selection(&mut self) {
+        let live: HashSet<i64> = self.tickets.iter().map(|t| t.id).collect();
+        self.selected_ids.retain(|id| live.contains(id));
     }
 
     /// Show a neutral informational status message (e.g. a confirmation or an
@@ -443,6 +478,43 @@ mod tests {
     fn app_has_a_default_theme() {
         let app = App::new(project(), vec![]);
         assert_eq!(app.theme.name, "catppuccin");
+    }
+
+    #[test]
+    fn toggling_selection_adds_then_removes_the_focused_ticket() {
+        let mut app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        assert!(app.selected_ids.is_empty());
+        app.toggle_selected();
+        assert!(app.selected_ids.contains(&1), "first toggle selects");
+        app.toggle_selected();
+        assert!(!app.selected_ids.contains(&1), "second toggle deselects");
+    }
+
+    #[test]
+    fn toggling_with_no_focused_ticket_is_a_noop() {
+        // Empty Todo column, focused there: nothing to toggle.
+        let mut app = App::new(project(), vec![]);
+        app.toggle_selected();
+        assert!(app.selected_ids.is_empty());
+    }
+
+    #[test]
+    fn clear_selection_empties_the_set() {
+        let mut app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        app.toggle_selected();
+        assert!(!app.selected_ids.is_empty());
+        app.clear_selection();
+        assert!(app.selected_ids.is_empty());
+    }
+
+    #[test]
+    fn prune_selection_drops_ids_no_longer_present() {
+        let mut app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        app.selected_ids.insert(1);
+        app.selected_ids.insert(99); // a ticket that no longer exists
+        app.prune_selection();
+        assert!(app.selected_ids.contains(&1));
+        assert!(!app.selected_ids.contains(&99), "stale id is pruned");
     }
 
     #[test]
