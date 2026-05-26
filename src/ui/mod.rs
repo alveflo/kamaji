@@ -17,13 +17,20 @@ pub fn render(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) 
         Modal::None => {}
         Modal::Form(form) => modals::render_form(frame, &app.theme, form),
         Modal::Move { target, .. } => modals::render_move(frame, &app.theme, *target),
-        Modal::ConfirmDone { .. } => {
-            modals::render_confirm(
-                frame,
-                &app.theme,
-                "Move to Done",
-                "Clean up worktree + session? [y]es / [n]o / Esc",
-            );
+        Modal::ConfirmDone { ticket_ids } => {
+            let n = ticket_ids.len();
+            let (title, body) = if n > 1 {
+                (
+                    format!("Close {n} tickets"),
+                    format!("Clean up {n} worktrees + sessions? [y]es / [n]o / Esc"),
+                )
+            } else {
+                (
+                    "Move to Done".to_string(),
+                    "Clean up worktree + session? [y]es / [n]o / Esc".to_string(),
+                )
+            };
+            modals::render_confirm(frame, &app.theme, &title, &body);
         }
         Modal::ConfirmDelete { .. } => {
             modals::render_confirm(
