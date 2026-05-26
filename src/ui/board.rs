@@ -294,7 +294,7 @@ fn render_card(
         None => Span::raw(marker),
     };
 
-    // The number deliberately keeps the column's status accent even on
+    // The id deliberately keeps the column's status accent even on
     // unselected (otherwise muted) cards, acting as a small per-column swatch.
     let mut spans = Vec::new();
     if multi_selected {
@@ -302,7 +302,7 @@ fn render_card(
     }
     spans.push(marker_span);
     spans.push(Span::styled(
-        format!(" #{} ", ticket.number),
+        format!(" #{} ", ticket.id),
         Style::new().fg(accent),
     ));
     spans.push(Span::styled(
@@ -372,7 +372,6 @@ mod tests {
         Ticket {
             id,
             project_id: 1,
-            number: id,
             title: format!("title{id}"),
             description: String::new(),
             initial_prompt: None,
