@@ -106,21 +106,17 @@ pub struct MainPrepared {
     pub layout_path: PathBuf,
 }
 
-/// Build the layout for a project's "main" session: the project's default agent
-/// (no initial prompt) running directly in the project root. Creates no worktree
-/// and writes no DB state, so it works in any directory and is fully derived from
+/// Build the layout for a project's "main" session: a bare workspace — a plain
+/// shell in the project root, with no agent spawned. Creates no worktree and
+/// writes no DB state, so it works in any directory and is fully derived from
 /// the project + config — its existence is tracked only by zellij itself.
 pub fn prepare_main_session(project: &Project, config: &Config) -> Result<MainPrepared> {
     let name = slug::main_session_name(project.id);
-    let agent = project
-        .default_agent
-        .unwrap_or_else(|| config.default_agent());
-    let argv = agent::build_command(config.commands_for(agent), None);
     let bar = zellij_config::resolve_bar_style(
         &config.zellij_bar,
         zellij_config::detect_default_layout().as_deref(),
     );
-    let kdl = layout::render_layout(&project.root_dir.to_string_lossy(), &argv, bar);
+    let kdl = layout::render_shell_layout(&project.root_dir.to_string_lossy(), bar);
     let layout_path = layout_file(&name, &kdl)?;
     Ok(MainPrepared { name, layout_path })
 }
@@ -160,10 +156,10 @@ mod tests {
         }
     }
 
-    /// The main session launches the configured default agent directly in the
-    /// project root (no worktree), under the project's main-session name.
+    /// The main session is a bare workspace: a plain shell in the project root
+    /// (no worktree, no agent), under the project's main-session name.
     #[test]
-    fn prepare_main_session_runs_default_agent_in_project_root() {
+    fn prepare_main_session_opens_bare_shell_in_project_root() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         let p = prepare_main_session(&project(7, root.clone(), None), &Config::default()).unwrap();
@@ -171,36 +167,33 @@ mod tests {
         assert_eq!(p.name, slug::main_session_name(7));
         assert!(p.layout_path.exists());
         let kdl = std::fs::read_to_string(&p.layout_path).unwrap();
+        // No agent (or any other) command is spawned: the pane is a plain shell.
         assert!(
-            kdl.contains("command=\"claude\""),
-            "default agent should be launched:\n{kdl}"
+            !kdl.contains("command="),
+            "main session must launch no agent:\n{kdl}"
         );
-        // Escape the path the same way `render_layout` does: on Windows the
+        // Escape the path the same way `render_shell_layout` does: on Windows the
         // root contains backslashes, which KDL rendering doubles, so a raw
         // substring check would fail there.
         let cwd_esc = layout::kdl_escape(&root.to_string_lossy());
         assert!(
             kdl.contains(&format!("cwd=\"{cwd_esc}\"")),
-            "agent should run in the project root, not a worktree:\n{kdl}"
-        );
-        // No initial prompt: the agent is launched bare for ad-hoc work.
-        assert!(
-            !kdl.contains("args"),
-            "main session takes no prompt:\n{kdl}"
+            "shell should open in the project root, not a worktree:\n{kdl}"
         );
     }
 
-    /// A project-level default agent overrides the global config default.
+    /// Even with a project-level default agent configured, the main session
+    /// never launches it — it is an empty workspace by design.
     #[test]
-    fn prepare_main_session_honors_project_default_agent() {
+    fn prepare_main_session_never_launches_an_agent() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         let p = prepare_main_session(&project(1, root, Some(Agent::Codex)), &Config::default())
             .unwrap();
         let kdl = std::fs::read_to_string(&p.layout_path).unwrap();
         assert!(
-            kdl.contains("command=\"codex\""),
-            "project default agent should win:\n{kdl}"
+            !kdl.contains("command="),
+            "main session must not spawn the project default agent:\n{kdl}"
         );
     }
 
