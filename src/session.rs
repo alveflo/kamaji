@@ -175,8 +175,12 @@ mod tests {
             kdl.contains("command=\"claude\""),
             "default agent should be launched:\n{kdl}"
         );
+        // Escape the path the same way `render_layout` does: on Windows the
+        // root contains backslashes, which KDL rendering doubles, so a raw
+        // substring check would fail there.
+        let cwd_esc = layout::kdl_escape(&root.to_string_lossy());
         assert!(
-            kdl.contains(&format!("cwd=\"{}\"", root.to_string_lossy())),
+            kdl.contains(&format!("cwd=\"{cwd_esc}\"")),
             "agent should run in the project root, not a worktree:\n{kdl}"
         );
         // No initial prompt: the agent is launched bare for ad-hoc work.
