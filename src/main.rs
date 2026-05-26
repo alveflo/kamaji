@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod db;
 mod detect;
+mod dir_select;
 mod engine;
 mod git;
 mod layout;
