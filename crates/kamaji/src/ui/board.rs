@@ -7,8 +7,8 @@ use ratatui::Frame;
 use std::collections::{HashMap, HashSet};
 
 use crate::app::{App, StatusKind};
-use crate::detect::SignalLevel;
 use crate::theme::Theme;
+use kamaji_core::detect::SignalLevel;
 use kamaji_core::models::{Status, Ticket};
 
 /// A card occupies its border lines plus one content line.

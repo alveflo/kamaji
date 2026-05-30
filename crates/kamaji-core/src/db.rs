@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::path::{Path, PathBuf};
 
-use kamaji_core::models::{Agent, Project, Status, Ticket};
+use crate::models::{Agent, Project, Status, Ticket};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -132,7 +132,6 @@ impl Db {
         Ok(Db { conn })
     }
 
-    #[cfg(test)]
     pub fn open_in_memory() -> Result<Db> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;

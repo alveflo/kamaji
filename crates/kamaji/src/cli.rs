@@ -2,9 +2,9 @@ use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use crate::db::Db;
 use crate::session;
 use kamaji_core::config::Config;
+use kamaji_core::db::Db;
 use kamaji_core::models::{Agent, Project};
 
 const USAGE: &str = "\

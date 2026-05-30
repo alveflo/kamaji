@@ -4,12 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm};
-use crate::db::Db;
-use crate::detect::{self, SignalLevel};
 use crate::dir_select::{self, RootCheck};
 use crate::session::{self, Prepared};
 use crate::theme::Theme;
 use kamaji_core::config::Config;
+use kamaji_core::db::Db;
+use kamaji_core::detect::{self, SignalLevel};
 use kamaji_core::models::{Agent, Status, Ticket};
 use kamaji_core::{git, slug, zellij};
 
@@ -850,7 +850,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detect::SignalLevel;
+    use kamaji_core::detect::SignalLevel;
     use kamaji_core::models::Agent;
     use kamaji_core::slug;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
@@ -1087,7 +1087,7 @@ mod tests {
         e.db.set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
             .unwrap();
         e.reload().unwrap();
-        let marker = crate::detect::marker_path(&e.state_dir, "kamaji-sess");
+        let marker = kamaji_core::detect::marker_path(&e.state_dir, "kamaji-sess");
         std::fs::write(&marker, "").unwrap();
         e.auto_review_ids.insert(t.id);
         e.last_level.insert(t.id, SignalLevel::Idle);
@@ -1124,7 +1124,11 @@ mod tests {
         );
 
         // Agent's Stop hook would create the marker => Idle => Review.
-        std::fs::write(crate::detect::marker_path(&e.state_dir, "kamaji-sess"), "").unwrap();
+        std::fs::write(
+            kamaji_core::detect::marker_path(&e.state_dir, "kamaji-sess"),
+            "",
+        )
+        .unwrap();
         e.detect_tick().unwrap();
         assert_eq!(
             e.db.get_ticket(t.id).unwrap().unwrap().status,
@@ -1155,7 +1159,7 @@ mod tests {
         // Baseline (marker absent), then the agent "stops" (marker present).
         e.detect_tick().unwrap();
         std::fs::write(
-            crate::detect::marker_path(&e.state_dir, "kamaji-noinstr"),
+            kamaji_core::detect::marker_path(&e.state_dir, "kamaji-noinstr"),
             "",
         )
         .unwrap();

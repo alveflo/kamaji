@@ -6,10 +6,9 @@ use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::db::Db;
-use crate::{agent, detect};
 use kamaji_core::config::Config;
 use kamaji_core::models::{Agent, Project, Status, Ticket};
+use kamaji_core::{agent, db::Db, detect};
 use kamaji_core::{git, layout, slug, zellij_config};
 
 /// Everything needed to launch a session, produced by `prepare_session` before

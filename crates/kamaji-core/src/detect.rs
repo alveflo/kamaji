@@ -1,5 +1,5 @@
+use crate::models::Status;
 use directories::ProjectDirs;
-use kamaji_core::models::Status;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 

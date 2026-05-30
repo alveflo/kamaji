@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::Frame;
 
 use crate::app::{App, Modal};
-use crate::detect::SignalLevel;
+use kamaji_core::detect::SignalLevel;
 
 pub(crate) use modals::{render_field_modal, themed_block};
 

@@ -1,8 +1,5 @@
-mod agent;
 mod app;
 mod cli;
-mod db;
-mod detect;
 mod dir_select;
 mod engine;
 mod picker;
@@ -21,9 +18,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use app::App;
-use db::Db;
 use engine::{Effect, Engine};
-use kamaji_core::{config, models, zellij};
+use kamaji_core::db::Db;
+use kamaji_core::{config, detect, models, zellij};
 
 fn db_path() -> Result<PathBuf> {
     let dirs = ProjectDirs::from("", "", "kamaji").context("cannot determine data dir")?;
