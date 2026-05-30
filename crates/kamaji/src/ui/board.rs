@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::app::{App, StatusKind};
 use crate::detect::SignalLevel;
-use crate::models::{Status, Ticket};
 use crate::theme::Theme;
+use kamaji_core::models::{Status, Ticket};
 
 /// A card occupies its border lines plus one content line.
 const CARD_HEIGHT: u16 = 3;
@@ -318,7 +318,7 @@ fn render_card(
 mod tests {
     use super::*;
     use crate::app::App;
-    use crate::models::{Agent, Project};
+    use kamaji_core::models::{Agent, Project};
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
     use ratatui::Terminal;

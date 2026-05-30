@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::Config;
 use crate::db::Db;
-use crate::models::{Agent, Project, Status, Ticket};
-use crate::{agent, detect, git, layout, slug, zellij_config};
+use crate::{agent, detect, zellij_config};
+use kamaji_core::models::{Agent, Project, Status, Ticket};
+use kamaji_core::{git, layout, slug};
 
 /// Everything needed to launch a session, produced by `prepare_session` before
 /// any DB session/status columns are written.

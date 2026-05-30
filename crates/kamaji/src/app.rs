@@ -1,6 +1,6 @@
 use crate::dir_select::DirField;
-use crate::models::{Agent, Project, Status, Ticket};
 use crate::theme::Theme;
+use kamaji_core::models::{Agent, Project, Status, Ticket};
 use std::collections::HashSet;
 
 /// Board search/filter state. An empty query means no filter is applied.

@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::path::{Path, PathBuf};
 
-use crate::models::{Agent, Project, Status, Ticket};
+use kamaji_core::models::{Agent, Project, Status, Ticket};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS projects (

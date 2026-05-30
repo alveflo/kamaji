@@ -8,10 +8,10 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::detect::{self, SignalLevel};
 use crate::dir_select::{self, RootCheck};
-use crate::models::{Agent, Status, Ticket};
 use crate::session::{self, Prepared};
 use crate::theme::Theme;
-use crate::{git, slug, zellij};
+use kamaji_core::models::{Agent, Status, Ticket};
+use kamaji_core::{git, slug, zellij};
 
 /// Side effect the main loop must run by releasing the terminal.
 #[derive(Debug, PartialEq)]
@@ -851,8 +851,8 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::detect::SignalLevel;
-    use crate::models::Agent;
-    use crate::slug;
+    use kamaji_core::models::Agent;
+    use kamaji_core::slug;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
     use std::collections::HashMap;
 

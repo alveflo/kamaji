@@ -6,9 +6,9 @@ use ratatui::Frame;
 
 use crate::app::{FormField, TicketForm, WorktreeForm};
 use crate::dir_select;
-use crate::models::{Agent, Status};
 use crate::theme::Theme;
 use crate::ui::centered_rect;
+use kamaji_core::models::{Agent, Status};
 
 /// Maximum suggestion rows shown at once in a field modal; longer lists scroll.
 const MAX_VISIBLE_SUGGESTIONS: usize = 5;

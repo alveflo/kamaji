@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use crate::db::Db;
 use crate::dir_select::{self, DirField, RootCheck};
-use crate::models::Project;
 use crate::theme::Theme;
+use kamaji_core::models::Project;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectField {
