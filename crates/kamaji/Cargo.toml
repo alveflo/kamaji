@@ -6,9 +6,7 @@ edition = "2021"
 [dependencies]
 kamaji-core = { path = "../kamaji-core" }
 ratatui = "0.29"
-rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
 directories = "5"
 anyhow = "1"
 ureq = "2"

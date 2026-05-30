@@ -577,12 +577,10 @@ dependencies = [
  "directories",
  "kamaji-core",
  "ratatui",
- "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
- "toml",
  "ureq",
  "zip",
 ]
