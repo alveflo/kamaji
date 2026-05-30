@@ -4,6 +4,7 @@ mod client;
 mod dir_select;
 mod engine;
 mod picker;
+mod sse;
 mod theme;
 mod ui;
 mod update;
