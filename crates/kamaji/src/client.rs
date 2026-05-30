@@ -6,8 +6,6 @@
 // non-test code and are kept for imminent steps / completeness:
 //   - `version` (field + getter): captured from /healthz; surfaced in a later
 //     UI step. Exercised by client tests.
-//   - `update_config`: lands when the theme/agent/worktree handlers persist via
-//     `PATCH /config` (Task 2c-4). Exercised by client tests.
 //   - `get_project`: read helper kept for symmetry with `list_projects`.
 //   - `ClientError::Decode`'s payload is read via `Debug` only.
 #![allow(dead_code)]

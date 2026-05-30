@@ -33,9 +33,6 @@ pub struct Engine {
     pub client: DaemonClient,
     pub config: Config,
     pub app: App,
-    /// Where the theme picker persists the chosen theme. Defaults to the real
-    /// config path; tests override it.
-    pub config_path: std::path::PathBuf,
     /// Set when a client call (or the SSE stream) reports the daemon is
     /// unreachable. The mutation handlers convert client errors into toasts
     /// internally, so this flag is how a connection-loss signal reaches the main
@@ -49,7 +46,6 @@ impl Engine {
             client,
             config,
             app,
-            config_path: kamaji_core::config::config_path().unwrap_or_default(),
             connection_lost: false,
         }
     }
@@ -429,18 +425,17 @@ impl Engine {
                 }
                 KeyCode::Enter => {
                     let chosen = self.app.theme;
-                    self.config.theme = chosen.name.to_string();
-                    match kamaji_core::config::save_to(&self.config_path, &self.config) {
-                        Ok(()) => {
+                    match self.client.update_config(Some(chosen.name), None, None) {
+                        Ok(cfg) => {
+                            self.config = cfg;
                             self.app.set_info(format!("theme: {}", chosen.label));
                         }
                         Err(e) => {
-                            // Persisting failed: revert live + config state to the original so
+                            // Persisting failed: revert the live theme to the original so
                             // what's shown matches what will load next launch.
-                            let orig = Theme::ALL[original]();
-                            self.app.theme = orig;
-                            self.config.theme = orig.name.to_string();
-                            self.app.set_error(format!("could not save theme: {e}"));
+                            self.note_client_error(&e);
+                            self.app.theme = Theme::ALL[original]();
+                            self.app.set_error(format!("could not save theme: {e:?}"));
                         }
                     }
                     Ok(Effect::None)
@@ -464,19 +459,16 @@ impl Engine {
                 }
                 KeyCode::Enter => {
                     let chosen = Agent::all()[selected];
-                    let previous = std::mem::replace(
-                        &mut self.config.default_agent,
-                        chosen.as_str().to_string(),
-                    );
-                    match kamaji_core::config::save_to(&self.config_path, &self.config) {
-                        Ok(()) => self
-                            .app
-                            .set_info(format!("default agent: {}", chosen.label())),
-                        Err(e) => {
-                            // Persisting failed: revert so config matches what loads next launch.
-                            self.config.default_agent = previous;
+                    match self.client.update_config(None, Some(chosen.as_str()), None) {
+                        Ok(cfg) => {
+                            self.config = cfg;
                             self.app
-                                .set_error(format!("could not save default agent: {e}"));
+                                .set_info(format!("default agent: {}", chosen.label()));
+                        }
+                        Err(e) => {
+                            self.note_client_error(&e);
+                            self.app
+                                .set_error(format!("could not save default agent: {e:?}"));
                         }
                     }
                     Ok(Effect::None)
@@ -550,21 +542,25 @@ impl Engine {
         }
     }
 
-    /// Persist a chosen worktree location to the config file and toast the
-    /// result. On a write failure the previous value is restored so the
-    /// in-memory config and disk agree.
+    /// Persist a chosen worktree location through the daemon and toast the
+    /// result. The daemon owns the config file; on success its returned config
+    /// becomes our in-memory state, on failure the live config is untouched.
     fn save_worktree_location(&mut self, path: &std::path::Path) {
-        let prev = self.config.worktree_base.take();
-        self.config.worktree_base = Some(path.to_string_lossy().to_string());
-        match kamaji_core::config::save_to(&self.config_path, &self.config) {
-            Ok(()) => self.app.set_info(format!(
-                "worktree location: {}",
-                dir_select::contract_home(path)
-            )),
+        match self
+            .client
+            .update_config(None, None, Some(&path.to_string_lossy()))
+        {
+            Ok(cfg) => {
+                self.config = cfg;
+                self.app.set_info(format!(
+                    "worktree location: {}",
+                    dir_select::contract_home(path)
+                ));
+            }
             Err(e) => {
-                self.config.worktree_base = prev;
+                self.note_client_error(&e);
                 self.app
-                    .set_error(format!("could not save worktree location: {e}"));
+                    .set_error(format!("could not save worktree location: {e:?}"));
             }
         }
     }
@@ -734,6 +730,22 @@ mod tests {
     fn engine_with_project(root: std::path::PathBuf) -> Engine {
         let client = test_client();
         let project = client.create_project("p", &root, None).unwrap();
+        let app = App::new(project, vec![]);
+        Engine::new(client, Config::default(), app)
+    }
+
+    /// An engine wired to a *dedicated* in-process daemon (not the shared one),
+    /// for the config-persistence tests. Each such test points
+    /// `XDG_CONFIG_HOME` at a tempdir before spawning so the daemon's
+    /// `PATCH /config` writes there instead of the developer's real config; a
+    /// private daemon keeps those PATCHes from leaking into the shared daemon's
+    /// state that the other tests read.
+    fn engine_on_isolated_daemon() -> Engine {
+        use crate::test_support::spawn_test_daemon;
+        let client = DaemonClient::connect(spawn_test_daemon()).unwrap();
+        let project = client
+            .create_project("p", std::path::Path::new("/tmp/none"), None)
+            .unwrap();
         let app = App::new(project, vec![]);
         Engine::new(client, Config::default(), app)
     }
@@ -1042,11 +1054,17 @@ mod tests {
         }
     }
 
+    /// Confirming a theme in the picker persists it through the daemon's
+    /// `PATCH /config`: both the engine's in-memory config and the daemon's
+    /// own `GET /config` must reflect the choice. A dedicated daemon is spawned
+    /// after pointing `XDG_CONFIG_HOME` at a tempdir so the PATCH writes there
+    /// (and never the developer's real `~/.config/kamaji/config.toml`).
     #[test]
-    fn picker_enter_persists_theme_to_config_file() {
+    fn theme_picker_enter_persists_via_daemon() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+
+        let mut e = engine_on_isolated_daemon();
         let nord = crate::theme::Theme::index_of("nord");
         e.app.modal = Modal::ThemePicker {
             selected: nord,
@@ -1057,8 +1075,7 @@ mod tests {
             .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.config.theme, "nord");
-        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
-        assert_eq!(saved.theme, "nord");
+        assert_eq!(e.client.get_config().unwrap().theme, "nord");
     }
 
     #[test]
@@ -1094,13 +1111,17 @@ mod tests {
         assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[0]().name);
     }
 
+    /// Pressing Enter on the already-selected theme still round-trips through
+    /// the daemon (no short-circuit on "no change"), so the persisted config
+    /// reflects the current theme.
     #[test]
     fn picker_enter_persists_even_with_no_change() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+
+        let mut e = engine_on_isolated_daemon();
+        let first = crate::theme::Theme::ALL[0]().name;
         e.app.theme = crate::theme::Theme::ALL[0]();
-        e.config.theme = crate::theme::Theme::ALL[0]().name.to_string();
         e.app.modal = Modal::ThemePicker {
             selected: 0,
             original: 0,
@@ -1108,8 +1129,7 @@ mod tests {
         e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
-        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
-        assert_eq!(saved.theme, crate::theme::Theme::ALL[0]().name);
+        assert_eq!(e.client.get_config().unwrap().theme, first);
     }
 
     #[test]
@@ -1151,10 +1171,11 @@ mod tests {
     }
 
     #[test]
-    fn agent_picker_enter_persists_default_to_config_file() {
+    fn agent_picker_enter_persists_default_via_daemon() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+
+        let mut e = engine_on_isolated_daemon();
         e.app.modal = Modal::AgentPicker {
             selected: Agent::Copilot.index(),
         };
@@ -1162,7 +1183,7 @@ mod tests {
             .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.config.default_agent, "copilot");
-        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
+        let saved = e.client.get_config().unwrap();
         assert_eq!(saved.default_agent, "copilot");
         assert_eq!(saved.default_agent().index(), Agent::Copilot.index());
     }
@@ -1471,16 +1492,16 @@ mod tests {
         }
     }
 
-    /// Confirming an existing directory in the selector saves it to the config
-    /// file and closes the modal.
+    /// Confirming an existing directory in the selector persists it through the
+    /// daemon and closes the modal.
     #[test]
-    fn worktree_picker_enter_saves_existing_dir_to_config() {
+    fn worktree_picker_enter_saves_existing_dir_via_daemon() {
         let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
         let target = dir.path().join("worktrees");
         std::fs::create_dir(&target).unwrap();
 
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
+        let mut e = engine_on_isolated_daemon();
         e.on_key(key('w')).unwrap();
         for c in target.to_string_lossy().chars() {
             e.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
@@ -1493,7 +1514,7 @@ mod tests {
             e.config.worktree_base,
             Some(target.to_string_lossy().to_string())
         );
-        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
+        let saved = e.client.get_config().unwrap();
         assert_eq!(saved.worktree_base, e.config.worktree_base);
     }
 
@@ -1502,10 +1523,10 @@ mod tests {
     #[test]
     fn worktree_picker_missing_dir_arms_confirm_before_saving() {
         let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
         let target = dir.path().join("does-not-exist-yet");
 
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
+        let mut e = engine_on_isolated_daemon();
         e.on_key(key('w')).unwrap();
         for c in target.to_string_lossy().chars() {
             e.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
