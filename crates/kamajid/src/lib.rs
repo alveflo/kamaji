@@ -16,6 +16,14 @@ use state::AppState;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(routes::healthz::healthz))
+        .route("/config", get(routes::config::get_config))
+        .route("/projects", get(routes::projects::list))
+        .route("/projects/:id", get(routes::projects::get_one))
+        .route(
+            "/projects/:id/tickets",
+            get(routes::tickets::list_for_project),
+        )
+        .route("/tickets/:id", get(routes::tickets::get_one))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }

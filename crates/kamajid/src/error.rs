@@ -7,6 +7,7 @@ use axum::Json;
 use serde_json::json;
 
 /// An error surfaced to an HTTP client.
+#[derive(Debug)]
 pub enum ApiError {
     /// The requested entity does not exist → 404.
     NotFound,
