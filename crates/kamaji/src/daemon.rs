@@ -1,11 +1,6 @@
 //! Daemon auto-spawn: ensure a healthy kamajid (pidfile lock + health probe),
 //! spawning one detached if absent; race-safe via atomic pidfile create.
 
-// `ensure_daemon` and its helpers are not yet wired into the binary's startup
-// path; Task 2a-8 calls `ensure_daemon` from `main`, at which point the whole
-// chain becomes live. Suppress dead_code until then (mirrors `client.rs`).
-#![allow(dead_code)]
-
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};

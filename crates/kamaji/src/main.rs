@@ -15,8 +15,11 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use sse::SseMsg;
 
 use app::App;
 use engine::{Effect, Engine};
@@ -34,7 +37,7 @@ fn main() -> Result<()> {
     update::cleanup_stale_update();
 
     match cli::parse(std::env::args().skip(1))? {
-        cli::Command::Tui => run_tui(),
+        cli::Command::Tui(opts) => run_tui(opts),
         cli::Command::Help => {
             print!("{}", cli::usage());
             Ok(())
@@ -75,8 +78,19 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_tui() -> Result<()> {
+fn run_tui(opts: cli::DaemonOpts) -> Result<()> {
     let config = config::load_or_init()?;
+
+    // Ensure a healthy kamajid is up (reuse an existing one or spawn one
+    // detached) and connect to it. `--daemon <addr>` forces a fixed address;
+    // `--no-spawn` refuses to spawn one.
+    let client = daemon::ensure_daemon(&config, opts.forced_addr.as_deref(), !opts.no_spawn)
+        .map_err(|e| anyhow::anyhow!("could not start kamaji: {e}"))?;
+
+    // SSE listener thread (2a: events are drained-and-discarded; applied in 2b).
+    let (sse_tx, sse_rx) = std::sync::mpsc::channel::<sse::SseMsg>();
+    let _sse_handle = sse::spawn(client.base().to_string(), sse_tx);
+
     let db = Db::open(&db_path()?)?;
 
     // Background, best-effort "newer version available" check. Never blocks the
@@ -94,7 +108,7 @@ fn run_tui() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, db, config, update_status);
+    let result = run(&mut terminal, db, config, update_status, sse_rx);
     ratatui::restore();
     result
 }
@@ -104,6 +118,7 @@ fn run(
     mut db: Db,
     mut config: config::Config,
     update_status: Arc<Mutex<Option<String>>>,
+    sse_rx: Receiver<SseMsg>,
 ) -> Result<()> {
     loop {
         let theme = crate::theme::Theme::by_name(&config.theme);
@@ -118,7 +133,7 @@ fn run(
         // Drop any recorded sessions that no longer exist in zellij.
         engine.reconcile()?;
 
-        let switch_project = run_board(terminal, &mut engine, &update_status)?;
+        let switch_project = run_board(terminal, &mut engine, &update_status, &sse_rx)?;
 
         // Reclaim db + config for the next project (or to drop on quit).
         db = engine.db;
@@ -136,9 +151,21 @@ fn run_board(
     terminal: &mut DefaultTerminal,
     engine: &mut Engine,
     update_status: &Arc<Mutex<Option<String>>>,
+    sse_rx: &Receiver<SseMsg>,
 ) -> Result<bool> {
     let mut last_tick = Instant::now();
     loop {
+        // 2a: drain SSE messages so the channel never fills. Events are not yet
+        // applied to the UI (that lands in 2b); discard every variant for now.
+        while let Ok(msg) = sse_rx.try_recv() {
+            match msg {
+                SseMsg::Connected => {}
+                SseMsg::Disconnected => {}
+                SseMsg::Event(ev) => {
+                    let _ = ev;
+                }
+            }
+        }
         if let Ok(guard) = update_status.lock() {
             engine.app.update = guard.clone();
         }

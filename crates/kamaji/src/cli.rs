@@ -20,10 +20,19 @@ Agents: claude, codex, copilot
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Tui,
+    Tui(DaemonOpts),
     Help,
     Version,
     CreateTicket(CreateTicketArgs),
+}
+
+/// Escape-hatch daemon options for the TUI entrypoint.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DaemonOpts {
+    /// `--daemon <ADDR>`: connect to this address, never spawn.
+    pub forced_addr: Option<String>,
+    /// `--no-spawn`: fail if no daemon is already running.
+    pub no_spawn: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,13 +104,18 @@ where
 {
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     if args.is_empty() {
-        return Ok(Command::Tui);
+        return Ok(Command::Tui(DaemonOpts::default()));
     }
     if args == ["--help"] || args == ["-h"] || args == ["help"] {
         return Ok(Command::Help);
     }
     if args == ["--version"] || args == ["-V"] || args == ["version"] {
         return Ok(Command::Version);
+    }
+    // Leading TUI escape-hatch flags: `--daemon <addr>` / `--no-spawn`. These are
+    // only valid when no `ticket` subcommand follows.
+    if matches!(args[0].as_str(), "--daemon" | "--no-spawn") {
+        return parse_tui(&args);
     }
     match args.as_slice() {
         [scope, action, rest @ ..] if scope == "ticket" || scope == "tickets" => {
@@ -111,8 +125,23 @@ where
             }
         }
         [other, ..] => bail!("unknown command: {other}\n\n{USAGE}"),
-        [] => Ok(Command::Tui),
+        [] => Ok(Command::Tui(DaemonOpts::default())),
     }
+}
+
+/// Parse the leading TUI daemon escape-hatch flags into `Command::Tui`.
+fn parse_tui(args: &[String]) -> Result<Command> {
+    let mut opts = DaemonOpts::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--daemon" => opts.forced_addr = Some(take_value(args, &mut i, "--daemon")?),
+            "--no-spawn" => opts.no_spawn = true,
+            other => bail!("unexpected argument after TUI flags: {other}\n\n{USAGE}"),
+        }
+        i += 1;
+    }
+    Ok(Command::Tui(opts))
 }
 
 fn parse_ticket_create(args: &[String]) -> Result<Command> {
@@ -335,7 +364,28 @@ mod tests {
 
     #[test]
     fn no_args_runs_tui() {
-        assert_eq!(parse(Vec::<String>::new()).unwrap(), Command::Tui);
+        assert_eq!(
+            parse(Vec::<String>::new()).unwrap(),
+            Command::Tui(DaemonOpts::default())
+        );
+    }
+
+    #[test]
+    fn parses_daemon_and_no_spawn_flags() {
+        assert_eq!(
+            parse(["--no-spawn"]).unwrap(),
+            Command::Tui(DaemonOpts {
+                forced_addr: None,
+                no_spawn: true
+            })
+        );
+        assert_eq!(
+            parse(["--daemon", "127.0.0.1:9000"]).unwrap(),
+            Command::Tui(DaemonOpts {
+                forced_addr: Some("127.0.0.1:9000".into()),
+                no_spawn: false
+            })
+        );
     }
 
     #[test]

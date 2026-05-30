@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use kamaji_core::events::Event;
 
-#[allow(dead_code)]
 pub enum SseMsg {
     Event(Box<Event>),
     Connected,
@@ -45,7 +44,6 @@ pub(crate) fn drain_records(buf: &mut String) -> Vec<Event> {
 /// `Connected` (→ UI re-fetch), streams `Event`s, and on stream end/error emits
 /// `Disconnected` and retries with capped backoff (250ms → 2s). Ends when the
 /// receiver is dropped (send fails).
-#[allow(dead_code)]
 pub fn spawn(base: String, tx: Sender<SseMsg>) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let http = reqwest::blocking::Client::builder()
