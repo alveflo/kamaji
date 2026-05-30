@@ -5,12 +5,12 @@ use std::path::PathBuf;
 
 use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm};
 use crate::dir_select::{self, RootCheck};
-use crate::session::{self, Prepared};
 use crate::theme::Theme;
 use kamaji_core::config::Config;
 use kamaji_core::db::Db;
 use kamaji_core::detect::{self, SignalLevel};
 use kamaji_core::models::{Agent, Status, Ticket};
+use kamaji_core::session::{self, Prepared};
 use kamaji_core::{git, slug, zellij};
 
 /// Side effect the main loop must run by releasing the terminal.

@@ -3,7 +3,6 @@ mod cli;
 mod dir_select;
 mod engine;
 mod picker;
-mod session;
 mod theme;
 mod ui;
 mod update;

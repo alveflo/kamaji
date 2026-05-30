@@ -2,10 +2,10 @@ use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use crate::session;
 use kamaji_core::config::Config;
 use kamaji_core::db::Db;
 use kamaji_core::models::{Agent, Project};
+use kamaji_core::session;
 
 const USAGE: &str = "\
 Usage:

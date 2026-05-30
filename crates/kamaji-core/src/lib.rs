@@ -13,6 +13,7 @@ pub mod detect;
 pub mod git;
 pub mod layout;
 pub mod models;
+pub mod session;
 pub mod slug;
 pub mod zellij;
 pub mod zellij_config;
