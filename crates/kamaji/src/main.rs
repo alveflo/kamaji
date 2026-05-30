@@ -1,6 +1,7 @@
 mod app;
 mod cli;
 mod client;
+mod daemon;
 mod dir_select;
 mod engine;
 mod picker;

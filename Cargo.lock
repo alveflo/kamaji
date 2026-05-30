@@ -954,6 +954,7 @@ dependencies = [
  "directories",
  "kamaji-core",
  "kamajid",
+ "libc",
  "ratatui",
  "reqwest",
  "serde",
