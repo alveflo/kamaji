@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use kamaji_core::config::Config;
-use kamaji_core::models::{Project, Ticket};
+use kamaji_core::models::{Agent, Project, Status, Ticket};
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -108,12 +108,152 @@ impl DaemonClient {
     pub fn get_config(&self) -> Result<Config> {
         self.get_json("/config")
     }
+
+    fn send_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let resp = self
+            .http
+            .request(method, format!("{}{path}", self.base))
+            .json(body)
+            .send()
+            .map_err(ClientError::Unreachable)?;
+        Self::parse(resp)
+    }
+
+    pub fn create_project(
+        &self,
+        name: &str,
+        root_dir: &std::path::Path,
+        default_agent: Option<Agent>,
+    ) -> Result<Project> {
+        self.send_json(
+            reqwest::Method::POST,
+            "/projects",
+            &serde_json::json!({ "name": name, "root_dir": root_dir, "default_agent": default_agent }),
+        )
+    }
+
+    pub fn create_ticket(
+        &self,
+        project_id: i64,
+        title: &str,
+        description: &str,
+        prompt: Option<&str>,
+        agent: Agent,
+    ) -> Result<Ticket> {
+        self.send_json(
+            reqwest::Method::POST,
+            "/tickets",
+            &serde_json::json!({
+                "project_id": project_id,
+                "title": title,
+                "description": description,
+                "initial_prompt": prompt,
+                "agent": agent,
+            }),
+        )
+    }
+
+    pub fn update_ticket(
+        &self,
+        id: i64,
+        title: &str,
+        description: Option<&str>,
+        prompt: Option<&str>,
+        agent: Option<Agent>,
+    ) -> Result<Ticket> {
+        self.send_json(
+            reqwest::Method::PATCH,
+            &format!("/tickets/{id}"),
+            &serde_json::json!({
+                "title": title,
+                "description": description,
+                "initial_prompt": prompt,
+                "agent": agent,
+            }),
+        )
+    }
+
+    pub fn move_ticket(&self, id: i64, target: Status) -> Result<Ticket> {
+        self.send_json(
+            reqwest::Method::POST,
+            &format!("/tickets/{id}/move"),
+            &serde_json::json!({ "target": target }),
+        )
+    }
+
+    pub fn start_ticket(&self, id: i64) -> Result<Ticket> {
+        let resp = self
+            .http
+            .post(format!("{}/tickets/{id}/start", self.base))
+            .send()
+            .map_err(ClientError::Unreachable)?;
+        Self::parse(resp)
+    }
+
+    pub fn done_ticket(&self, id: i64, cleanup: bool) -> Result<Ticket> {
+        self.send_json(
+            reqwest::Method::POST,
+            &format!("/tickets/{id}/done"),
+            &serde_json::json!({ "cleanup": cleanup }),
+        )
+    }
+
+    pub fn delete_ticket(&self, id: i64) -> Result<()> {
+        let resp = self
+            .http
+            .delete(format!("{}/tickets/{id}", self.base))
+            .send()
+            .map_err(ClientError::Unreachable)?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        match status.as_u16() {
+            404 => Err(ClientError::NotFound),
+            _ => Err(ClientError::Server(String::new())),
+        }
+    }
+
+    pub fn main_session(&self, project_id: i64) -> Result<String> {
+        let resp = self
+            .http
+            .post(format!("{}/projects/{project_id}/main-session", self.base))
+            .send()
+            .map_err(ClientError::Unreachable)?;
+        let v: serde_json::Value = Self::parse(resp)?;
+        v.get("session_name")
+            .and_then(|s| s.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| ClientError::Decode("missing session_name".into()))
+    }
+
+    pub fn update_config(
+        &self,
+        theme: Option<&str>,
+        default_agent: Option<&str>,
+        worktree_base: Option<&str>,
+    ) -> Result<Config> {
+        self.send_json(
+            reqwest::Method::PATCH,
+            "/config",
+            &serde_json::json!({
+                "theme": theme,
+                "default_agent": default_agent,
+                "worktree_base": worktree_base,
+            }),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kamaji_core::models::Status;
+    use kamaji_core::models::{Agent, Status};
 
     /// Boot a real kamajid on 127.0.0.1:0, returning its base URL. The tokio
     /// runtime is kept alive in the spawned thread for the test's lifetime so
@@ -213,5 +353,59 @@ mod tests {
         let base = spawn_daemon();
         let client = DaemonClient::connect(base).unwrap();
         assert!(matches!(client.get_ticket(999), Err(ClientError::NotFound)));
+    }
+
+    #[test]
+    fn create_project_and_ticket_via_client() {
+        let base = spawn_daemon();
+        let client = DaemonClient::connect(base).unwrap();
+        let p = client
+            .create_project("acme", std::path::Path::new("/tmp/acme"), None)
+            .unwrap();
+        let t = client
+            .create_ticket(p.id, "Add login", "desc", Some("go"), Agent::Claude)
+            .unwrap();
+        assert_eq!(t.title, "Add login");
+        let edited = client
+            .update_ticket(t.id, "Renamed", Some("d2"), None, None)
+            .unwrap();
+        assert_eq!(edited.title, "Renamed");
+        let moved = client.move_ticket(t.id, Status::Review).unwrap();
+        assert_eq!(moved.status, Status::Review);
+        let done = client.done_ticket(t.id, false).unwrap();
+        assert_eq!(done.status, Status::Done);
+        client.delete_ticket(t.id).unwrap();
+        assert!(matches!(
+            client.get_ticket(t.id),
+            Err(ClientError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn create_ticket_empty_title_is_bad_request() {
+        let base = spawn_daemon();
+        let client = DaemonClient::connect(base).unwrap();
+        let p = client
+            .create_project("p", std::path::Path::new("/tmp/p"), None)
+            .unwrap();
+        let err = client
+            .create_ticket(p.id, "  ", "", None, Agent::Claude)
+            .unwrap_err();
+        assert!(matches!(err, ClientError::BadRequest(_)));
+    }
+
+    #[test]
+    fn update_config_via_client() {
+        // Isolate config persistence from the developer's real ~/.config/kamaji.
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+
+        let base = spawn_daemon();
+        let client = DaemonClient::connect(base).unwrap();
+        let cfg = client
+            .update_config(Some("nord"), Some("codex"), None)
+            .unwrap();
+        assert_eq!(cfg.theme, "nord");
+        assert_eq!(cfg.default_agent, "codex");
     }
 }
