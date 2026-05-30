@@ -1,6 +1,7 @@
 //! Integration tests: boot the daemon on an ephemeral port with an in-memory
 //! DB, drive it over HTTP with reqwest, and assert responses + SSE events.
 
+use futures::StreamExt;
 use kamaji_core::config::Config;
 use kamaji_core::db::Db;
 use kamajid::state::AppState;
@@ -203,4 +204,112 @@ async fn create_ticket_rejects_empty_title() {
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["kind"], "bad_request");
+}
+
+/// Open `/events` and return the live byte stream (box-pinned so it is `Unpin`,
+/// which `StreamExt::next` requires). When this returns, the server-side
+/// broadcast subscription is already active, so any command emitted afterwards
+/// is guaranteed to be delivered on this stream.
+type ByteStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>;
+
+async fn connect_events(base: &str) -> ByteStream {
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/events"))
+        .send()
+        .await
+        .unwrap();
+    Box::pin(resp.bytes_stream())
+}
+
+/// Read SSE records from `stream` until one whose `event:` name equals `want`,
+/// returning `(name, parsed_data_json)`. Times out after ~2s to avoid hanging CI.
+async fn read_named_event<S>(stream: &mut S, want: &str) -> (String, serde_json::Value)
+where
+    S: futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin,
+{
+    let mut buf = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let chunk = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .expect("timed out waiting for SSE event")
+            .expect("SSE stream ended")
+            .expect("SSE chunk error");
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        // SSE records are separated by a blank line. Parse complete records.
+        while let Some(idx) = buf.find("\n\n") {
+            let record: String = buf.drain(..idx + 2).collect();
+            let mut name = None;
+            let mut data = None;
+            for line in record.lines() {
+                if let Some(v) = line.strip_prefix("event:") {
+                    name = Some(v.trim().to_string());
+                } else if let Some(v) = line.strip_prefix("data:") {
+                    data = Some(v.trim().to_string());
+                }
+            }
+            if let (Some(name), Some(data)) = (name, data) {
+                if name == want {
+                    return (name, serde_json::from_str(&data).unwrap());
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn creating_a_ticket_emits_ticket_created_on_sse() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+
+    // Connect FIRST (subscription is live once this returns), then command, then read.
+    let mut stream = connect_events(&base).await;
+
+    reqwest::Client::new()
+        .post(format!("{base}/tickets"))
+        .json(&serde_json::json!({ "project_id": pid, "title": "Streamed", "agent": "claude" }))
+        .send()
+        .await
+        .unwrap();
+
+    let (name, data) = read_named_event(&mut stream, "ticket.created").await;
+    assert_eq!(name, "ticket.created");
+    assert_eq!(data["title"], "Streamed");
+    assert_eq!(data["status"], "todo");
+}
+
+#[tokio::test]
+async fn moving_a_ticket_emits_ticket_moved_on_sse() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let mut stream = connect_events(&base).await;
+
+    reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/move"))
+        .json(&serde_json::json!({ "target": "in_progress" }))
+        .send()
+        .await
+        .unwrap();
+
+    let (name, data) = read_named_event(&mut stream, "ticket.moved").await;
+    assert_eq!(name, "ticket.moved");
+    assert_eq!(data["id"], tid);
+    assert_eq!(data["from"], "todo");
+    assert_eq!(data["to"], "in_progress");
 }
