@@ -1,8 +1,13 @@
 mod app;
 mod cli;
+mod client;
+mod daemon;
 mod dir_select;
 mod engine;
 mod picker;
+mod sse;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod ui;
 mod update;
@@ -11,27 +16,42 @@ use anyhow::{Context, Result};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use sse::SseMsg;
+
+/// Owns the live SSE listener thread and the channel the UI loop drains. Kept in
+/// one place so a reconnect can atomically swap in a fresh thread + channel
+/// (dropping the old receiver ends the old thread on its next send).
+struct Sse {
+    rx: Receiver<SseMsg>,
+    _handle: JoinHandle<()>,
+}
+
+impl Sse {
+    fn spawn(base: &str) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<SseMsg>();
+        let handle = sse::spawn(base.to_string(), tx);
+        Sse {
+            rx,
+            _handle: handle,
+        }
+    }
+}
 
 use app::App;
 use engine::{Effect, Engine};
-use kamaji_core::db::Db;
-use kamaji_core::{config, detect, models, paths, zellij};
-
-fn db_path() -> Result<PathBuf> {
-    Ok(paths::data_dir()
-        .context("cannot determine data dir")?
-        .join("kamaji.db"))
-}
+use kamaji_core::{config, zellij};
 
 fn main() -> Result<()> {
     // Clear any binary set aside by a prior Windows self-update (no-op on Unix).
     update::cleanup_stale_update();
 
     match cli::parse(std::env::args().skip(1))? {
-        cli::Command::Tui => run_tui(),
+        cli::Command::Tui(opts) => run_tui(opts),
         cli::Command::Help => {
             print!("{}", cli::usage());
             Ok(())
@@ -42,26 +62,14 @@ fn main() -> Result<()> {
         }
         cli::Command::CreateTicket(args) => {
             let config = config::load_or_init()?;
-            let db = Db::open(&db_path()?)?;
+            // Ensure a healthy kamajid is up (reuse or spawn detached); the
+            // daemon owns ticket creation and the background session start.
+            let client = daemon::ensure_daemon(&config, None, true)
+                .map_err(|e| anyhow::anyhow!("could not start kamaji: {e}"))?;
             let cwd = std::env::current_dir().context("determining current directory")?;
-            let state_dir = detect::default_state_dir();
-            let outcome = cli::run_create_ticket(&db, &config, &args, &cwd, &state_dir)?;
+            let outcome = cli::run_create_ticket(&client, &config, &args, &cwd)?;
             println!("{}", outcome.message);
-            if let Some(spec) = outcome.launch {
-                match zellij::create_session_background(&spec.name, &spec.layout_path, &spec.cwd) {
-                    Ok(()) => println!("Started '{}' in the background", spec.name),
-                    Err(e) => {
-                        eprintln!("could not start session: {e}");
-                        // Tear down the half-started session so the card is left
-                        // clean (no session, back in Todo) and recoverable.
-                        zellij::terminate_session(&spec.name);
-                        let _ = std::fs::remove_file(detect::marker_path(&state_dir, &spec.name));
-                        db.clear_ticket_session(spec.ticket_id)?;
-                        db.set_ticket_status(spec.ticket_id, models::Status::Todo)?;
-                        std::process::exit(1);
-                    }
-                }
-            } else if outcome.background_failed {
+            if outcome.background_failed {
                 if let Some(warning) = outcome.warning {
                     eprintln!("{warning}");
                 }
@@ -72,9 +80,18 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_tui() -> Result<()> {
+fn run_tui(opts: cli::DaemonOpts) -> Result<()> {
     let config = config::load_or_init()?;
-    let db = Db::open(&db_path()?)?;
+
+    // Ensure a healthy kamajid is up (reuse an existing one or spawn one
+    // detached) and connect to it. `--daemon <addr>` forces a fixed address;
+    // `--no-spawn` refuses to spawn one.
+    let client = daemon::ensure_daemon(&config, opts.forced_addr.as_deref(), !opts.no_spawn)
+        .map_err(|e| anyhow::anyhow!("could not start kamaji: {e}"))?;
+
+    // SSE listener thread. Held in a swappable holder so a reconnect can drop
+    // the dead stream and re-spawn it against the new daemon (Task 2c-3).
+    let sse = Sse::spawn(client.base());
 
     // Background, best-effort "newer version available" check. Never blocks the
     // UI; failures are silent. Result lands in this shared slot.
@@ -91,34 +108,43 @@ fn run_tui() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, db, config, update_status);
+    let result = run(&mut terminal, client, config, opts, update_status, sse);
     ratatui::restore();
     result
 }
 
 fn run(
     terminal: &mut DefaultTerminal,
-    mut db: Db,
-    mut config: config::Config,
+    mut client: client::DaemonClient,
+    config: config::Config,
+    opts: cli::DaemonOpts,
     update_status: Arc<Mutex<Option<String>>>,
+    mut sse: Sse,
 ) -> Result<()> {
+    // Theme/agent come from the daemon's loaded config so the TUI reflects the
+    // daemon's state. Fall back to the locally-loaded config if the daemon
+    // can't be reached for it.
+    let mut config = client
+        .get_config()
+        .map_err(picker::client_err)
+        .unwrap_or(config);
     loop {
         let theme = crate::theme::Theme::by_name(&config.theme);
-        let Some(project) = picker::run(terminal, &db, theme)? else {
+        let Some(project) = picker::run(terminal, &client, theme)? else {
             return Ok(());
         };
 
-        let tickets = db.list_tickets(project.id)?;
+        let tickets = client
+            .list_tickets(project.id)
+            .map_err(picker::client_err)?;
         let mut app = App::new(project, tickets);
         app.theme = theme;
-        let mut engine = Engine::new(db, config, app);
-        // Drop any recorded sessions that no longer exist in zellij.
-        engine.reconcile()?;
+        let mut engine = Engine::new(client, config, app);
 
-        let switch_project = run_board(terminal, &mut engine, &update_status)?;
+        let switch_project = run_board(terminal, &mut engine, &opts, &update_status, &mut sse)?;
 
-        // Reclaim db + config for the next project (or to drop on quit).
-        db = engine.db;
+        // Reclaim client + config for the next project (or to drop on quit).
+        client = engine.client;
         config = engine.config;
 
         if !switch_project {
@@ -132,19 +158,55 @@ fn run(
 fn run_board(
     terminal: &mut DefaultTerminal,
     engine: &mut Engine,
+    opts: &cli::DaemonOpts,
     update_status: &Arc<Mutex<Option<String>>>,
+    sse: &mut Sse,
 ) -> Result<bool> {
-    let mut last_tick = Instant::now();
+    // Count consecutive SSE `Disconnected` reports. The listener retries on its
+    // own, so a single blip is just an info toast; only a run of them (the
+    // daemon is actually gone, not a momentary stream reset) escalates to a
+    // full re-probe/respawn.
+    let mut disconnects: u32 = 0;
     loop {
+        // Drain SSE messages and apply them to the board. On (re)connect the
+        // whole list is re-fetched so we never miss deltas dropped while
+        // disconnected; a lost stream just shows an info toast.
+        while let Ok(msg) = sse.rx.try_recv() {
+            match msg {
+                SseMsg::Connected => {
+                    disconnects = 0;
+                    let _ = engine.refresh_from_client();
+                }
+                SseMsg::Disconnected => {
+                    disconnects = disconnects.saturating_add(1);
+                    engine.app.set_info("daemon stream lost — reconnecting…");
+                    // The listener retries a stream blip on its own; escalate to
+                    // a full re-probe/respawn only after a run of failures (the
+                    // daemon is actually gone, not a momentary stream reset).
+                    if disconnects >= 3 {
+                        engine.flag_connection_lost();
+                    }
+                }
+                SseMsg::Event(ev) => engine.apply_sse_event(*ev),
+            }
+        }
         if let Ok(guard) = update_status.lock() {
             engine.app.update = guard.clone();
         }
-        if engine.config.auto_review.enabled && last_tick.elapsed() >= engine.config.poll_interval()
-        {
-            engine.detect_tick()?;
-            last_tick = Instant::now();
+
+        // Reconnect trigger: a command (or a board refresh) saw `Unreachable`,
+        // or the SSE stream reported repeated disconnects (flagged above). Either
+        // way the daemon looks gone — re-probe/respawn it once (bounded) and
+        // rebuild the stream. The flag is read-and-cleared so each loss is
+        // handled once; on success the disconnect counter resets.
+        if engine.take_connection_lost() && try_reconnect(engine, opts, sse) {
+            disconnects = 0;
         }
-        terminal.draw(|frame| ui::render(frame, &engine.app, engine.poll.levels()))?;
+
+        // Auto-review detection now runs in the daemon; its moves arrive via SSE.
+        // The "working" bullet that read these levels is a follow-up, so pass an
+        // empty map (the `ui/` signature is unchanged).
+        terminal.draw(|frame| ui::render(frame, &engine.app, &std::collections::HashMap::new()))?;
 
         if !event::poll(Duration::from_millis(200))? {
             continue;
@@ -160,48 +222,8 @@ fn run_board(
         match effect {
             Effect::None => {}
             Effect::SwitchProject => return Ok(true),
-            Effect::RunSession { name, layout_path } => {
-                run_zellij(terminal, engine, |_| {
-                    zellij::create_session(&name, &layout_path)
-                })?;
-            }
             Effect::Attach { name } => {
                 run_zellij(terminal, engine, |_| zellij::attach_session(&name))?;
-            }
-            Effect::ResumeSession { name, layout_path } => {
-                // Drop the stale exited/resurrectable session so zellij doesn't
-                // refuse the name or replay the original (fresh) command, then
-                // recreate it from the resume layout and attach.
-                run_zellij(terminal, engine, |_| {
-                    zellij::terminate_session(&name);
-                    zellij::create_session(&name, &layout_path)
-                })?;
-            }
-            Effect::RunSessionBackground {
-                name,
-                layout_path,
-                cwd,
-            } => {
-                match zellij::create_session_background(&name, &layout_path, &cwd) {
-                    Ok(()) => {
-                        engine
-                            .app
-                            .set_info(format!("Started '{name}' in the background"));
-                    }
-                    Err(e) => {
-                        engine
-                            .app
-                            .set_error(format!("background session failed: {e}"));
-                        // Tear down any partially-created session first: zellij
-                        // may have made the session before erroring, and
-                        // reconcile only clears sessions ABSENT from
-                        // `list-sessions`. Killing it makes reconcile drop the
-                        // columns. Then the card has no session (status stays In
-                        // Progress; recoverable via Enter, which starts fresh).
-                        zellij::terminate_session(&name);
-                        engine.reconcile()?;
-                    }
-                }
             }
             Effect::SelfUpdate { version } => {
                 ratatui::restore();
@@ -224,8 +246,41 @@ fn run_board(
     }
 }
 
+/// Re-probe / respawn the daemon after a connection loss and rebuild the SSE
+/// stream against it. Bounded: `daemon::ensure_daemon` itself does only a couple
+/// of health-waited attempts, so this never blocks the UI loop indefinitely.
+///
+/// On success the new `DaemonClient` replaces `engine.client`, the SSE listener
+/// is re-spawned against the new base (the old thread ends when its receiver is
+/// dropped), the board is refreshed, and `true` is returned. On give-up the
+/// sticky "unreachable — reconnecting…" toast is left in place, the stale board
+/// stays usable, and `false` is returned so the loop remains responsive and will
+/// retry on the next trigger.
+fn try_reconnect(engine: &mut Engine, opts: &cli::DaemonOpts, sse: &mut Sse) -> bool {
+    engine.app.set_info("daemon unreachable — reconnecting…");
+    // Clone the config so we can re-probe while mutating `engine.client`; this
+    // path is rare (only on an actual daemon loss).
+    let config = engine.config.clone();
+    match daemon::ensure_daemon(&config, opts.forced_addr.as_deref(), !opts.no_spawn) {
+        Ok(new_client) => {
+            // Drop the dead stream and start a fresh one against the new daemon.
+            *sse = Sse::spawn(new_client.base());
+            engine.client = new_client;
+            // Pull the current board from the reconnected daemon. If this still
+            // fails it re-flags connection loss, so the loop will retry.
+            let _ = engine.refresh_from_client();
+            if !engine.take_connection_lost() {
+                engine.app.set_info("daemon reconnected");
+                return true;
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
 /// Release the terminal, run a zellij command (inherits the real TTY), then
-/// re-initialize ratatui and reconcile session state.
+/// re-initialize ratatui and refresh the board from the daemon.
 fn run_zellij<F>(terminal: &mut DefaultTerminal, engine: &mut Engine, f: F) -> Result<()>
 where
     F: FnOnce(()) -> Result<std::process::ExitStatus>,
@@ -239,8 +294,8 @@ where
     if let Err(e) = outcome {
         engine.app.set_error(format!("zellij error: {e}"));
     }
-    // reconcile() reloads tickets and drops any sessions that vanished.
-    engine.reconcile()?;
+    // The daemon reconciles session state; re-fetch the board after attach.
+    engine.refresh_from_client()?;
     Ok(())
 }
 

@@ -1,173 +1,149 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use std::path::PathBuf;
 
 use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm};
+use crate::client::{ClientError, DaemonClient};
 use crate::dir_select::{self, RootCheck};
 use crate::theme::Theme;
 use kamaji_core::config::Config;
-use kamaji_core::db::Db;
-use kamaji_core::detect;
 use kamaji_core::models::{Agent, Status, Ticket};
-use kamaji_core::session::{self, Prepared};
-use kamaji_core::{git, slug, zellij};
 
 /// Side effect the main loop must run by releasing the terminal.
 #[derive(Debug, PartialEq)]
 pub enum Effect {
     None,
-    RunSession {
-        name: String,
-        layout_path: PathBuf,
-    },
-    RunSessionBackground {
-        name: String,
-        layout_path: PathBuf,
-        cwd: PathBuf,
-    },
-    Attach {
-        name: String,
-    },
-    /// Resume a persisted session that zellij has as exited/resurrectable: the
-    /// stale exited session is deleted and recreated from `layout_path` (which
-    /// runs the agent's resume command), then attached. Used after a reboot so
-    /// the agent continues its prior conversation instead of restarting fresh.
-    ResumeSession {
-        name: String,
-        layout_path: PathBuf,
-    },
     /// Leave the board and return to the project picker.
     SwitchProject,
     /// Download the latest release and replace the running binary.
     SelfUpdate {
         version: String,
     },
+    /// Attach to an existing zellij session by name. The daemon owns session
+    /// creation (start/main-session); the TUI only ever releases the terminal
+    /// to attach to a session the daemon has already started.
+    Attach {
+        name: String,
+    },
 }
 
 pub struct Engine {
-    pub db: Db,
+    /// The single write path and read source of truth: the kamajid daemon over
+    /// HTTP. Every mutation goes through this client; the daemon owns the DB,
+    /// git, zellij, and auto-review polling.
+    pub client: DaemonClient,
     pub config: Config,
     pub app: App,
-    /// Auto-review detection runner (owns the per-session detection state).
-    pub poll: kamaji_core::poll::PollLoop,
-    /// Where per-session idle markers live.
-    pub state_dir: std::path::PathBuf,
-    /// Where the theme picker persists the chosen theme. Defaults to the real
-    /// config path; tests override it.
-    pub config_path: std::path::PathBuf,
+    /// Set when a client call (or the SSE stream) reports the daemon is
+    /// unreachable. The mutation handlers convert client errors into toasts
+    /// internally, so this flag is how a connection-loss signal reaches the main
+    /// loop, which drains it via `take_connection_lost` and attempts a reconnect.
+    connection_lost: bool,
 }
 
 impl Engine {
-    pub fn new(db: Db, config: Config, app: App) -> Self {
+    pub fn new(client: DaemonClient, config: Config, app: App) -> Self {
         Engine {
-            db,
+            client,
             config,
             app,
-            poll: kamaji_core::poll::PollLoop::new(),
-            state_dir: detect::default_state_dir(),
-            config_path: kamaji_core::config::config_path().unwrap_or_default(),
+            connection_lost: false,
         }
     }
 
-    pub fn reload(&mut self) -> Result<()> {
-        self.app.tickets = self.db.list_tickets(self.app.project.id)?;
-        // Rehydrate the auto-review provenance cache from the persisted column so
-        // it survives restarts (the move back from Needs attention depends on it).
-        self.poll.rehydrate(&self.app.tickets);
+    /// Record a client error: if it means the daemon is unreachable, raise the
+    /// `connection_lost` flag so the main loop attempts a reconnect. Domain
+    /// errors (BadRequest/NotFound/…) leave the flag untouched.
+    fn note_client_error(&mut self, e: &ClientError) {
+        if crate::client::is_connection_lost(e) {
+            self.connection_lost = true;
+        }
+    }
+
+    /// Directly flag a connection loss (used when the SSE stream reports it is
+    /// disconnected, a secondary trigger independent of the command path).
+    pub fn flag_connection_lost(&mut self) {
+        self.connection_lost = true;
+    }
+
+    /// Read-and-clear the connection-lost flag. The main loop calls this after
+    /// handling input / draining SSE; a `true` return means "attempt reconnect".
+    pub fn take_connection_lost(&mut self) -> bool {
+        std::mem::take(&mut self.connection_lost)
+    }
+
+    /// Re-fetch the current project's tickets from the daemon and re-clamp the
+    /// UI. Used after every mutation, after SSE deltas, and after attach. The
+    /// daemon is the single source of truth.
+    pub fn refresh_from_client(&mut self) -> anyhow::Result<()> {
+        match self.client.list_tickets(self.app.project.id) {
+            Ok(tickets) => self.app.tickets = tickets,
+            Err(e) => {
+                self.note_client_error(&e);
+                self.app
+                    .set_error(format!("could not refresh board: {e:?}"));
+            }
+        }
         self.app.reclamp();
         self.app.prune_selection();
         Ok(())
     }
 
-    /// Build the worktree + layout for a ticket without writing any DB
-    /// session/status columns. Shared by foreground and background start.
-    fn prepare_session(&mut self, ticket: &Ticket) -> Result<Prepared> {
-        session::prepare_session(&self.app.project, &self.config, &self.state_dir, ticket)
-    }
-
-    /// Attach to the project's "main" session — a workspace not tied to any
-    /// ticket — if zellij already has it, otherwise start it. `sessions` is the
-    /// raw `zellij list-sessions` output (or `None` if it couldn't be queried);
-    /// when unavailable we start rather than risk attaching to a missing session.
-    /// On a preparation error the board stays put with an error toast.
-    fn main_session_effect(&mut self, sessions: Option<&str>) -> Result<Effect> {
-        let name = slug::main_session_name(self.app.project.id);
-        if sessions
-            .map(|list| zellij::session_in_list(list, &name))
-            .unwrap_or(false)
-        {
-            return Ok(Effect::Attach { name });
-        }
-        match session::prepare_main_session(&self.app.project, &self.config) {
-            Ok(p) => Ok(Effect::RunSession {
-                name: p.name,
-                layout_path: p.layout_path,
-            }),
-            Err(err) => {
-                self.app
-                    .set_error(format!("could not start main session: {err}"));
-                Ok(Effect::None)
+    /// Apply one SSE delta to the in-memory board for the CURRENT project. Events
+    /// for other projects are ignored. Id-only events that need the full row
+    /// (`session.*`) re-fetch via the client. Mirrors today's handle_poll_events
+    /// toast for an auto-review move.
+    pub fn apply_sse_event(&mut self, ev: kamaji_core::events::Event) {
+        use kamaji_core::events::Event;
+        let pid = self.app.project.id;
+        match ev {
+            Event::TicketCreated(t) | Event::TicketUpdated(t) => {
+                if t.project_id != pid {
+                    return;
+                }
+                match self.app.tickets.iter_mut().find(|x| x.id == t.id) {
+                    Some(slot) => *slot = t,
+                    None => self.app.tickets.push(t),
+                }
+            }
+            Event::TicketMoved { id, to, .. } => {
+                if let Some(slot) = self.app.tickets.iter_mut().find(|x| x.id == id) {
+                    slot.status = to;
+                    match to {
+                        Status::Review => self
+                            .app
+                            .set_info(format!("#{id} → Needs attention (agent idle)")),
+                        Status::InProgress => self
+                            .app
+                            .set_info(format!("#{id} → In Progress (agent active)")),
+                        _ => {}
+                    }
+                }
+            }
+            Event::TicketDeleted { id } => {
+                self.app.tickets.retain(|x| x.id != id);
+            }
+            Event::SessionStarted { ticket_id, .. } | Event::SessionExited { ticket_id, .. } => {
+                self.refetch_ticket(ticket_id);
+            }
+            Event::SessionIdle { .. } => { /* informational; the ticket.moved carries the column */
             }
         }
+        self.app.reclamp();
+        self.app.prune_selection();
     }
 
-    /// True once a worktree location is configured. When it isn't, this opens
-    /// the worktree-location selector and shows a hint, so a session start that
-    /// would otherwise fail instead guides the user to set the location first
-    /// (issue #48: the location has no default and is set via the TUI).
-    fn ensure_worktree_location(&mut self) -> bool {
-        if self.config.worktree_base.is_some() {
-            return true;
-        }
-        self.app.modal = Modal::WorktreeLocation(WorktreeForm::new(None));
-        self.app
-            .set_info("Choose where worktrees live, then start the session again.");
-        false
-    }
-
-    /// Create the worktree + layout for a ticket and return the RunSession effect.
-    fn start_session(&mut self, ticket: &Ticket) -> Result<Effect> {
-        let p = self.prepare_session(ticket)?;
-        session::commit_session(&self.db, ticket.id, &p)?;
-        self.reload()?;
-        Ok(Effect::RunSession {
-            name: p.name,
-            layout_path: p.layout_path,
-        })
-    }
-
-    /// Re-enter a ticket that already has a recorded session: attach if it is
-    /// live, or *resume* it if zellij holds it as exited/resurrectable (e.g.
-    /// after a reboot). `list` is the current `zellij list-sessions` output;
-    /// `None` (couldn't ask) or no known resume command falls back to a plain
-    /// attach, preserving the prior behavior.
-    fn enter_session(
-        &mut self,
-        ticket: &Ticket,
-        name: String,
-        list: Option<&str>,
-    ) -> Result<Effect> {
-        let exited = list
-            .map(|l| zellij::session_exited(l, &name))
-            .unwrap_or(false);
-        if exited {
-            if let Some(resume_argv) = self.config.resume_command_for(ticket.agent) {
-                let p = session::prepare_resume_session(
-                    &self.app.project,
-                    &self.config,
-                    &self.state_dir,
-                    ticket,
-                    resume_argv,
-                )?;
-                session::commit_session(&self.db, ticket.id, &p)?;
-                self.reload()?;
-                return Ok(Effect::ResumeSession {
-                    name: p.name,
-                    layout_path: p.layout_path,
-                });
+    /// Splice a freshly-fetched ticket row (after a session.* event). Best-effort:
+    /// a failed fetch leaves the stale row until the next refresh.
+    fn refetch_ticket(&mut self, id: i64) {
+        if let Ok(t) = self.client.get_ticket(id) {
+            if t.project_id != self.app.project.id {
+                return;
+            }
+            match self.app.tickets.iter_mut().find(|x| x.id == id) {
+                Some(slot) => *slot = t,
+                None => self.app.tickets.push(t),
             }
         }
-        Ok(Effect::Attach { name })
     }
 
     /// Apply a column move to the currently-selected ticket.
@@ -189,174 +165,107 @@ impl Engine {
         self.apply_move(ticket, target)
     }
 
+    /// Route a column move through the daemon. Moving to In Progress is a
+    /// "start/attach": a ticket that already carries a session is moved and
+    /// attached; one without a session is `start`ed by the daemon (which owns
+    /// the worktree precondition — a missing worktree location surfaces as a
+    /// `BadRequest` toast) and then attached to the returned session name.
     fn apply_move(&mut self, ticket: Ticket, target: Status) -> Result<Effect> {
-        // A manual move overrides auto-review provenance (so a card a human
-        // places in Needs attention is not dragged back when its agent resumes).
-        self.db.set_ticket_auto_reviewed(ticket.id, false)?;
-        self.poll.clear_auto_review(ticket.id);
         if target == Status::InProgress {
             return match ticket.session_name.clone() {
                 Some(name) => {
-                    self.db.set_ticket_status(ticket.id, Status::InProgress)?;
-                    self.reload()?;
-                    let list = zellij::list_sessions();
-                    self.enter_session(&ticket, name, list.as_deref())
-                }
-                None => {
-                    if !self.ensure_worktree_location() {
+                    if let Err(e) = self.client.move_ticket(ticket.id, Status::InProgress) {
+                        self.note_client_error(&e);
+                        self.app.set_error(format!("could not move: {e:?}"));
                         return Ok(Effect::None);
                     }
-                    self.start_session(&ticket)
+                    self.refresh_from_client()?;
+                    Ok(Effect::Attach { name })
                 }
+                None => match self.client.start_ticket(ticket.id) {
+                    Ok(t) => {
+                        self.refresh_from_client()?;
+                        match t.session_name {
+                            Some(name) => Ok(Effect::Attach { name }),
+                            None => Ok(Effect::None),
+                        }
+                    }
+                    Err(ClientError::BadRequest(m)) => {
+                        self.app.set_error(m);
+                        Ok(Effect::None)
+                    }
+                    Err(e) => {
+                        self.note_client_error(&e);
+                        self.app.set_error(format!("could not start: {e:?}"));
+                        Ok(Effect::None)
+                    }
+                },
             };
         }
-        self.db.set_ticket_status(ticket.id, target)?;
-        self.reload()?;
+        match self.client.move_ticket(ticket.id, target) {
+            Ok(_) => self.refresh_from_client()?,
+            Err(e) => {
+                self.note_client_error(&e);
+                self.app.set_error(format!("could not move: {e:?}"));
+            }
+        }
         Ok(Effect::None)
-    }
-
-    /// Terminate session + remove worktree + delete branch for a ticket, then
-    /// clear the recorded session columns so the ticket no longer shows as live.
-    pub fn cleanup_ticket(&mut self, ticket_id: i64) -> Result<()> {
-        if let Some(t) = self.db.get_ticket(ticket_id)? {
-            if let Some(name) = &t.session_name {
-                zellij::terminate_session(name);
-                let _ = std::fs::remove_file(detect::marker_path(&self.state_dir, name));
-            }
-            let root = &self.app.project.root_dir;
-            if let Some(wt) = &t.worktree_path {
-                let _ = git::remove_worktree(root, wt);
-            }
-            if let Some(b) = &t.branch {
-                let _ = git::delete_branch(root, b);
-            }
-            self.db.clear_ticket_session(ticket_id)?;
-            self.forget_ticket_state(ticket_id);
-        }
-        Ok(())
-    }
-
-    /// Reconcile recorded sessions against zellij: if a successful
-    /// `zellij list-sessions` does not contain a ticket's session (including as
-    /// a resurrectable/exited entry), the session is gone, so clear its columns.
-    /// Does nothing if zellij can't be queried, so a transient failure never
-    /// wipes valid state.
-    pub fn reconcile(&mut self) -> Result<()> {
-        let Some(list) = zellij::list_sessions() else {
-            return Ok(());
-        };
-        let stale: Vec<(i64, String)> = self
-            .app
-            .tickets
-            .iter()
-            .filter_map(|t| {
-                t.session_name
-                    .as_deref()
-                    .filter(|n| !zellij::session_in_list(&list, n))
-                    .map(|n| (t.id, n.to_string()))
-            })
-            .collect();
-        for (id, name) in stale {
-            self.db.clear_ticket_session(id)?;
-            let _ = std::fs::remove_file(detect::marker_path(&self.state_dir, &name));
-            self.forget_ticket_state(id);
-        }
-        self.reload()
-    }
-
-    /// Forget all in-memory detection state for a ticket (on teardown/vanish).
-    fn forget_ticket_state(&mut self, id: i64) {
-        self.poll.forget_ticket(id);
-    }
-
-    /// One detection pass: delegate to the poll runner, then surface any moves
-    /// as the same informational toasts the TUI showed before, and reload.
-    pub fn detect_tick(&mut self) -> Result<()> {
-        let events = self
-            .poll
-            .tick(&self.app.tickets, &self.db, &self.config, &self.state_dir)?;
-        self.handle_poll_events(&events)
-    }
-
-    /// Translate poll events into UI toasts and reload if anything moved. Shared
-    /// by `detect_tick` and the test-only `detect_tick_with` seam.
-    fn handle_poll_events(&mut self, events: &[kamaji_core::events::Event]) -> Result<()> {
-        use kamaji_core::events::Event;
-        let mut changed = false;
-        for ev in events {
-            if let Event::TicketMoved { id, to, .. } = ev {
-                match to {
-                    Status::Review => self
-                        .app
-                        .set_info(format!("#{id} → Needs attention (agent idle)")),
-                    Status::InProgress => self
-                        .app
-                        .set_info(format!("#{id} → In Progress (agent active)")),
-                    _ => {}
-                }
-                changed = true;
-            }
-        }
-        if changed {
-            self.reload()?;
-        }
-        Ok(())
-    }
-
-    /// Test-only seam: apply move decisions from crafted levels (mirrors the old
-    /// `detect_tick_with`) so detection-integration tests need no real zellij.
-    #[cfg(test)]
-    fn detect_tick_with(
-        &mut self,
-        levels: &std::collections::HashMap<i64, kamaji_core::detect::SignalLevel>,
-    ) -> Result<()> {
-        let events = self.poll.apply(&self.app.tickets, levels, &self.db)?;
-        self.handle_poll_events(&events)
     }
 
     fn submit_form(&mut self, form: &TicketForm) -> Result<Effect> {
         match form.editing_id {
             Some(id) => {
-                self.db
-                    .update_ticket_fields(id, &form.title, &form.description)?;
-                self.reload()?;
+                match self.client.update_ticket(
+                    id,
+                    &form.title,
+                    Some(&form.description),
+                    form.prompt_opt().as_deref(),
+                    Some(form.agent),
+                ) {
+                    Ok(_) => self.refresh_from_client()?,
+                    Err(e) => {
+                        self.note_client_error(&e);
+                        self.app.set_error(format!("could not save ticket: {e:?}"));
+                    }
+                }
                 Ok(Effect::None)
             }
             None => {
-                let ticket = self.db.create_ticket(
+                let created = match self.client.create_ticket(
                     self.app.project.id,
                     &form.title,
                     &form.description,
                     form.prompt_opt().as_deref(),
                     form.agent,
-                )?;
-                self.reload()?;
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.note_client_error(&e);
+                        self.app
+                            .set_error(format!("could not create ticket: {e:?}"));
+                        return Ok(Effect::None);
+                    }
+                };
+                self.refresh_from_client()?;
                 if !form.start_in_background {
                     return Ok(Effect::None);
                 }
-                if !self.ensure_worktree_location() {
-                    // No location yet: the card is created in Todo and the
-                    // selector opens so the user can set one and start it later.
-                    return Ok(Effect::None);
-                }
-                // Background start: prepare the session, then commit DB state.
-                // On any preparation error, leave the card in Todo with a toast.
-                match self.prepare_session(&ticket) {
-                    Ok(p) => {
-                        session::commit_session(&self.db, ticket.id, &p)?;
-                        self.reload()?;
-                        Ok(Effect::RunSessionBackground {
-                            name: p.name,
-                            layout_path: p.layout_path,
-                            cwd: p.worktree,
-                        })
+                match self.client.start_ticket(created.id) {
+                    Ok(t) => {
+                        self.refresh_from_client()?;
+                        self.app.set_info(format!(
+                            "Started '{}' in the background",
+                            t.session_name.as_deref().unwrap_or("")
+                        ));
                     }
-                    Err(err) => {
+                    Err(ClientError::BadRequest(m)) => self.app.set_error(m),
+                    Err(e) => {
+                        self.note_client_error(&e);
                         self.app
-                            .set_error(format!("could not start session: {err}"));
-                        Ok(Effect::None)
+                            .set_error(format!("could not start session: {e:?}"));
                     }
                 }
+                Ok(Effect::None)
             }
         }
     }
@@ -450,20 +359,29 @@ impl Engine {
             },
             Modal::ConfirmDone { ticket_ids } => match key.code {
                 KeyCode::Char('y') => {
+                    // 'y' closes with cleanup (terminate session, remove worktree).
                     for id in &ticket_ids {
-                        self.cleanup_ticket(*id)?;
-                        self.db.set_ticket_status(*id, Status::Done)?;
+                        if let Err(e) = self.client.done_ticket(*id, true) {
+                            self.note_client_error(&e);
+                            self.app
+                                .set_error(format!("could not complete #{id}: {e:?}"));
+                        }
                     }
                     self.app.clear_selection();
-                    self.reload()?;
+                    self.refresh_from_client()?;
                     Ok(Effect::None)
                 }
                 KeyCode::Char('n') => {
+                    // 'n' marks done but leaves the session/worktree in place.
                     for id in &ticket_ids {
-                        self.db.set_ticket_status(*id, Status::Done)?;
+                        if let Err(e) = self.client.done_ticket(*id, false) {
+                            self.note_client_error(&e);
+                            self.app
+                                .set_error(format!("could not complete #{id}: {e:?}"));
+                        }
                     }
                     self.app.clear_selection();
-                    self.reload()?;
+                    self.refresh_from_client()?;
                     Ok(Effect::None)
                 }
                 _ => {
@@ -474,9 +392,12 @@ impl Engine {
             },
             Modal::ConfirmDelete { ticket_id } => match key.code {
                 KeyCode::Char('y') => {
-                    self.cleanup_ticket(ticket_id)?;
-                    self.db.delete_ticket(ticket_id)?;
-                    self.reload()?;
+                    if let Err(e) = self.client.delete_ticket(ticket_id) {
+                        self.note_client_error(&e);
+                        self.app
+                            .set_error(format!("could not delete #{ticket_id}: {e:?}"));
+                    }
+                    self.refresh_from_client()?;
                     Ok(Effect::None)
                 }
                 _ => Ok(Effect::None),
@@ -504,18 +425,17 @@ impl Engine {
                 }
                 KeyCode::Enter => {
                     let chosen = self.app.theme;
-                    self.config.theme = chosen.name.to_string();
-                    match kamaji_core::config::save_to(&self.config_path, &self.config) {
-                        Ok(()) => {
+                    match self.client.update_config(Some(chosen.name), None, None) {
+                        Ok(cfg) => {
+                            self.config = cfg;
                             self.app.set_info(format!("theme: {}", chosen.label));
                         }
                         Err(e) => {
-                            // Persisting failed: revert live + config state to the original so
+                            // Persisting failed: revert the live theme to the original so
                             // what's shown matches what will load next launch.
-                            let orig = Theme::ALL[original]();
-                            self.app.theme = orig;
-                            self.config.theme = orig.name.to_string();
-                            self.app.set_error(format!("could not save theme: {e}"));
+                            self.note_client_error(&e);
+                            self.app.theme = Theme::ALL[original]();
+                            self.app.set_error(format!("could not save theme: {e:?}"));
                         }
                     }
                     Ok(Effect::None)
@@ -539,19 +459,16 @@ impl Engine {
                 }
                 KeyCode::Enter => {
                     let chosen = Agent::all()[selected];
-                    let previous = std::mem::replace(
-                        &mut self.config.default_agent,
-                        chosen.as_str().to_string(),
-                    );
-                    match kamaji_core::config::save_to(&self.config_path, &self.config) {
-                        Ok(()) => self
-                            .app
-                            .set_info(format!("default agent: {}", chosen.label())),
-                        Err(e) => {
-                            // Persisting failed: revert so config matches what loads next launch.
-                            self.config.default_agent = previous;
+                    match self.client.update_config(None, Some(chosen.as_str()), None) {
+                        Ok(cfg) => {
+                            self.config = cfg;
                             self.app
-                                .set_error(format!("could not save default agent: {e}"));
+                                .set_info(format!("default agent: {}", chosen.label()));
+                        }
+                        Err(e) => {
+                            self.note_client_error(&e);
+                            self.app
+                                .set_error(format!("could not save default agent: {e:?}"));
                         }
                     }
                     Ok(Effect::None)
@@ -625,21 +542,25 @@ impl Engine {
         }
     }
 
-    /// Persist a chosen worktree location to the config file and toast the
-    /// result. On a write failure the previous value is restored so the
-    /// in-memory config and disk agree.
+    /// Persist a chosen worktree location through the daemon and toast the
+    /// result. The daemon owns the config file; on success its returned config
+    /// becomes our in-memory state, on failure the live config is untouched.
     fn save_worktree_location(&mut self, path: &std::path::Path) {
-        let prev = self.config.worktree_base.take();
-        self.config.worktree_base = Some(path.to_string_lossy().to_string());
-        match kamaji_core::config::save_to(&self.config_path, &self.config) {
-            Ok(()) => self.app.set_info(format!(
-                "worktree location: {}",
-                dir_select::contract_home(path)
-            )),
+        match self
+            .client
+            .update_config(None, None, Some(&path.to_string_lossy()))
+        {
+            Ok(cfg) => {
+                self.config = cfg;
+                self.app.set_info(format!(
+                    "worktree location: {}",
+                    dir_select::contract_home(path)
+                ));
+            }
             Err(e) => {
-                self.config.worktree_base = prev;
+                self.note_client_error(&e);
                 self.app
-                    .set_error(format!("could not save worktree location: {e}"));
+                    .set_error(format!("could not save worktree location: {e:?}"));
             }
         }
     }
@@ -686,10 +607,19 @@ impl Engine {
                 }
             }
             KeyCode::Char('p') => return Ok(Effect::SwitchProject),
-            // Open the project's main session (not tied to any ticket): attach
-            // if it's already running, otherwise start it in the project root.
+            // Open the project's main session (not tied to any ticket): the
+            // daemon attaches if it's already running, otherwise starts it, and
+            // returns the session name for the TUI to attach to.
             KeyCode::Char('s') => {
-                return self.main_session_effect(zellij::list_sessions().as_deref());
+                return match self.client.main_session(self.app.project.id) {
+                    Ok(name) => Ok(Effect::Attach { name }),
+                    Err(e) => {
+                        self.note_client_error(&e);
+                        self.app
+                            .set_error(format!("could not open main session: {e:?}"));
+                        Ok(Effect::None)
+                    }
+                };
             }
             KeyCode::Char('u') => {
                 if let Some(version) = self.app.update.clone() {
@@ -745,24 +675,12 @@ impl Engine {
                     self.app.modal = Modal::ConfirmDelete { ticket_id: t.id };
                 }
             }
-            // Enter "enters" the ticket: attach to its session if one exists
-            // (resuming it if zellij holds it as exited, e.g. after a reboot),
-            // otherwise start one (creating the worktree + session and moving
-            // the ticket to In Progress).
+            // Enter "enters" the ticket: this is the same as moving it to In
+            // Progress — attach to its session if one exists, otherwise have the
+            // daemon start one (creating the worktree + session) and attach.
             KeyCode::Enter => {
                 if let Some(t) = self.app.selected_ticket().cloned() {
-                    return match t.session_name.clone() {
-                        Some(name) => {
-                            let list = zellij::list_sessions();
-                            self.enter_session(&t, name, list.as_deref())
-                        }
-                        None => {
-                            if !self.ensure_worktree_location() {
-                                return Ok(Effect::None);
-                            }
-                            self.start_session(&t)
-                        }
-                    };
+                    return self.apply_move(t, Status::InProgress);
                 }
             }
             _ => {}
@@ -771,44 +689,189 @@ impl Engine {
     }
 }
 
+// ── What moved to the daemon (no longer tested here) ─────────────────────────
+// The orchestration these tests used to cover now lives in the daemon, so the
+// coverage moved with it:
+//   - Auto-review polling / idle→Needs-attention / resume→In-Progress /
+//     manual-drag provenance / non-instrumented signal handling
+//     → `kamaji-core` poll tests + `crates/kamajid/tests/api.rs`.
+//   - Worktree creation on start, the worktree-location precondition,
+//     compact-bar layout, background-start, session resume, and cleanup
+//     (terminate session + remove worktree + clear columns)
+//     → `crates/kamajid/tests/api.rs` (the daemon owns git/zellij now).
+//   - `main_session` start-vs-attach selection → daemon.
+// What remains here: keymap → modal/Effect decisions and the thin client wiring
+// in the mutation handlers, exercised against the shared in-memory test daemon.
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kamaji_core::detect::SignalLevel;
+    use kamaji_core::events::Event as CoreEvent;
     use kamaji_core::models::Agent;
-    use kamaji_core::slug;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
-    use std::collections::HashMap;
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
-    fn engine_with_project(root: std::path::PathBuf) -> Engine {
-        let db = Db::open_in_memory().unwrap();
-        let project = db.create_project("p", &root, None).unwrap();
-        let app = App::new(project, vec![]);
-        Engine::new(db, Config::default(), app)
+    /// Connect a `DaemonClient` to a single shared in-process kamajid spawned
+    /// once for the whole test binary. Every `engine_with_project` creates its
+    /// own project on that daemon, so tickets are isolated per test.
+    fn test_client() -> DaemonClient {
+        use crate::test_support::spawn_test_daemon;
+        use std::sync::OnceLock;
+        static BASE: OnceLock<String> = OnceLock::new();
+        let base = BASE.get_or_init(spawn_test_daemon).clone();
+        DaemonClient::connect(base).unwrap()
     }
 
-    /// Initialize a real git repo with one commit at `root` so `start_session`
-    /// can add a worktree against it.
-    fn init_repo(root: &std::path::Path) {
-        let run = |args: &[&str]| {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(root)
-                .args(args)
-                .output()
-                .unwrap();
-        };
-        run(&["init", "-b", "main"]);
-        run(&["config", "user.email", "t@t.t"]);
-        run(&["config", "user.name", "t"]);
-        std::fs::write(root.join("f"), "x").unwrap();
-        run(&["add", "."]);
-        run(&["commit", "-m", "i"]);
+    /// An engine wired to the shared test daemon, with a fresh project created on
+    /// it so the board starts empty and isolated from other tests.
+    fn engine_with_project(root: std::path::PathBuf) -> Engine {
+        let client = test_client();
+        let project = client.create_project("p", &root, None).unwrap();
+        let app = App::new(project, vec![]);
+        Engine::new(client, Config::default(), app)
     }
+
+    /// An engine wired to a *dedicated* in-process daemon (not the shared one),
+    /// for the config-persistence tests. Each such test points
+    /// `XDG_CONFIG_HOME` at a tempdir before spawning so the daemon's
+    /// `PATCH /config` writes there instead of the developer's real config; a
+    /// private daemon keeps those PATCHes from leaking into the shared daemon's
+    /// state that the other tests read.
+    fn engine_on_isolated_daemon() -> Engine {
+        use crate::test_support::spawn_test_daemon;
+        let client = DaemonClient::connect(spawn_test_daemon()).unwrap();
+        let project = client
+            .create_project("p", std::path::Path::new("/tmp/none"), None)
+            .unwrap();
+        let app = App::new(project, vec![]);
+        Engine::new(client, Config::default(), app)
+    }
+
+    /// A minimal `Ticket` for applier tests: only the fields the applier reads
+    /// (id, project_id, title, status, session_name) carry meaning; the rest are
+    /// defaults.
+    fn sample_ticket(project_id: i64, id: i64, title: &str, status: Status) -> Ticket {
+        Ticket {
+            id,
+            project_id,
+            title: title.to_string(),
+            description: String::new(),
+            initial_prompt: None,
+            agent: Agent::Claude,
+            status,
+            position: 0,
+            session_name: None,
+            worktree_path: None,
+            branch: None,
+            auto_reviewed: false,
+            instrumented: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    // ── Effect enum shape ────────────────────────────────────────────────────
+
+    #[test]
+    fn effect_enum_has_only_the_collapsed_variants() {
+        // Compile-time guard: constructing each remaining variant must type-check.
+        let _ = [
+            Effect::None,
+            Effect::SwitchProject,
+            Effect::SelfUpdate {
+                version: "x".into(),
+            },
+            Effect::Attach { name: "s".into() },
+        ];
+    }
+
+    // ── connection-loss flag ─────────────────────────────────────────────────
+
+    #[test]
+    fn take_connection_lost_reads_and_clears() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        assert!(!e.take_connection_lost(), "starts clear");
+        e.flag_connection_lost();
+        assert!(e.take_connection_lost(), "flag is observed once");
+        assert!(!e.take_connection_lost(), "and cleared after reading");
+    }
+
+    /// A domain error from a *live* daemon (background start with no worktree
+    /// location → BadRequest) must NOT raise the reconnect flag — only
+    /// `Unreachable` does.
+    #[test]
+    fn bad_request_handler_does_not_flag_connection_lost() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('c')).unwrap();
+        for ch in "Add login".chars() {
+            e.on_key(key(ch)).unwrap();
+        }
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        // The background start hit a BadRequest (no worktree location); that is a
+        // domain error and must not request a reconnect.
+        assert_eq!(e.app.tickets.len(), 1);
+        assert!(
+            !e.take_connection_lost(),
+            "a BadRequest from a live daemon must not flag connection loss"
+        );
+    }
+
+    // ── SSE application ──────────────────────────────────────────────────────
+
+    #[test]
+    fn sse_ticket_created_for_current_project_inserts() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        let t = sample_ticket(pid, 1, "New", Status::Todo);
+        e.apply_sse_event(CoreEvent::TicketCreated(t));
+        assert_eq!(e.app.tickets.len(), 1);
+        assert_eq!(e.app.tickets[0].title, "New");
+    }
+
+    #[test]
+    fn sse_ticket_created_for_other_project_is_ignored() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let other = sample_ticket(e.app.project.id + 999, 1, "Elsewhere", Status::Todo);
+        e.apply_sse_event(CoreEvent::TicketCreated(other));
+        assert!(
+            e.app.tickets.is_empty(),
+            "events for other projects are ignored"
+        );
+    }
+
+    #[test]
+    fn sse_ticket_moved_to_review_updates_status_and_toasts() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        e.app.tickets = vec![sample_ticket(pid, 1, "t", Status::InProgress)];
+        e.apply_sse_event(CoreEvent::TicketMoved {
+            id: 1,
+            from: Status::InProgress,
+            to: Status::Review,
+            at: String::new(),
+        });
+        assert_eq!(e.app.tickets[0].status, Status::Review);
+        let msg = e.app.status_message.as_ref().unwrap();
+        assert!(msg.text.contains("Needs attention"));
+        assert_eq!(msg.kind, crate::app::StatusKind::Info);
+    }
+
+    #[test]
+    fn sse_ticket_deleted_removes_and_prunes() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        e.app.tickets = vec![sample_ticket(pid, 1, "t", Status::Todo)];
+        e.app.selected_ids.insert(1);
+        e.apply_sse_event(CoreEvent::TicketDeleted { id: 1 });
+        assert!(e.app.tickets.is_empty());
+        assert!(!e.app.selected_ids.contains(&1));
+    }
+
+    // ── Mutation handlers → client ───────────────────────────────────────────
 
     #[test]
     fn create_ticket_via_form() {
@@ -830,535 +893,62 @@ mod tests {
         assert_eq!(e.on_key(key('p')).unwrap(), Effect::SwitchProject);
     }
 
+    /// A non-start column move (e.g. to Review) routes through the daemon and is
+    /// reflected on the board after `refresh_from_client`. No git/zellij needed.
     #[test]
-    fn move_to_review_then_done_without_session() {
+    fn move_to_review_routes_through_daemon() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+        let t = e
+            .client
+            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
             .unwrap();
-        e.reload().unwrap();
-        // Move to Review (col index 2).
+        e.refresh_from_client().unwrap();
         assert_eq!(e.move_selected(Status::Review).unwrap(), Effect::None);
+        assert_eq!(e.client.get_ticket(t.id).unwrap().status, Status::Review);
+        assert_eq!(e.app.tickets[0].status, Status::Review);
+    }
+
+    /// `apply_move` to In Progress on a ticket that ALREADY carries a session
+    /// returns `Effect::Attach { name }` — the pure branch decision, no real
+    /// worktree/zellij. The move itself is a cheap no-op round-trip to the daemon.
+    #[test]
+    fn apply_move_with_session_name_returns_attach() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let created = e
+            .client
+            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        e.refresh_from_client().unwrap();
+        // Construct a ticket value that carries a session_name (the daemon row
+        // doesn't have one, but apply_move's branch keys off the passed Ticket).
+        let mut ticket = e.app.tickets[0].clone();
+        assert_eq!(ticket.id, created.id);
+        ticket.session_name = Some("kamaji-sess".into());
         assert_eq!(
-            e.db.list_tickets(e.app.project.id).unwrap()[0].status,
-            Status::Review
-        );
-    }
-
-    #[test]
-    fn start_session_creates_worktree_and_effect() {
-        // Build a real repo so start_session can add a worktree.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        init_repo(&root);
-
-        let mut e = engine_with_project(root.clone());
-        // Point worktrees somewhere isolated under tempdir.
-        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
-        e.state_dir = dir.path().join("state");
-        let t =
-            e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
-                .unwrap();
-        e.reload().unwrap();
-
-        let effect = e.move_selected(Status::InProgress).unwrap();
-        let name = slug::ticket_name(t.id, "Add login");
-        match effect {
-            Effect::RunSession {
-                name: n,
-                layout_path,
-            } => {
-                assert_eq!(n, name);
-                assert!(layout_path.exists());
-                let layout = std::fs::read_to_string(&layout_path).unwrap();
-                assert!(
-                    layout.contains("--settings"),
-                    "claude layout must inject --settings: {layout}"
-                );
-            }
-            other => panic!("expected RunSession, got {other:?}"),
-        }
-        let stored = e.db.get_ticket(t.id).unwrap().unwrap();
-        assert_eq!(stored.status, Status::InProgress);
-        assert_eq!(stored.session_name.as_deref(), Some(name.as_str()));
-        assert!(dir.path().join("wts").join(&name).join("f").exists());
-
-        // Cleanup removes the worktree and clears the recorded session columns.
-        e.cleanup_ticket(t.id).unwrap();
-        let cleaned = e.db.get_ticket(t.id).unwrap().unwrap();
-        assert_eq!(cleaned.session_name, None);
-        assert_eq!(cleaned.worktree_path, None);
-        assert_eq!(cleaned.branch, None);
-        assert!(!dir.path().join("wts").join(&name).join("f").exists());
-    }
-
-    /// Helper: an in-progress ticket with a recorded session, returns its id.
-    fn in_progress_ticket(e: &mut Engine) -> i64 {
-        let t =
-            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
-                .unwrap();
-        e.db.set_ticket_session(t.id, "kamaji-x", "/wt", "kamaji-x")
-            .unwrap();
-        e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
-        e.reload().unwrap();
-        t.id
-    }
-
-    fn levels(id: i64, level: SignalLevel) -> HashMap<i64, SignalLevel> {
-        let mut m = HashMap::new();
-        m.insert(id, level);
-        m
-    }
-
-    #[test]
-    fn idle_after_active_moves_in_progress_to_review() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let id = in_progress_ticket(&mut e);
-        e.detect_tick_with(&levels(id, SignalLevel::Active))
-            .unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
-        assert!(e.poll.is_auto_reviewed(id));
-        // The toast names the column as the user sees it ("Needs attention"),
-        // and an automatic status transition is informational, not an error.
-        let msg = e.app.status_message.as_ref().unwrap();
-        assert!(msg.text.contains("Needs attention"));
-        assert_eq!(msg.kind, crate::app::StatusKind::Info);
-    }
-
-    #[test]
-    fn resumed_auto_reviewed_card_returns_to_in_progress() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let id = in_progress_ticket(&mut e);
-        e.detect_tick_with(&levels(id, SignalLevel::Active))
-            .unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Active))
-            .unwrap();
-        assert_eq!(
-            e.db.get_ticket(id).unwrap().unwrap().status,
-            Status::InProgress
-        );
-        assert!(!e.poll.is_auto_reviewed(id));
-    }
-
-    /// The move back from Needs attention must survive a kamaji restart, which
-    /// wipes all in-memory detection state. Provenance is persisted on the
-    /// ticket, so after rehydrating from the DB the resumed agent still returns
-    /// to In Progress.
-    #[test]
-    fn move_back_survives_lost_in_memory_provenance() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let id = in_progress_ticket(&mut e);
-        // Auto-move to Needs attention (Active -> Idle).
-        e.detect_tick_with(&levels(id, SignalLevel::Active))
-            .unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
-        // Provenance is persisted, not just held in memory.
-        assert!(e.db.get_ticket(id).unwrap().unwrap().auto_reviewed);
-
-        // Simulate a restart: drop all in-memory detection state, reload from DB.
-        e.poll = kamaji_core::poll::PollLoop::new();
-        e.reload().unwrap();
-
-        // Resume the agent: re-baseline as Idle, then it becomes Active.
-        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Active))
-            .unwrap();
-        assert_eq!(
-            e.db.get_ticket(id).unwrap().unwrap().status,
-            Status::InProgress
-        );
-    }
-
-    #[test]
-    fn manual_drag_back_is_not_re_moved() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let id = in_progress_ticket(&mut e);
-        e.detect_tick_with(&levels(id, SignalLevel::Active))
-            .unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        e.move_ticket(id, Status::InProgress).unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        assert_eq!(
-            e.db.get_ticket(id).unwrap().unwrap().status,
-            Status::InProgress
-        );
-    }
-
-    #[test]
-    fn never_drags_manually_placed_review_card() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let id = in_progress_ticket(&mut e);
-        e.move_ticket(id, Status::Review).unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Active))
-            .unwrap();
-        assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
-    }
-
-    #[test]
-    fn cleanup_removes_marker_and_state() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.state_dir = tmp.path().to_path_buf();
-        std::fs::create_dir_all(&e.state_dir).unwrap();
-
-        let t =
-            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
-                .unwrap();
-        e.db.set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
-            .unwrap();
-        e.reload().unwrap();
-        let marker = kamaji_core::detect::marker_path(&e.state_dir, "kamaji-sess");
-        std::fs::write(&marker, "").unwrap();
-        // Seed poll state to be cleared by cleanup: persist auto-review
-        // provenance then rehydrate it via reload, and baseline last_level
-        // with one Active tick.
-        e.db.set_ticket_auto_reviewed(t.id, true).unwrap();
-        e.reload().unwrap();
-        e.detect_tick_with(&levels(t.id, SignalLevel::Active))
-            .unwrap();
-
-        e.cleanup_ticket(t.id).unwrap();
-
-        assert!(!marker.exists());
-        assert!(!e.poll.is_auto_reviewed(t.id));
-        assert!(!e.poll.levels().contains_key(&t.id));
-    }
-
-    #[test]
-    fn detect_tick_reads_claude_marker_and_moves_to_review() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.state_dir = tmp.path().to_path_buf();
-        std::fs::create_dir_all(&e.state_dir).unwrap();
-
-        let t =
-            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
-                .unwrap();
-        e.db.set_ticket_session(t.id, "kamaji-sess", "/wt", "kamaji-sess")
-            .unwrap();
-        e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
-        // The session carries the idle hooks, so its marker signal is trusted.
-        e.db.set_ticket_instrumented(t.id, true).unwrap();
-        e.reload().unwrap();
-
-        // No marker yet => Active baseline; no move.
-        e.detect_tick().unwrap();
-        assert_eq!(
-            e.db.get_ticket(t.id).unwrap().unwrap().status,
-            Status::InProgress
-        );
-
-        // Agent's Stop hook would create the marker => Idle => Review.
-        std::fs::write(
-            kamaji_core::detect::marker_path(&e.state_dir, "kamaji-sess"),
-            "",
-        )
-        .unwrap();
-        e.detect_tick().unwrap();
-        assert_eq!(
-            e.db.get_ticket(t.id).unwrap().unwrap().status,
-            Status::Review
-        );
-    }
-
-    /// A Claude session started without the idle hooks (e.g. a session from
-    /// before instrumentation existed) has no trustworthy marker: an absent
-    /// marker must NOT be read as "active". Such a session never auto-moves and
-    /// never reports an Active level (so its bullet is never shown as working).
-    #[test]
-    fn non_instrumented_claude_signal_is_ignored() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.state_dir = tmp.path().to_path_buf();
-        std::fs::create_dir_all(&e.state_dir).unwrap();
-
-        let t =
-            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
-                .unwrap();
-        e.db.set_ticket_session(t.id, "kamaji-noinstr", "/wt", "kamaji-noinstr")
-            .unwrap();
-        e.db.set_ticket_status(t.id, Status::InProgress).unwrap();
-        // instrumented stays false (no hooks were injected).
-        e.reload().unwrap();
-
-        // Baseline (marker absent), then the agent "stops" (marker present).
-        e.detect_tick().unwrap();
-        std::fs::write(
-            kamaji_core::detect::marker_path(&e.state_dir, "kamaji-noinstr"),
-            "",
-        )
-        .unwrap();
-        e.detect_tick().unwrap();
-
-        // An instrumented session would now be in Needs attention; this one must
-        // stay In Progress, and must not have been recorded as Active/Idle.
-        assert_eq!(
-            e.db.get_ticket(t.id).unwrap().unwrap().status,
-            Status::InProgress
-        );
-        assert!(!matches!(
-            e.poll.levels().get(&t.id),
-            Some(SignalLevel::Active) | Some(SignalLevel::Idle)
-        ));
-    }
-
-    /// A `zellij_bar = "compact"` override must produce a compact-bar layout
-    /// regardless of the user's zellij config.
-    #[test]
-    fn start_session_honors_compact_bar_override() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        init_repo(&root);
-
-        let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
-        e.config.zellij_bar = "compact".to_string();
-        e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
-            .unwrap();
-        e.reload().unwrap();
-
-        let effect = e.move_selected(Status::InProgress).unwrap();
-        let Effect::RunSession { layout_path, .. } = effect else {
-            panic!("expected RunSession, got {effect:?}");
-        };
-        let kdl = std::fs::read_to_string(&layout_path).unwrap();
-        assert!(
-            kdl.contains("compact-bar"),
-            "compact override should render compact-bar:\n{kdl}"
-        );
-        assert!(
-            !kdl.contains("status-bar"),
-            "compact override must drop the status-bar:\n{kdl}"
-        );
-    }
-
-    fn enter() -> KeyEvent {
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
-    }
-
-    /// Enter on a ticket that already has a session attaches to it without
-    /// changing its status (the old `a` behavior, now on Enter).
-    #[test]
-    fn enter_attaches_to_existing_session() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let t =
-            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
-                .unwrap();
-        e.db.set_ticket_session(t.id, "sess", "/tmp/wt", "branch")
-            .unwrap();
-        e.db.set_ticket_status(t.id, Status::Review).unwrap();
-        e.reload().unwrap();
-        // Move the cursor to the Review column so the ticket is selected.
-        e.on_key(key('l')).unwrap();
-        e.on_key(key('l')).unwrap();
-
-        assert_eq!(
-            e.on_key(enter()).unwrap(),
+            e.apply_move(ticket, Status::InProgress).unwrap(),
             Effect::Attach {
-                name: "sess".into()
+                name: "kamaji-sess".into()
             }
         );
-        // Attaching to an existing session leaves the column untouched.
-        assert_eq!(
-            e.db.get_ticket(t.id).unwrap().unwrap().status,
-            Status::Review
-        );
     }
 
-    /// A live session attaches as before; a session zellij reports as
-    /// exited/resurrectable (e.g. after a reboot) resumes — recreating the
-    /// layout to run the agent's resume command — while still keeping Claude's
-    /// idle-detection hooks. An unqueryable zellij falls back to a plain attach.
+    /// Background start with no worktree location configured: the card is created
+    /// (in Todo) and the daemon's `/start` rejects the start with a BadRequest,
+    /// which the TUI surfaces as an error toast.
     #[test]
-    fn enter_session_resumes_only_when_exited() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        init_repo(&root);
-
-        let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
-        e.state_dir = dir.path().join("state");
-        let t =
-            e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
-                .unwrap();
-        e.reload().unwrap();
-        // Start the session so the worktree + session columns exist.
-        e.move_selected(Status::InProgress).unwrap();
-        let ticket = e.db.get_ticket(t.id).unwrap().unwrap();
-        let name = ticket.session_name.clone().unwrap();
-
-        // Live session → plain attach.
-        let live = format!("{name} [Created 1s ago]\n");
-        assert_eq!(
-            e.enter_session(&ticket, name.clone(), Some(&live)).unwrap(),
-            Effect::Attach { name: name.clone() }
-        );
-
-        // Exited/resurrectable session → resume.
-        let exited = format!("{name} [Created 1h ago] (EXITED - attach to resurrect)\n");
-        match e
-            .enter_session(&ticket, name.clone(), Some(&exited))
-            .unwrap()
-        {
-            Effect::ResumeSession {
-                name: n,
-                layout_path,
-            } => {
-                assert_eq!(n, name);
-                let layout = std::fs::read_to_string(&layout_path).unwrap();
-                assert!(
-                    layout.contains("--continue"),
-                    "resume layout must run the resume command:\n{layout}"
-                );
-                assert!(
-                    layout.contains("--settings"),
-                    "resume layout must keep Claude idle hooks:\n{layout}"
-                );
-            }
-            other => panic!("expected ResumeSession, got {other:?}"),
-        }
-
-        // Couldn't query zellij → safe fallback to attach.
-        assert_eq!(
-            e.enter_session(&ticket, name.clone(), None).unwrap(),
-            Effect::Attach { name }
-        );
-    }
-
-    /// Enter on a Todo ticket without a session creates the session/worktree
-    /// and moves the ticket to In Progress.
-    #[test]
-    fn enter_starts_session_for_todo_ticket() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        init_repo(&root);
-
-        let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
-        let t =
-            e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
-                .unwrap();
-        e.reload().unwrap();
-        assert_eq!(e.db.get_ticket(t.id).unwrap().unwrap().status, Status::Todo);
-
-        let effect = e.on_key(enter()).unwrap();
-        let name = slug::ticket_name(t.id, "Add login");
-        match effect {
-            Effect::RunSession { name: n, .. } => assert_eq!(n, name),
-            other => panic!("expected RunSession, got {other:?}"),
-        }
-        let stored = e.db.get_ticket(t.id).unwrap().unwrap();
-        assert_eq!(stored.status, Status::InProgress);
-        assert_eq!(stored.session_name.as_deref(), Some(name.as_str()));
-
-        e.cleanup_ticket(t.id).unwrap();
-    }
-
-    /// Submitting the create form with the background toggle on (in a real git
-    /// repo) prepares a session and returns RunSessionBackground; the ticket is
-    /// moved to In Progress with a recorded session.
-    #[test]
-    fn create_with_background_toggle_starts_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        init_repo(&root);
-
-        let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
-        e.state_dir = dir.path().join("state");
-
+    fn create_with_background_no_worktree_location_toasts_bad_request() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        // worktree_base stays None; the daemon owns the precondition.
         e.on_key(key('c')).unwrap();
         for ch in "Add login".chars() {
             e.on_key(key(ch)).unwrap();
         }
         let effect = e
-            .on_key(ratatui::crossterm::event::KeyEvent::new(
-                ratatui::crossterm::event::KeyCode::Enter,
-                ratatui::crossterm::event::KeyModifiers::NONE,
-            ))
+            .on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
-
-        let ticket_id = e.app.tickets[0].id;
-        let name = slug::ticket_name(ticket_id, "Add login");
-        match effect {
-            Effect::RunSessionBackground {
-                name: n,
-                layout_path,
-                cwd,
-            } => {
-                assert_eq!(n, name);
-                assert!(layout_path.exists());
-                assert!(cwd.ends_with(&name));
-            }
-            other => panic!("expected RunSessionBackground, got {other:?}"),
-        }
-        let t = &e.app.tickets[0];
-        assert_eq!(t.status, Status::InProgress);
-        assert_eq!(t.session_name.as_deref(), Some(name.as_str()));
-
-        e.cleanup_ticket(ticket_id).unwrap();
-    }
-
-    /// With the toggle off, creation is the classic Todo card with no session.
-    #[test]
-    fn create_without_background_toggle_makes_todo_card() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        init_repo(&root);
-        let mut e = engine_with_project(root.clone());
-        e.config.worktree_base = Some(dir.path().join("wts").to_string_lossy().to_string());
-
-        e.on_key(key('c')).unwrap();
-        for ch in "Plan only".chars() {
-            e.on_key(key(ch)).unwrap();
-        }
-        // Tab to Background and turn it off.
-        for _ in 0..4 {
-            e.on_key(ratatui::crossterm::event::KeyEvent::new(
-                ratatui::crossterm::event::KeyCode::Tab,
-                ratatui::crossterm::event::KeyModifiers::NONE,
-            ))
-            .unwrap();
-        }
-        e.on_key(key(' ')).unwrap();
-        let effect = e
-            .on_key(ratatui::crossterm::event::KeyEvent::new(
-                ratatui::crossterm::event::KeyCode::Enter,
-                ratatui::crossterm::event::KeyModifiers::NONE,
-            ))
-            .unwrap();
-
-        assert_eq!(effect, Effect::None);
-        assert_eq!(e.app.tickets[0].status, Status::Todo);
-        assert_eq!(e.app.tickets[0].session_name, None);
-    }
-
-    /// Toggle on but the project root is not a git repo: the ticket is still
-    /// created, left in Todo, with an error toast (graceful failure).
-    #[test]
-    fn create_with_background_toggle_in_non_git_root_stays_todo() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        // A location is set so the failure under test is the non-git root, not
-        // the missing-worktree-location guard.
-        e.config.worktree_base = Some("/tmp/wts".to_string());
-        e.on_key(key('c')).unwrap();
-        for ch in "No repo".chars() {
-            e.on_key(key(ch)).unwrap();
-        }
-        let effect = e
-            .on_key(ratatui::crossterm::event::KeyEvent::new(
-                ratatui::crossterm::event::KeyCode::Enter,
-                ratatui::crossterm::event::KeyModifiers::NONE,
-            ))
-            .unwrap();
-
         assert_eq!(effect, Effect::None);
         assert_eq!(e.app.tickets.len(), 1);
         assert_eq!(e.app.tickets[0].status, Status::Todo);
-        assert_eq!(e.app.tickets[0].session_name, None);
         let msg = e
             .app
             .status_message
@@ -1366,6 +956,71 @@ mod tests {
             .expect("an error toast is shown");
         assert_eq!(msg.kind, crate::app::StatusKind::Error);
     }
+
+    /// With the background toggle off, creation is the classic Todo card with no
+    /// session and no start attempt.
+    #[test]
+    fn create_without_background_toggle_makes_todo_card() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('c')).unwrap();
+        for ch in "Plan only".chars() {
+            e.on_key(key(ch)).unwrap();
+        }
+        // Tab to Background and turn it off.
+        for _ in 0..4 {
+            e.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+                .unwrap();
+        }
+        e.on_key(key(' ')).unwrap();
+        let effect = e
+            .on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(effect, Effect::None);
+        assert_eq!(e.app.tickets[0].status, Status::Todo);
+        assert_eq!(e.app.tickets[0].session_name, None);
+    }
+
+    fn enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    /// Enter on a ticket the daemon reports with a session_name attaches to it.
+    /// Needs a real git repo + zellij for the daemon to actually start a session,
+    /// so it is ignored by default (Phase 1 convention); the pure branch decision
+    /// is covered by `apply_move_with_session_name_returns_attach`.
+    #[test]
+    #[ignore = "requires a real git worktree + zellij in the daemon"]
+    fn enter_attaches_to_existing_session() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let t = e
+            .client
+            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        let started = e.client.start_ticket(t.id).unwrap();
+        let name = started.session_name.clone().unwrap();
+        e.refresh_from_client().unwrap();
+        assert_eq!(
+            e.apply_move(started, Status::InProgress).unwrap(),
+            Effect::Attach { name }
+        );
+    }
+
+    /// Enter starting a fresh session needs a real worktree + zellij; ignored.
+    #[test]
+    #[ignore = "requires a real git worktree + zellij in the daemon"]
+    fn enter_starts_session_for_todo_ticket() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.client
+            .create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
+            .unwrap();
+        e.refresh_from_client().unwrap();
+        match e.on_key(enter()).unwrap() {
+            Effect::Attach { .. } => {}
+            other => panic!("expected Attach, got {other:?}"),
+        }
+    }
+
+    // ── keymap → modal/effect decisions ──────────────────────────────────────
 
     #[test]
     fn t_opens_theme_picker_at_current_theme() {
@@ -1399,11 +1054,20 @@ mod tests {
         }
     }
 
+    /// Confirming a theme in the picker persists it through the daemon's
+    /// `PATCH /config`: both the engine's in-memory config and the daemon's
+    /// own `GET /config` must reflect the choice. A dedicated daemon is spawned
+    /// after pointing `XDG_CONFIG_HOME` at a tempdir so the PATCH writes there
+    /// (and never the developer's real `~/.config/kamaji/config.toml`).
     #[test]
-    fn picker_enter_persists_theme_to_config_file() {
+    fn theme_picker_enter_persists_via_daemon() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+
+        let mut e = engine_on_isolated_daemon();
         let nord = crate::theme::Theme::index_of("nord");
         e.app.modal = Modal::ThemePicker {
             selected: nord,
@@ -1414,8 +1078,7 @@ mod tests {
             .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.config.theme, "nord");
-        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
-        assert_eq!(saved.theme, "nord");
+        assert_eq!(e.client.get_config().unwrap().theme, "nord");
     }
 
     #[test]
@@ -1451,14 +1114,20 @@ mod tests {
         assert_eq!(e.app.theme.name, crate::theme::Theme::ALL[0]().name);
     }
 
+    /// Pressing Enter on the already-selected theme still round-trips through
+    /// the daemon (no short-circuit on "no change"), so the persisted config
+    /// reflects the current theme.
     #[test]
     fn picker_enter_persists_even_with_no_change() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
-        // Open at the current (default) theme and confirm without moving.
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+
+        let mut e = engine_on_isolated_daemon();
+        let first = crate::theme::Theme::ALL[0]().name;
         e.app.theme = crate::theme::Theme::ALL[0]();
-        e.config.theme = crate::theme::Theme::ALL[0]().name.to_string();
         e.app.modal = Modal::ThemePicker {
             selected: 0,
             original: 0,
@@ -1466,8 +1135,7 @@ mod tests {
         e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
-        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
-        assert_eq!(saved.theme, crate::theme::Theme::ALL[0]().name);
+        assert_eq!(e.client.get_config().unwrap().theme, first);
     }
 
     #[test]
@@ -1509,10 +1177,14 @@ mod tests {
     }
 
     #[test]
-    fn agent_picker_enter_persists_default_to_config_file() {
+    fn agent_picker_enter_persists_default_via_daemon() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+
+        let mut e = engine_on_isolated_daemon();
         e.app.modal = Modal::AgentPicker {
             selected: Agent::Copilot.index(),
         };
@@ -1520,7 +1192,7 @@ mod tests {
             .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.config.default_agent, "copilot");
-        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
+        let saved = e.client.get_config().unwrap();
         assert_eq!(saved.default_agent, "copilot");
         assert_eq!(saved.default_agent().index(), Agent::Copilot.index());
     }
@@ -1540,10 +1212,8 @@ mod tests {
 
     #[test]
     fn space_toggles_background_field_in_form() {
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         e.on_key(key('c')).unwrap();
-        // Walk to the Background field via Tab (Title→Desc→Prompt→Agent→Background).
         for _ in 0..4 {
             e.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
                 .unwrap();
@@ -1552,7 +1222,6 @@ mod tests {
             Modal::Form(f) => assert_eq!(f.field, FormField::Background),
             other => panic!("expected form, got {other:?}"),
         }
-        // Space flips it off.
         e.on_key(key(' ')).unwrap();
         match &e.app.modal {
             Modal::Form(f) => assert!(!f.start_in_background),
@@ -1564,11 +1233,11 @@ mod tests {
     #[test]
     fn e_opens_edit_form() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let t =
-            e.db.create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
-                .unwrap();
-        e.reload().unwrap();
-
+        let t = e
+            .client
+            .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        e.refresh_from_client().unwrap();
         e.on_key(key('e')).unwrap();
         match &e.app.modal {
             Modal::Form(form) => assert_eq!(form.editing_id, Some(t.id)),
@@ -1585,7 +1254,6 @@ mod tests {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         e.on_key(key('/')).unwrap();
         assert!(e.app.search.editing, "/ starts search editing");
-        // 'q' is captured as query text, not treated as quit.
         e.on_key(key('q')).unwrap();
         assert!(
             !e.app.should_quit,
@@ -1612,7 +1280,6 @@ mod tests {
     #[test]
     fn esc_clears_query_while_editing_then_clears_filter_when_applied() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        // While editing, Esc clears the query and exits search.
         e.on_key(key('/')).unwrap();
         for c in "log".chars() {
             e.on_key(key(c)).unwrap();
@@ -1621,7 +1288,6 @@ mod tests {
         assert!(!e.app.search.editing);
         assert!(e.app.search.query.is_empty());
 
-        // Apply and commit a filter, then Esc on the board clears it.
         e.on_key(key('/')).unwrap();
         e.on_key(key('x')).unwrap();
         e.on_key(enter()).unwrap();
@@ -1630,27 +1296,6 @@ mod tests {
         assert!(
             e.app.search.query.is_empty(),
             "Esc clears the applied filter"
-        );
-    }
-
-    #[test]
-    fn filter_does_not_stop_detection() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let id = in_progress_ticket(&mut e); // title "t", In Progress, has a session
-                                             // Apply a filter that hides the in-progress card.
-        e.app.search.query = "zzz".into();
-        assert!(
-            e.app.column_tickets(Status::InProgress).is_empty(),
-            "the filter hides the in-progress card"
-        );
-        // Detection still sees the hidden ticket and auto-moves it on idle.
-        e.detect_tick_with(&levels(id, SignalLevel::Active))
-            .unwrap();
-        e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
-        assert_eq!(
-            e.db.get_ticket(id).unwrap().unwrap().status,
-            Status::Review,
-            "a hidden ticket is still auto-moved to Needs attention"
         );
     }
 
@@ -1672,75 +1317,31 @@ mod tests {
         assert_eq!(e.on_key(key('u')).unwrap(), Effect::None);
     }
 
-    /// With no existing main session, `main_session_effect` starts one: a
-    /// RunSession carrying the project's main-session name and a real layout.
+    /// `s` asks the daemon for the project's main session and attaches to the
+    /// returned name. The daemon needs zellij to actually start one, so it is
+    /// ignored by default.
     #[test]
-    fn main_session_effect_creates_when_absent() {
+    #[ignore = "requires zellij in the daemon to start the main session"]
+    fn s_targets_the_main_session() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let name = slug::main_session_name(e.app.project.id);
-        match e
-            .main_session_effect(Some("kamaji-9-other [Created]\n"))
-            .unwrap()
-        {
-            Effect::RunSession {
-                name: n,
-                layout_path,
-            } => {
-                assert_eq!(n, name);
-                assert!(layout_path.exists());
-            }
-            other => panic!("expected RunSession, got {other:?}"),
+        match e.on_key(key('s')).unwrap() {
+            Effect::Attach { name } => assert!(!name.is_empty()),
+            other => panic!("expected Attach, got {other:?}"),
         }
     }
 
-    /// When the main session already exists in zellij, `s` attaches to it
-    /// instead of creating a duplicate.
-    #[test]
-    fn main_session_effect_attaches_when_present() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let name = slug::main_session_name(e.app.project.id);
-        let list = format!("{name} [Created 1m ago]\n");
-        assert_eq!(
-            e.main_session_effect(Some(&list)).unwrap(),
-            Effect::Attach { name }
-        );
-    }
-
-    /// If zellij can't be queried (None), fall back to starting a session rather
-    /// than wrongly attaching to one that may not exist.
-    #[test]
-    fn main_session_effect_creates_when_zellij_unavailable() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        assert!(matches!(
-            e.main_session_effect(None).unwrap(),
-            Effect::RunSession { .. }
-        ));
-    }
-
-    /// `s` on the board targets the project's main session regardless of whether
-    /// zellij reports it as already running (attach) or not (start).
-    #[test]
-    fn s_targets_the_main_session() {
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        let name = slug::main_session_name(e.app.project.id);
-        let got = match e.on_key(key('s')).unwrap() {
-            Effect::RunSession { name, .. } => name,
-            Effect::Attach { name } => name,
-            other => panic!("expected a main-session effect, got {other:?}"),
-        };
-        assert_eq!(got, name);
-    }
-
-    /// Three Todo tickets with the cursor on the first; returns their ids.
+    /// Three Todo tickets created via the daemon with the cursor on the first;
+    /// returns their ids.
     fn three_todo(e: &mut Engine) -> Vec<i64> {
         let ids: Vec<i64> = (0..3)
             .map(|i| {
-                e.db.create_ticket(e.app.project.id, &format!("t{i}"), "", None, Agent::Claude)
+                e.client
+                    .create_ticket(e.app.project.id, &format!("t{i}"), "", None, Agent::Claude)
                     .unwrap()
                     .id
             })
             .collect();
-        e.reload().unwrap();
+        e.refresh_from_client().unwrap();
         ids
     }
 
@@ -1764,7 +1365,6 @@ mod tests {
     fn shift_d_with_selection_opens_confirm_done_with_all_ids() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         let ids = three_todo(&mut e);
-        // Select the first two cards.
         e.on_key(key(' ')).unwrap();
         e.on_key(key('j')).unwrap();
         e.on_key(key(' ')).unwrap();
@@ -1800,16 +1400,10 @@ mod tests {
         e.app.selected_ids.insert(ids[0]);
         e.app.selected_ids.insert(ids[1]);
         e.on_key(key('y')).unwrap();
+        assert_eq!(e.client.get_ticket(ids[0]).unwrap().status, Status::Done);
+        assert_eq!(e.client.get_ticket(ids[1]).unwrap().status, Status::Done);
         assert_eq!(
-            e.db.get_ticket(ids[0]).unwrap().unwrap().status,
-            Status::Done
-        );
-        assert_eq!(
-            e.db.get_ticket(ids[1]).unwrap().unwrap().status,
-            Status::Done
-        );
-        assert_eq!(
-            e.db.get_ticket(ids[2]).unwrap().unwrap().status,
+            e.client.get_ticket(ids[2]).unwrap().status,
             Status::Todo,
             "an unselected ticket is untouched"
         );
@@ -1828,10 +1422,7 @@ mod tests {
         };
         e.app.selected_ids.insert(ids[0]);
         e.on_key(key('n')).unwrap();
-        assert_eq!(
-            e.db.get_ticket(ids[0]).unwrap().unwrap().status,
-            Status::Done
-        );
+        assert_eq!(e.client.get_ticket(ids[0]).unwrap().status, Status::Done);
         assert!(e.app.selected_ids.is_empty());
     }
 
@@ -1845,7 +1436,7 @@ mod tests {
         e.app.selected_ids.insert(ids[0]);
         e.on_key(esc()).unwrap();
         assert_eq!(
-            e.db.get_ticket(ids[0]).unwrap().unwrap().status,
+            e.client.get_ticket(ids[0]).unwrap().status,
             Status::Todo,
             "Esc leaves the ticket open"
         );
@@ -1856,11 +1447,24 @@ mod tests {
     }
 
     #[test]
+    fn confirm_delete_yes_removes_ticket() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let ids = three_todo(&mut e);
+        e.app.modal = Modal::ConfirmDelete { ticket_id: ids[0] };
+        e.on_key(key('y')).unwrap();
+        assert!(matches!(
+            e.client.get_ticket(ids[0]),
+            Err(crate::client::ClientError::NotFound)
+        ));
+        assert_eq!(e.app.tickets.len(), 2);
+    }
+
+    #[test]
     fn esc_clears_selection_before_clearing_search() {
         let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
         three_todo(&mut e);
         e.app.search.query = "t".into();
-        e.on_key(key(' ')).unwrap(); // select focused card
+        e.on_key(key(' ')).unwrap();
         assert!(!e.app.selected_ids.is_empty());
         e.on_key(esc()).unwrap();
         assert!(
@@ -1897,47 +1501,19 @@ mod tests {
         }
     }
 
-    /// Starting a session with no worktree location configured must not fail or
-    /// create anything: it opens the selector and leaves the card in Todo.
+    /// Confirming an existing directory in the selector persists it through the
+    /// daemon and closes the modal.
     #[test]
-    fn enter_without_worktree_location_opens_picker() {
+    fn worktree_picker_enter_saves_existing_dir_via_daemon() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        init_repo(&root);
-        let mut e = engine_with_project(root);
-        // worktree_base stays None (the default).
-        assert!(e.config.worktree_base.is_none());
-        let t =
-            e.db.create_ticket(e.app.project.id, "Add login", "", Some("go"), Agent::Claude)
-                .unwrap();
-        e.reload().unwrap();
-
-        let effect = e.on_key(enter()).unwrap();
-        assert_eq!(effect, Effect::None, "no session is started");
-        assert!(matches!(e.app.modal, Modal::WorktreeLocation(_)));
-        assert_eq!(
-            e.db.get_ticket(t.id).unwrap().unwrap().status,
-            Status::Todo,
-            "the card stays in Todo"
-        );
-        let msg = e
-            .app
-            .status_message
-            .as_ref()
-            .expect("an info toast is shown");
-        assert_eq!(msg.kind, crate::app::StatusKind::Info);
-    }
-
-    /// Confirming an existing directory in the selector saves it to the config
-    /// file and closes the modal.
-    #[test]
-    fn worktree_picker_enter_saves_existing_dir_to_config() {
-        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
         let target = dir.path().join("worktrees");
         std::fs::create_dir(&target).unwrap();
 
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
+        let mut e = engine_on_isolated_daemon();
         e.on_key(key('w')).unwrap();
         for c in target.to_string_lossy().chars() {
             e.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
@@ -1950,7 +1526,7 @@ mod tests {
             e.config.worktree_base,
             Some(target.to_string_lossy().to_string())
         );
-        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
+        let saved = e.client.get_config().unwrap();
         assert_eq!(saved.worktree_base, e.config.worktree_base);
     }
 
@@ -1958,30 +1534,33 @@ mod tests {
     /// create-confirm prompt instead.
     #[test]
     fn worktree_picker_missing_dir_arms_confirm_before_saving() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
         let target = dir.path().join("does-not-exist-yet");
 
-        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
-        e.config_path = dir.path().join("config.toml");
+        let mut e = engine_on_isolated_daemon();
         e.on_key(key('w')).unwrap();
         for c in target.to_string_lossy().chars() {
             e.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
                 .unwrap();
         }
-        // First Enter arms the confirmation; nothing is saved yet.
         e.on_key(enter()).unwrap();
         assert!(e.config.worktree_base.is_none(), "not saved before confirm");
         match &e.app.modal {
             Modal::WorktreeLocation(form) => assert!(form.dir.pending_create.is_some()),
             other => panic!("expected WorktreeLocation, got {other:?}"),
         }
-        // Second Enter creates the directory and saves.
         e.on_key(enter()).unwrap();
         assert!(target.is_dir(), "directory is created on confirm");
         assert_eq!(
             e.config.worktree_base,
             Some(target.to_string_lossy().to_string())
         );
+        let saved = e.client.get_config().unwrap();
+        assert_eq!(saved.worktree_base, e.config.worktree_base);
         assert!(matches!(e.app.modal, Modal::None));
     }
 

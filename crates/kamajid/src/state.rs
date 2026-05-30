@@ -8,6 +8,7 @@ use kamaji_core::config::Config;
 use kamaji_core::db::Db;
 use kamaji_core::events::Event;
 use tokio::sync::broadcast;
+use tokio::sync::RwLock as TokioRwLock;
 
 use crate::error::ApiError;
 use crate::zellij_web::ZellijWeb;
@@ -19,7 +20,7 @@ const EVENT_CHANNEL_CAPACITY: usize = 64;
 #[derive(Clone)]
 pub struct AppState {
     db: Arc<Mutex<Db>>,
-    pub config: Arc<Config>,
+    pub config: Arc<TokioRwLock<Config>>,
     pub tx: broadcast::Sender<Event>,
     state_dir: Arc<PathBuf>,
     zellij_web: Arc<ZellijWeb>,
@@ -30,11 +31,26 @@ impl AppState {
         let (tx, _rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         AppState {
             db: Arc::new(Mutex::new(db)),
-            config: Arc::new(config),
+            config: Arc::new(TokioRwLock::new(config)),
             tx,
             state_dir: Arc::new(kamaji_core::detect::default_state_dir()),
             zellij_web: Arc::new(ZellijWeb::new()),
         }
+    }
+
+    /// A cloned snapshot of the current config. Cheap; taken per request/round
+    /// so a PATCH is observed on the next read. Uses `blocking_read`, so it must
+    /// only be called from a blocking thread (e.g. inside `spawn_blocking`),
+    /// never on an async runtime worker — use [`AppState::config_async`] there.
+    pub fn config_snapshot(&self) -> Config {
+        self.config.blocking_read().clone()
+    }
+
+    /// A cloned snapshot of the current config, awaited on the async runtime.
+    /// Use this from async route bodies; use [`AppState::config_snapshot`] only
+    /// inside `spawn_blocking` closures.
+    pub async fn config_async(&self) -> Config {
+        self.config.read().await.clone()
     }
 
     /// Override the per-session idle-marker directory. Call before sharing the

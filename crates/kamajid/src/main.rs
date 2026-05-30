@@ -18,6 +18,12 @@ fn db_path() -> Result<PathBuf> {
         .join("kamaji.db"))
 }
 
+fn runtime_paths() -> Result<(PathBuf, PathBuf)> {
+    let dir = paths::runtime_dir().context("cannot determine runtime dir")?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    Ok((dir.join("kamajid.pid"), dir.join("kamajid.addr")))
+}
+
 /// Minimal arg parse: `kamajid serve [--bind ADDR]`, plus `--help`/`--version`.
 /// Other daemon settings come from the `[daemon]` config section.
 struct Args {
@@ -71,11 +77,27 @@ async fn main() -> Result<()> {
     let bind = args.bind.unwrap_or_else(|| config.daemon.bind.clone());
     let db = Db::open(&db_path()?)?;
     let state = AppState::new(db, config);
-    kamajid::poll_task::spawn_poll_task(state.clone(), state.config.poll_interval());
+    let poll_interval = state.config_async().await.poll_interval();
+    kamajid::poll_task::spawn_poll_task(state.clone(), poll_interval);
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .with_context(|| format!("binding {bind}"))?;
     tracing::info!(%bind, "kamajid listening");
-    kamajid::serve(listener, state).await
+
+    let local = listener
+        .local_addr()
+        .with_context(|| "reading bound address")?;
+    let (pidfile, addrfile) = runtime_paths()?;
+    std::fs::write(&pidfile, std::process::id().to_string())
+        .with_context(|| format!("writing {}", pidfile.display()))?;
+    std::fs::write(&addrfile, local.to_string())
+        .with_context(|| format!("writing {}", addrfile.display()))?;
+    tracing::info!(%local, pid = std::process::id(), "wrote pid/addr files");
+
+    let cleanup = (pidfile.clone(), addrfile.clone());
+    let result = kamajid::serve(listener, state).await;
+    let _ = std::fs::remove_file(&cleanup.0);
+    let _ = std::fs::remove_file(&cleanup.1);
+    result
 }

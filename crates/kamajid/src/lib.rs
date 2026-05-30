@@ -19,12 +19,19 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(routes::healthz::healthz))
         .route("/events", get(routes::events::events))
-        .route("/config", get(routes::config::get_config))
+        .route(
+            "/config",
+            get(routes::config::get_config).patch(routes::config::patch_config),
+        )
         .route(
             "/projects",
             get(routes::projects::list).post(routes::projects::create),
         )
         .route("/projects/:id", get(routes::projects::get_one))
+        .route(
+            "/projects/:id/main-session",
+            axum::routing::post(routes::projects::main_session),
+        )
         .route(
             "/projects/:id/tickets",
             get(routes::tickets::list_for_project),

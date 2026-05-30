@@ -32,6 +32,32 @@ pub fn cache_dir() -> Option<PathBuf> {
     base_dir(BaseKind::Cache)
 }
 
+/// `<runtime>/kamaji` for ephemeral runtime files (pidfile, addr). Uses
+/// `$XDG_RUNTIME_DIR` when set to an absolute path, otherwise falls back to
+/// `cache_dir()`. The `kamaji` leaf is appended to an `$XDG_RUNTIME_DIR` base;
+/// the cache fallback already carries it.
+#[cfg(not(windows))]
+pub fn runtime_dir() -> Option<PathBuf> {
+    resolve_runtime(std::env::var_os("XDG_RUNTIME_DIR").as_deref(), cache_dir())
+}
+
+#[cfg(windows)]
+pub fn runtime_dir() -> Option<PathBuf> {
+    cache_dir()
+}
+
+#[cfg(not(windows))]
+fn resolve_runtime(
+    xdg_runtime: Option<&std::ffi::OsStr>,
+    cache: Option<PathBuf>,
+) -> Option<PathBuf> {
+    xdg_runtime
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join(APP))
+        .or(cache)
+}
+
 /// Which of the three base directories to resolve.
 #[derive(Clone, Copy)]
 enum BaseKind {
@@ -131,5 +157,29 @@ mod tests {
     #[test]
     fn none_when_home_is_empty() {
         assert_eq!(resolve_xdg(None, Some(OsStr::new("")), ".config"), None);
+    }
+
+    #[test]
+    fn runtime_dir_prefers_xdg_runtime_dir() {
+        let got = resolve_runtime(
+            Some(OsStr::new("/run/user/1000")),
+            Some(PathBuf::from("/home/u/.cache/kamaji")),
+        );
+        assert_eq!(got, Some(PathBuf::from("/run/user/1000/kamaji")));
+    }
+
+    #[test]
+    fn runtime_dir_falls_back_to_cache_when_no_xdg_runtime() {
+        let got = resolve_runtime(None, Some(PathBuf::from("/home/u/.cache/kamaji")));
+        assert_eq!(got, Some(PathBuf::from("/home/u/.cache/kamaji")));
+    }
+
+    #[test]
+    fn runtime_dir_relative_xdg_runtime_is_ignored() {
+        let got = resolve_runtime(
+            Some(OsStr::new("rel/run")),
+            Some(PathBuf::from("/home/u/.cache/kamaji")),
+        );
+        assert_eq!(got, Some(PathBuf::from("/home/u/.cache/kamaji")));
     }
 }

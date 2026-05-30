@@ -50,12 +50,100 @@ impl Event {
             Event::SessionExited { .. } => "session.exited",
         }
     }
+
+    /// Reconstruct an `Event` from the daemon's SSE framing: the dotted `event:`
+    /// name plus the bare `data:` payload (the inner `data` of the tagged enum,
+    /// with no `type` envelope). The inverse of [`Self::sse_name`] + the daemon's
+    /// `payload_json`. Returns `None` for an unknown name or a payload that does
+    /// not match the named variant.
+    pub fn from_sse(name: &str, data: &str) -> Option<Event> {
+        let inner: serde_json::Value = serde_json::from_str(data).ok()?;
+        // Rebuild the tagged `{ "type": <snake>, "data": <inner> }` shape and
+        // deserialize through the canonical enum so framing stays defined once.
+        let tag = match name {
+            "ticket.created" => "ticket_created",
+            "ticket.updated" => "ticket_updated",
+            "ticket.moved" => "ticket_moved",
+            "ticket.deleted" => "ticket_deleted",
+            "session.started" => "session_started",
+            "session.idle" => "session_idle",
+            "session.exited" => "session_exited",
+            _ => return None,
+        };
+        let tagged = serde_json::json!({ "type": tag, "data": inner });
+        serde_json::from_value(tagged).ok()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Status;
+    use crate::models::{Agent, Status};
+
+    /// Mirror of kamajid's routes/events.rs::payload_json — the SSE `data:` payload.
+    fn payload_json(event: &Event) -> String {
+        let full = serde_json::to_value(event).unwrap();
+        let data = full.get("data").cloned().unwrap_or(serde_json::Value::Null);
+        serde_json::to_string(&data).unwrap()
+    }
+
+    fn sample_events() -> Vec<Event> {
+        let t = crate::models::Ticket {
+            id: 1,
+            project_id: 1,
+            title: "t".into(),
+            description: String::new(),
+            initial_prompt: None,
+            agent: Agent::Claude,
+            status: Status::Todo,
+            position: 0,
+            session_name: None,
+            worktree_path: None,
+            branch: None,
+            auto_reviewed: false,
+            instrumented: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        vec![
+            Event::TicketCreated(t.clone()),
+            Event::TicketUpdated(t),
+            Event::TicketMoved {
+                id: 5,
+                from: Status::InProgress,
+                to: Status::Review,
+                at: "2026-05-30T10:23:45Z".into(),
+            },
+            Event::TicketDeleted { id: 7 },
+            Event::SessionStarted {
+                ticket_id: 3,
+                session_name: "kamaji-3-x".into(),
+            },
+            Event::SessionIdle { ticket_id: 3 },
+            Event::SessionExited {
+                ticket_id: 3,
+                session_name: "kamaji-3-x".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn from_sse_round_trips_daemon_framing_for_every_variant() {
+        for ev in sample_events() {
+            let name = ev.sse_name();
+            let data = payload_json(&ev);
+            let back =
+                Event::from_sse(name, &data).expect("from_sse should decode the daemon frame");
+            assert_eq!(back.sse_name(), name, "variant changed for {name}");
+            // The payload must also round-trip identically.
+            assert_eq!(payload_json(&back), data, "payload differs for {name}");
+        }
+    }
+
+    #[test]
+    fn from_sse_rejects_unknown_event_name() {
+        assert!(Event::from_sse("nope.unknown", "{}").is_none());
+    }
 
     #[test]
     fn ticket_moved_serializes_with_tag_and_data() {

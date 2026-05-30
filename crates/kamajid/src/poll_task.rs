@@ -90,7 +90,7 @@ pub async fn poll_round(state: &AppState, poll: PollLoop, state_dir: &Path) -> P
             // dragged back when its agent resumes. (last_level/scrape_hash are NOT
             // touched by rehydrate, so detection history persists across rounds.)
             poll.rehydrate(&tickets);
-            match poll.tick(&tickets, &db, &task_state.config, &state_dir) {
+            match poll.tick(&tickets, &db, &task_state.config_snapshot(), &state_dir) {
                 Ok(events) => events,
                 Err(e) => {
                     tracing::warn!(error = %e, "poll: tick failed");
