@@ -3,7 +3,7 @@
 //! no transport. Both the existing TUI binary and the upcoming `kamajid`
 //! daemon depend on this crate.
 //!
-//! Modules are added incrementally as Phase 0 extracts them from the binary;
+//! Extracted from the binary crate in Phase 0;
 //! see `docs/superpowers/plans/2026-05-27-phase-0-extract-kamaji-core.md`.
 
 pub mod agent;
