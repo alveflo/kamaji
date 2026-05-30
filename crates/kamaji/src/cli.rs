@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use crate::client::{ClientError, DaemonClient};
 use kamaji_core::config::Config;
-use kamaji_core::models::{Agent, Project};
+use kamaji_core::models::{Agent, Project, Ticket};
 
 const USAGE: &str = "\
 Usage:
@@ -284,24 +284,38 @@ fn select_project(client: &DaemonClient, selector: &str) -> Result<Project> {
 }
 
 fn infer_project(client: &DaemonClient, cwd: &Path) -> Result<Project> {
-    let cwd = normalize_path(cwd);
     let projects = client.list_projects().map_err(|e| anyhow!("{e:?}"))?;
-    if projects.is_empty() {
+    let mut candidates: Vec<(Project, Vec<Ticket>)> = Vec::with_capacity(projects.len());
+    for p in projects {
+        let tickets = client.list_tickets(p.id).map_err(|e| anyhow!("{e:?}"))?;
+        candidates.push((p, tickets));
+    }
+    pick_project(&candidates, cwd)
+}
+
+/// Pure project-inference logic; no network I/O. `candidates` is a list of
+/// `(project, its tickets)` pairs. Rules (in priority order):
+///   1. Any project whose `root_dir` or whose ticket's `worktree_path` is a
+///      prefix of `cwd` is a match, scored by the number of path components
+///      (longer prefix wins).
+///   2. Ties at the same score but different projects → ambiguous error.
+///   3. No path match + exactly one project → return that project.
+///   4. No path match + multiple projects → "could not infer" error.
+fn pick_project(candidates: &[(Project, Vec<Ticket>)], cwd: &Path) -> Result<Project> {
+    let cwd = normalize_path(cwd);
+    if candidates.is_empty() {
         bail!("no kamaji projects exist; create one in the TUI first");
     }
 
-    let mut matches = Vec::new();
-    for project in &projects {
+    let mut matches: Vec<(usize, Project)> = Vec::new();
+    for (project, tickets) in candidates {
         let root = normalize_path(&project.root_dir);
         if cwd.starts_with(&root) {
             matches.push((root.components().count(), project.clone()));
         }
-        for ticket in client
-            .list_tickets(project.id)
-            .map_err(|e| anyhow!("{e:?}"))?
-        {
-            if let Some(worktree) = ticket.worktree_path {
-                let worktree = normalize_path(&worktree);
+        for ticket in tickets {
+            if let Some(worktree) = &ticket.worktree_path {
+                let worktree = normalize_path(worktree);
                 if cwd.starts_with(&worktree) {
                     matches.push((worktree.components().count(), project.clone()));
                 }
@@ -320,13 +334,13 @@ fn infer_project(client: &DaemonClient, cwd: &Path) -> Result<Project> {
         return Ok(project.clone());
     }
 
-    if projects.len() == 1 {
-        return Ok(projects[0].clone());
+    if candidates.len() == 1 {
+        return Ok(candidates[0].0.clone());
     }
 
-    let names = projects
+    let names = candidates
         .iter()
-        .map(|p| format!("{} ({})", p.id, p.name))
+        .map(|(p, _)| format!("{} ({})", p.id, p.name))
         .collect::<Vec<_>>()
         .join(", ");
     bail!(
@@ -604,6 +618,139 @@ mod tests {
         std::fs::write(root.join("f"), "x").unwrap();
         run(&["add", "."]);
         run(&["commit", "-m", "i"]);
+    }
+
+    // ── pure pick_project tests (no daemon, no network) ──────────────────────
+
+    fn sample_project(id: i64, name: &str, root: &Path) -> Project {
+        Project {
+            id,
+            name: name.to_string(),
+            root_dir: root.to_path_buf(),
+            default_agent: None,
+            created_at: "2026-05-30T00:00:00Z".to_string(),
+        }
+    }
+
+    fn sample_ticket(id: i64, project_id: i64, worktree_path: Option<PathBuf>) -> Ticket {
+        Ticket {
+            id,
+            project_id,
+            title: "sample".to_string(),
+            description: String::new(),
+            initial_prompt: None,
+            agent: Agent::Claude,
+            status: kamaji_core::models::Status::InProgress,
+            position: 0,
+            session_name: None,
+            worktree_path,
+            branch: None,
+            auto_reviewed: false,
+            instrumented: false,
+            created_at: "2026-05-30T00:00:00Z".to_string(),
+            updated_at: "2026-05-30T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn pick_project_empty_candidates_errors() {
+        let err = pick_project(&[], Path::new("/some/dir"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no kamaji projects exist"), "{err}");
+    }
+
+    #[test]
+    fn pick_project_single_project_fallback() {
+        // cwd nowhere near the root → single-project fallback kicks in.
+        let dir = tempfile::tempdir().unwrap();
+        let p = sample_project(1, "solo", &dir.path().join("root"));
+        let candidates = vec![(p.clone(), vec![])];
+        let elsewhere = tempfile::tempdir().unwrap();
+        let got = pick_project(&candidates, elsewhere.path()).unwrap();
+        assert_eq!(got.id, p.id);
+    }
+
+    #[test]
+    fn pick_project_matches_root_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = sample_project(1, "myproject", dir.path());
+        let candidates = vec![(p.clone(), vec![])];
+        // cwd is a subdirectory of the project root.
+        let sub = dir.path().join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        let got = pick_project(&candidates, &sub).unwrap();
+        assert_eq!(got.id, p.id);
+    }
+
+    #[test]
+    fn pick_project_matches_worktree_path() {
+        // Two projects, cwd is inside project B's ticket worktree.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let worktree_dir = tempfile::tempdir().unwrap();
+
+        let pa = sample_project(1, "alpha", dir_a.path());
+        let pb = sample_project(2, "beta", dir_b.path());
+
+        let ticket = sample_ticket(10, pb.id, Some(worktree_dir.path().to_path_buf()));
+
+        // cwd is a subdirectory inside the worktree.
+        let cwd = worktree_dir.path().join("subdir");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let candidates = vec![(pa, vec![]), (pb.clone(), vec![ticket])];
+        let got = pick_project(&candidates, &cwd).unwrap();
+        assert_eq!(got.id, pb.id, "should infer beta via worktree_path");
+    }
+
+    #[test]
+    fn pick_project_worktree_beats_shorter_root() {
+        // project root is /tmp/proj, worktree is /tmp/proj/worktrees/feat.
+        // cwd inside the worktree should prefer the worktree match (more components).
+        let proj_dir = tempfile::tempdir().unwrap();
+        let worktree_dir = proj_dir.path().join("worktrees").join("feat");
+        std::fs::create_dir_all(&worktree_dir).unwrap();
+
+        let p = sample_project(1, "myproject", proj_dir.path());
+        let ticket = sample_ticket(1, p.id, Some(worktree_dir.clone()));
+        // Even though there's only one project, both branches are covered.
+        let candidates = vec![(p.clone(), vec![ticket])];
+        let got = pick_project(&candidates, &worktree_dir).unwrap();
+        assert_eq!(got.id, p.id);
+    }
+
+    #[test]
+    fn pick_project_ambiguous_same_score_errors() {
+        // Two projects whose roots both contain cwd (e.g. nested roots at same depth).
+        // We simulate same-score ambiguity by using the exact same directory for both roots.
+        let dir = tempfile::tempdir().unwrap();
+        let pa = sample_project(1, "alpha", dir.path());
+        let pb = sample_project(2, "beta", dir.path());
+        let candidates = vec![(pa, vec![]), (pb, vec![])];
+        let err = pick_project(&candidates, dir.path())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("matches multiple projects"),
+            "expected ambiguity error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn pick_project_no_match_multiple_projects_errors() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let pa = sample_project(1, "alpha", a.path());
+        let pb = sample_project(2, "beta", b.path());
+        let candidates = vec![(pa, vec![]), (pb, vec![])];
+        let err = pick_project(&candidates, elsewhere.path())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("could not infer project"), "{err}");
+        assert!(err.contains("alpha"), "{err}");
+        assert!(err.contains("beta"), "{err}");
     }
 
     /// Needs a real git repo + zellij on PATH (the daemon spawns the detached
