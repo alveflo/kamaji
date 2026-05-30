@@ -575,6 +575,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "directories",
+ "kamaji-core",
  "ratatui",
  "rusqlite",
  "serde",
@@ -584,6 +585,18 @@ dependencies = [
  "toml",
  "ureq",
  "zip",
+]
+
+[[package]]
+name = "kamaji-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
