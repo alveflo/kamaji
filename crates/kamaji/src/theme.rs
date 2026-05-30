@@ -1,6 +1,6 @@
 use ratatui::style::Color;
 
-use crate::models::Status;
+use kamaji_core::models::Status;
 
 /// The out-of-box default theme; also the fallback for unknown names.
 const DEFAULT_THEME: &str = "catppuccin";

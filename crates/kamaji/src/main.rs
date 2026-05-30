@@ -1,23 +1,11 @@
-mod agent;
 mod app;
 mod cli;
-mod config;
-mod db;
-mod detect;
 mod dir_select;
 mod engine;
-mod git;
-mod layout;
-mod models;
-mod paths;
 mod picker;
-mod session;
-mod slug;
 mod theme;
 mod ui;
 mod update;
-mod zellij;
-mod zellij_config;
 
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
@@ -28,8 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use app::App;
-use db::Db;
 use engine::{Effect, Engine};
+use kamaji_core::db::Db;
+use kamaji_core::{config, detect, models, paths, zellij};
 
 fn db_path() -> Result<PathBuf> {
     Ok(paths::data_dir()

@@ -2,10 +2,10 @@ use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use crate::config::Config;
-use crate::db::Db;
-use crate::models::{Agent, Project};
-use crate::session;
+use kamaji_core::config::Config;
+use kamaji_core::db::Db;
+use kamaji_core::models::{Agent, Project};
+use kamaji_core::session;
 
 const USAGE: &str = "\
 Usage:
@@ -520,7 +520,7 @@ mod tests {
 
         let project = db.list_projects().unwrap().remove(0);
         let ticket = db.list_tickets(project.id).unwrap().remove(0);
-        assert_eq!(ticket.status, crate::models::Status::InProgress);
+        assert_eq!(ticket.status, kamaji_core::models::Status::InProgress);
         assert_eq!(ticket.session_name.as_deref(), Some(spec.name.as_str()));
         assert_eq!(spec.ticket_id, ticket.id);
 
@@ -558,7 +558,7 @@ mod tests {
 
         let project = db.list_projects().unwrap().remove(0);
         let ticket = db.list_tickets(project.id).unwrap().remove(0);
-        assert_eq!(ticket.status, crate::models::Status::Todo);
+        assert_eq!(ticket.status, kamaji_core::models::Status::Todo);
         assert!(ticket.session_name.is_none());
     }
 }

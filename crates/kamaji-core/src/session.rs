@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::Config;
-use crate::db::Db;
 use crate::models::{Agent, Project, Status, Ticket};
-use crate::{agent, detect, git, layout, slug, zellij_config};
+use crate::{agent, db::Db, detect};
+use crate::{git, layout, slug, zellij_config};
 
 /// Everything needed to launch a session, produced by `prepare_session` before
 /// any DB session/status columns are written.

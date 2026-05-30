@@ -130,7 +130,7 @@ const RELEASES_API: &str = "https://api.github.com/repos/alveflo/kamaji/releases
 
 /// On-disk cache path: `<cache_dir>/update-check.json`.
 pub fn cache_path() -> Option<PathBuf> {
-    Some(crate::paths::cache_dir()?.join("update-check.json"))
+    Some(kamaji_core::paths::cache_dir()?.join("update-check.json"))
 }
 
 /// GET the latest release tag from the GitHub API. GitHub rejects requests
