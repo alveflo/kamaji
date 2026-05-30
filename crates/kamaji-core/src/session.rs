@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::config::Config;
 use crate::models::{Agent, Project, Status, Ticket};
 use crate::{agent, db::Db, detect};
-use crate::{git, layout, slug, zellij_config};
+use crate::{git, layout, slug, zellij, zellij_config};
 
 /// Everything needed to launch a session, produced by `prepare_session` before
 /// any DB session/status columns are written.
@@ -130,6 +130,28 @@ pub fn commit_session(db: &Db, ticket_id: i64, p: &Prepared) -> Result<()> {
     Ok(())
 }
 
+/// Tear down a ticket's session: kill the zellij session, remove its worktree
+/// and branch, delete the idle marker, and clear the ticket's session columns.
+/// Best-effort on the external steps (a session/worktree may already be gone);
+/// only the DB clear is required to succeed. Mirrors the TUI's
+/// `Engine::cleanup_ticket` so the daemon and TUI tear down identically.
+pub fn cleanup_ticket(db: &Db, root_dir: &Path, state_dir: &Path, ticket_id: i64) -> Result<()> {
+    if let Some(t) = db.get_ticket(ticket_id)? {
+        if let Some(name) = &t.session_name {
+            zellij::terminate_session(name);
+            let _ = std::fs::remove_file(detect::marker_path(state_dir, name));
+        }
+        if let Some(wt) = &t.worktree_path {
+            let _ = git::remove_worktree(root_dir, wt);
+        }
+        if let Some(b) = &t.branch {
+            let _ = git::delete_branch(root_dir, b);
+        }
+        db.clear_ticket_session(ticket_id)?;
+    }
+    Ok(())
+}
+
 /// Write a rendered layout to a uniquely-named temp file and return its path.
 fn layout_file(name: &str, contents: &str) -> Result<PathBuf> {
     static LAYOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -207,5 +229,72 @@ mod tests {
             &Config::default()
         )
         .is_ok());
+    }
+
+    /// cleanup_ticket removes the worktree + branch and clears the ticket's
+    /// session columns. Uses a real temp git repo (git is available in tests).
+    #[test]
+    fn cleanup_ticket_removes_worktree_and_clears_session() {
+        // A committed git repo so `worktree add` has a base.
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        let run = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "t@t.t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(root.join("README.md"), "hi").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
+
+        let worktree = repo.path().join("..").join("kamaji-wt-cleanup");
+        let _ = crate::git::remove_worktree(root, &worktree); // ignore if absent
+        crate::git::add_worktree(root, &worktree, "kamaji-1-x", "main").unwrap();
+        assert!(worktree.exists());
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let marker = crate::detect::marker_path(state_dir.path(), "kamaji-1-x");
+        std::fs::write(&marker, "").unwrap();
+
+        let db = Db::open_in_memory().unwrap();
+        let p = db.create_project("p", root, None).unwrap();
+        let t = db
+            .create_ticket(p.id, "x", "", None, Agent::Claude)
+            .unwrap();
+        db.set_ticket_session(
+            t.id,
+            "kamaji-1-x",
+            &worktree.to_string_lossy(),
+            "kamaji-1-x",
+        )
+        .unwrap();
+
+        cleanup_ticket(&db, root, state_dir.path(), t.id).unwrap();
+
+        assert!(!worktree.exists(), "worktree should be removed");
+        assert!(!marker.exists(), "idle marker should be removed");
+        // The branch must be deleted too (otherwise a retry can't recreate it).
+        let branches = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["branch", "--list", "kamaji-1-x"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "branch kamaji-1-x should be deleted"
+        );
+        let got = db.get_ticket(t.id).unwrap().unwrap();
+        assert_eq!(got.session_name, None);
+        assert_eq!(got.worktree_path, None);
+        assert_eq!(got.branch, None);
     }
 }

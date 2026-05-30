@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
     let bind = args.bind.unwrap_or_else(|| config.daemon.bind.clone());
     let db = Db::open(&db_path()?)?;
     let state = AppState::new(db, config);
+    kamajid::poll_task::spawn_poll_task(state.clone(), state.config.poll_interval());
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await

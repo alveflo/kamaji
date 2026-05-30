@@ -1,6 +1,8 @@
 //! Integration tests: boot the daemon on an ephemeral port with an in-memory
 //! DB, drive it over HTTP with reqwest, and assert responses + SSE events.
 
+mod support;
+
 use futures::StreamExt;
 use kamaji_core::config::Config;
 use kamaji_core::db::Db;
@@ -312,4 +314,349 @@ async fn moving_a_ticket_emits_ticket_moved_on_sse() {
     assert_eq!(data["id"], tid);
     assert_eq!(data["from"], "todo");
     assert_eq!(data["to"], "in_progress");
+}
+
+#[tokio::test]
+async fn start_without_worktree_base_is_400() {
+    // Default config has worktree_base = None, so prepare fails before zellij.
+    let (base, state) = spawn().await;
+    let repo = support::committed_repo();
+    let tid = state
+        .with_db({
+            let root = repo.path().to_path_buf();
+            move |db| {
+                let p = db.create_project("p", &root, None)?;
+                let t =
+                    db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+                Ok(t.id)
+            }
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["kind"], "bad_request");
+    // The ticket has no session recorded.
+    let t: serde_json::Value = reqwest::get(format!("{base}/tickets/{tid}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(t["session_name"].is_null());
+}
+
+#[tokio::test]
+async fn start_on_non_git_project_is_400() {
+    // worktree_base set, but the project root is not a git repo → prepare fails.
+    let cfg = kamaji_core::config::Config {
+        worktree_base: Some(format!("{}/wt", std::env::temp_dir().display())),
+        ..Default::default()
+    };
+    let mut state = kamajid::state::AppState::new(Db::open_in_memory().unwrap(), cfg);
+    // Bind the temp dir for the test's lifetime so it isn't cleaned early.
+    let sd = tempfile::tempdir().unwrap();
+    state.set_state_dir(sd.path().to_path_buf());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let not_a_repo = tempfile::tempdir().unwrap();
+    let tid = state
+        .with_db({
+            let root = not_a_repo.path().to_path_buf();
+            move |db| {
+                let p = db.create_project("p", &root, None)?;
+                let t =
+                    db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+                Ok(t.id)
+            }
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn start_missing_ticket_is_404() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/999/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn start_rolls_back_fully_on_session_spawn_failure() {
+    // Prepare succeeds (real git repo + worktree_base set), but spawning the
+    // zellij session fails when no zellij binary is present — exercising the
+    // rollback. Skipped when zellij IS available (it would spawn a real session).
+    if support::zellij_available() {
+        return;
+    }
+    let repo = support::committed_repo();
+    let wt_base = tempfile::tempdir().unwrap();
+    let cfg = kamaji_core::config::Config {
+        worktree_base: Some(wt_base.path().join("wt").to_string_lossy().to_string()),
+        ..kamaji_core::config::Config::default()
+    };
+    let mut state = kamajid::state::AppState::new(Db::open_in_memory().unwrap(), cfg);
+    let sd = tempfile::tempdir().unwrap();
+    state.set_state_dir(sd.path().to_path_buf());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let tid = state
+        .with_db({
+            let root = repo.path().to_path_buf();
+            move |db| {
+                let p = db.create_project("p", &root, None)?;
+                let t =
+                    db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+                Ok(t.id)
+            }
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 500);
+
+    // Rolled back fully: the ticket is back in its prior column (Todo) with no
+    // session recorded — the failed start left no trace in the DB.
+    let t: serde_json::Value = reqwest::get(format!("{base}/tickets/{tid}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["status"], "todo");
+    assert!(t["session_name"].is_null());
+}
+
+#[tokio::test]
+async fn done_without_cleanup_moves_to_done_and_keeps_session() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            // Give it a recorded session so we can assert cleanup did NOT run.
+            db.set_ticket_session(t.id, "kamaji-1-t", "/wt", "kamaji-1-t")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let ticket: serde_json::Value = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/done"))
+        .json(&serde_json::json!({ "cleanup": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ticket["status"], "done");
+    // cleanup=false must leave the session columns intact (no teardown).
+    assert_eq!(ticket["session_name"], "kamaji-1-t");
+}
+
+#[tokio::test]
+async fn done_with_cleanup_tears_down_worktree() {
+    let (base, state) = spawn().await;
+    let repo = support::committed_repo();
+    let worktree = repo.path().join("..").join("kamaji-wt-done");
+    let _ = kamaji_core::git::remove_worktree(repo.path(), &worktree);
+    kamaji_core::git::add_worktree(repo.path(), &worktree, "kamaji-9-x", "main").unwrap();
+    assert!(worktree.exists());
+
+    let tid = state
+        .with_db({
+            let root = repo.path().to_path_buf();
+            let wt = worktree.to_string_lossy().to_string();
+            move |db| {
+                let p = db.create_project("p", &root, None)?;
+                let t =
+                    db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+                db.set_ticket_session(t.id, "kamaji-9-x", &wt, "kamaji-9-x")?;
+                db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+                Ok(t.id)
+            }
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/done"))
+        .json(&serde_json::json!({ "cleanup": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(!worktree.exists(), "cleanup should remove the worktree");
+
+    let t: serde_json::Value = reqwest::get(format!("{base}/tickets/{tid}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["status"], "done");
+    assert!(t["session_name"].is_null());
+}
+
+#[tokio::test]
+async fn poll_round_moves_idle_claude_ticket_to_review_and_emits() {
+    use kamaji_core::poll::PollLoop;
+
+    // A daemon whose marker dir is a temp dir we control.
+    let state_dir = tempfile::tempdir().unwrap();
+    let mut state = kamajid::state::AppState::new(
+        Db::open_in_memory().unwrap(),
+        kamaji_core::config::Config::default(),
+    );
+    state.set_state_dir(state_dir.path().to_path_buf());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    // An instrumented Claude ticket In Progress with a session — its idle signal
+    // is a marker FILE, so detection works without zellij.
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            db.set_ticket_session(t.id, "kamaji-1-t", "/wt", "kamaji-1-t")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            db.set_ticket_instrumented(t.id, true)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    // Connect SSE first so the move event is delivered.
+    let mut stream = connect_events(&base).await;
+
+    // Drive rounds deterministically (no interval timer):
+    let mut poll = PollLoop::new();
+    let sd = state_dir.path().to_path_buf();
+    // Round 1: no marker → Active baseline, no move.
+    poll = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+    // The agent "stops": its Stop hook creates the idle marker.
+    let marker = kamaji_core::detect::marker_path(state_dir.path(), "kamaji-1-t");
+    std::fs::write(&marker, "").unwrap();
+    // Round 2: marker present → Idle → move to Review + emit. (Returned PollLoop
+    // isn't needed after the final round.)
+    let _ = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+
+    let (name, data) = read_named_event(&mut stream, "ticket.moved").await;
+    assert_eq!(name, "ticket.moved");
+    assert_eq!(data["id"], tid);
+    assert_eq!(data["to"], "review");
+
+    // The DB reflects the auto-move.
+    let t: serde_json::Value = reqwest::get(format!("{base}/tickets/{tid}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["status"], "review");
+}
+
+#[tokio::test]
+async fn poll_respects_externally_cleared_auto_review_provenance() {
+    // Regression: a human who manually keeps a card in Review (POST /move clears
+    // its `auto_reviewed` column) must not have it dragged back to In Progress by
+    // a later active signal. The poll task re-syncs provenance from the DB each
+    // round, so the externally-cleared flag is honored.
+    use kamaji_core::poll::PollLoop;
+
+    let state_dir = tempfile::tempdir().unwrap();
+    let mut state = kamajid::state::AppState::new(
+        Db::open_in_memory().unwrap(),
+        kamaji_core::config::Config::default(),
+    );
+    state.set_state_dir(state_dir.path().to_path_buf());
+
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            db.set_ticket_session(t.id, "kamaji-2-t", "/wt", "kamaji-2-t")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            db.set_ticket_instrumented(t.id, true)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let mut poll = PollLoop::new();
+    let sd = state_dir.path().to_path_buf();
+    let marker = kamaji_core::detect::marker_path(state_dir.path(), "kamaji-2-t");
+
+    // Round 1: no marker → Active baseline. Round 2: marker → Idle → auto-move to Review.
+    poll = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+    std::fs::write(&marker, "").unwrap();
+    poll = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+    assert_eq!(
+        state
+            .with_db(move |db| Ok(db.get_ticket(tid)?.unwrap().status))
+            .await
+            .unwrap(),
+        kamaji_core::models::Status::Review
+    );
+
+    // The human clears auto-review provenance in the DB (what POST /move does).
+    state
+        .with_db(move |db| db.set_ticket_auto_reviewed(tid, false))
+        .await
+        .unwrap();
+
+    // The agent resumes (marker gone → Active). Without the per-round rehydrate,
+    // the stale in-memory provenance would drag the card back to In Progress.
+    std::fs::remove_file(&marker).unwrap();
+    let _ = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+
+    assert_eq!(
+        state
+            .with_db(move |db| Ok(db.get_ticket(tid)?.unwrap().status))
+            .await
+            .unwrap(),
+        kamaji_core::models::Status::Review,
+        "a manually-kept Review card must not be auto-dragged back"
+    );
 }
