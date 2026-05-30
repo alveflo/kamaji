@@ -29,6 +29,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/projects/:id", get(routes::projects::get_one))
         .route(
+            "/projects/:id/main-session",
+            axum::routing::post(routes::projects::main_session),
+        )
+        .route(
             "/projects/:id/tickets",
             get(routes::tickets::list_for_project),
         )

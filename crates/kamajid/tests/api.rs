@@ -908,6 +908,44 @@ async fn patch_and_delete_missing_ticket_are_404() {
 }
 
 #[tokio::test]
+async fn main_session_returns_404_for_missing_project() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/projects/999/main-session"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+#[ignore = "spawns a real zellij session; run with --ignored"]
+async fn main_session_creates_and_is_idempotent() {
+    use crate::support::{committed_repo, zellij_available};
+    if !zellij_available() {
+        return;
+    }
+    let (base, state) = spawn().await;
+    let repo = committed_repo();
+    let pid = state
+        .with_db({
+            let root = repo.path().to_path_buf();
+            move |db| Ok(db.create_project("p", &root, None)?.id)
+        })
+        .await
+        .unwrap();
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/projects/{pid}/main-session"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["session_name"], format!("kamaji-main-{pid}"));
+    kamaji_core::zellij::terminate_session(&format!("kamaji-main-{pid}"));
+}
+
+#[tokio::test]
 async fn editing_and_deleting_emit_sse_events() {
     let (base, state) = spawn().await;
     let tid = state
