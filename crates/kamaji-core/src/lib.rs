@@ -15,6 +15,7 @@ pub mod git;
 pub mod layout;
 pub mod models;
 pub mod paths;
+pub mod poll;
 pub mod session;
 pub mod slug;
 pub mod zellij;
