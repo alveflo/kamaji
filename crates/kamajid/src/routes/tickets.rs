@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::error::ApiError;
 use crate::state::AppState;
+use crate::zellij_web::AttachInfo;
 
 /// `GET /projects/:id/tickets` → the project's tickets, ordered.
 pub async fn list_for_project(
@@ -312,4 +313,30 @@ pub async fn done(
         }
     }
     Ok(Json(ticket))
+}
+
+/// `POST /tickets/:id/attach` → the info a client needs to open the ticket's
+/// session in a browser. 404 if the ticket is missing; 400 if it has no session
+/// (start it first via `/start`). Ensures `zellij web` is running (real mode)
+/// and returns `{ session_name, web_url, token }`. The blocking ensure-running
+/// work runs on the blocking pool.
+pub async fn attach(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Json<AttachInfo>, ApiError> {
+    // Resolve the ticket's recorded session name (the authoritative value).
+    let session_name = state
+        .with_db(move |db| Ok(db.get_ticket(id)?.map(|t| t.session_name)))
+        .await?
+        .ok_or(ApiError::NotFound)?
+        .ok_or_else(|| ApiError::BadRequest("ticket has no session; start it first".into()))?;
+
+    // Ensure zellij web + token. This can spawn a subprocess and probe a socket,
+    // so run it on the blocking pool (mirrors the daemon's other blocking work).
+    let state2 = state.clone();
+    let info = tokio::task::spawn_blocking(move || state2.zellij_web().attach_info(&session_name))
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("attach task panicked: {e}")))?
+        .map_err(ApiError::Internal)?;
+    Ok(Json(info))
 }

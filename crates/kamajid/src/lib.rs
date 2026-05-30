@@ -7,6 +7,7 @@ pub mod error;
 pub mod poll_task;
 pub mod routes;
 pub mod state;
+pub mod zellij_web;
 
 use axum::routing::get;
 use axum::Router;
@@ -46,6 +47,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/tickets/:id/done",
             axum::routing::post(routes::tickets::done),
+        )
+        .route(
+            "/tickets/:id/attach",
+            axum::routing::post(routes::tickets::attach),
         )
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)

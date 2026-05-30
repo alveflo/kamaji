@@ -660,3 +660,77 @@ async fn poll_respects_externally_cleared_auto_review_provenance() {
         "a manually-kept Review card must not be auto-dragged back"
     );
 }
+
+/// Boot a daemon whose ZellijWeb is the fake (canned token, no subprocess).
+async fn spawn_with_fake_attach(token: &str) -> (String, kamajid::state::AppState) {
+    let mut state = kamajid::state::AppState::new(Db::open_in_memory().unwrap(), Config::default());
+    state.set_zellij_web(kamajid::zellij_web::ZellijWeb::fake(token));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), state)
+}
+
+#[tokio::test]
+async fn attach_returns_info_for_a_ticket_with_a_session() {
+    let (base, state) = spawn_with_fake_attach("tok-123").await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            db.set_ticket_session(t.id, "kamaji-1-t", "/wt", "kamaji-1-t")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let info: serde_json::Value = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/attach"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(info["session_name"], "kamaji-1-t");
+    assert_eq!(info["web_url"], "http://127.0.0.1:8082/kamaji-1-t");
+    assert_eq!(info["token"], "tok-123");
+}
+
+#[tokio::test]
+async fn attach_on_ticket_without_a_session_is_400() {
+    let (base, state) = spawn_with_fake_attach("tok").await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            // No session set → cannot attach.
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/attach"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["kind"], "bad_request");
+}
+
+#[tokio::test]
+async fn attach_missing_ticket_is_404() {
+    let (base, _state) = spawn_with_fake_attach("tok").await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/999/attach"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
