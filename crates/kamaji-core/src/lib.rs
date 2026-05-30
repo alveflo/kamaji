@@ -10,6 +10,7 @@ pub mod agent;
 pub mod config;
 pub mod db;
 pub mod detect;
+pub mod events;
 pub mod git;
 pub mod layout;
 pub mod models;
