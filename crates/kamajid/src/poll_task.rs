@@ -7,13 +7,14 @@ use std::time::Duration;
 
 use kamaji_core::db::Db;
 use kamaji_core::poll::PollLoop;
+use kamaji_core::session;
 
 use crate::state::AppState;
 
 /// Gather every ticket across all projects. (`PollLoop::tick` filters to the
 /// in-progress/review ones with a session internally.) DB read failures are
 /// logged and skipped — a transient error must not crash the poll loop.
-fn all_tickets(db: &Db) -> Vec<kamaji_core::models::Ticket> {
+pub(crate) fn all_tickets(db: &Db) -> Vec<kamaji_core::models::Ticket> {
     let mut out = Vec::new();
     match db.list_projects() {
         Ok(projects) => {
@@ -29,6 +30,38 @@ fn all_tickets(db: &Db) -> Vec<kamaji_core::models::Ticket> {
         Err(e) => tracing::warn!(error = %e, "poll: list_projects failed"),
     }
     out
+}
+
+/// Reconcile recorded sessions against `sessions` (a `zellij list-sessions`
+/// snapshot, or `None` when zellij is unreachable) and broadcast `session.exited`
+/// for each ticket whose session vanished. The DB work runs on the blocking pool
+/// (mirrors `poll_round`); `sessions` is a parameter so tests can inject a list.
+pub async fn reconcile_emit(state: &AppState, state_dir: &Path, sessions: Option<String>) {
+    let task_state = state.clone();
+    let state_dir = state_dir.to_path_buf();
+    let vanished = tokio::task::spawn_blocking(move || {
+        let db = task_state.db_handle();
+        let db = db.lock().expect("db mutex poisoned");
+        let tickets = all_tickets(&db);
+        match session::reconcile(&db, &tickets, &state_dir, sessions.as_deref()) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "reconcile: failed to clear vanished sessions");
+                Vec::new()
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(error = %e, "reconcile spawn_blocking task panicked");
+        Vec::new()
+    });
+    for (id, name) in vanished {
+        state.emit(kamaji_core::events::Event::SessionExited {
+            ticket_id: id,
+            session_name: name,
+        });
+    }
 }
 
 /// Run ONE poll round and return the (mutated) `PollLoop` for the next round:
@@ -87,6 +120,10 @@ pub fn spawn_poll_task(state: AppState, interval: Duration) {
         loop {
             ticker.tick().await;
             poll = poll_round(&state, poll, &state_dir).await;
+            let sessions = tokio::task::spawn_blocking(kamaji_core::zellij::list_sessions)
+                .await
+                .unwrap_or(None);
+            reconcile_emit(&state, &state_dir, sessions).await;
         }
     });
 }

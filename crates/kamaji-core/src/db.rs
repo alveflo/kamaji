@@ -127,6 +127,7 @@ impl Db {
         }
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         Ok(Db { conn })
@@ -134,6 +135,7 @@ impl Db {
 
     pub fn open_in_memory() -> Result<Db> {
         let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         Ok(Db { conn })
@@ -212,6 +214,24 @@ impl Db {
         self.conn.execute(
             "UPDATE tickets SET title = ?2, description = ?3, updated_at = datetime('now') WHERE id = ?1",
             params![id, title, description],
+        )?;
+        Ok(())
+    }
+
+    /// Edit all caller-editable ticket fields at once (full replace): title,
+    /// description, initial prompt, and agent.
+    pub fn update_ticket_full(
+        &self,
+        id: i64,
+        title: &str,
+        description: &str,
+        initial_prompt: Option<&str>,
+        agent: Agent,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tickets SET title = ?2, description = ?3, initial_prompt = ?4, agent = ?5,
+             updated_at = datetime('now') WHERE id = ?1",
+            params![id, title, description, initial_prompt, agent.as_str()],
         )?;
         Ok(())
     }
@@ -384,6 +404,35 @@ mod tests {
         let got = db.get_ticket(t.id).unwrap().unwrap();
         assert!(!got.auto_reviewed);
         assert!(!got.instrumented);
+    }
+
+    #[test]
+    fn update_ticket_full_replaces_all_fields() {
+        let db = db();
+        let p = db
+            .create_project("p", &PathBuf::from("/tmp/p"), None)
+            .unwrap();
+        let t = db
+            .create_ticket(p.id, "t", "d", Some("p1"), Agent::Claude)
+            .unwrap();
+        db.update_ticket_full(t.id, "t2", "d2", Some("p2"), Agent::Codex)
+            .unwrap();
+        let got = db.get_ticket(t.id).unwrap().unwrap();
+        assert_eq!(got.title, "t2");
+        assert_eq!(got.description, "d2");
+        assert_eq!(got.initial_prompt.as_deref(), Some("p2"));
+        assert_eq!(got.agent, Agent::Codex);
+    }
+
+    #[test]
+    fn foreign_keys_are_enforced() {
+        let db = db();
+        // Inserting a ticket under a non-existent project must fail (FK ON).
+        let err = db.create_ticket(9999, "t", "", None, Agent::Claude);
+        assert!(
+            err.is_err(),
+            "FK enforcement should reject a bad project_id"
+        );
     }
 
     #[test]
