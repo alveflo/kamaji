@@ -593,6 +593,7 @@ dependencies = [
  "directories",
  "rusqlite",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
 ]
