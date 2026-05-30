@@ -325,7 +325,10 @@ impl Engine {
                 KeyCode::Char('y') => {
                     // 'y' closes with cleanup (terminate session, remove worktree).
                     for id in &ticket_ids {
-                        let _ = self.client.done_ticket(*id, true);
+                        if let Err(e) = self.client.done_ticket(*id, true) {
+                            self.app
+                                .set_error(format!("could not complete #{id}: {e:?}"));
+                        }
                     }
                     self.app.clear_selection();
                     self.refresh_from_client()?;
@@ -334,7 +337,10 @@ impl Engine {
                 KeyCode::Char('n') => {
                     // 'n' marks done but leaves the session/worktree in place.
                     for id in &ticket_ids {
-                        let _ = self.client.done_ticket(*id, false);
+                        if let Err(e) = self.client.done_ticket(*id, false) {
+                            self.app
+                                .set_error(format!("could not complete #{id}: {e:?}"));
+                        }
                     }
                     self.app.clear_selection();
                     self.refresh_from_client()?;
@@ -348,7 +354,10 @@ impl Engine {
             },
             Modal::ConfirmDelete { ticket_id } => match key.code {
                 KeyCode::Char('y') => {
-                    let _ = self.client.delete_ticket(ticket_id);
+                    if let Err(e) = self.client.delete_ticket(ticket_id) {
+                        self.app
+                            .set_error(format!("could not delete #{ticket_id}: {e:?}"));
+                    }
                     self.refresh_from_client()?;
                     Ok(Effect::None)
                 }
