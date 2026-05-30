@@ -1,11 +1,15 @@
 //! Blocking HTTP client over the kamajid REST API. The TUI loop is sync, so
 //! commands are `reqwest::blocking` round-trips to localhost (sub-ms).
 
-// Reads (list_projects/list_tickets/get_ticket/get_config/create_project) are
-// wired into the TUI as of Step 2b, but the write/command methods
-// (create/update/move/start/done/delete_ticket, main_session, update_config)
-// stay unused until Step 2c rewires the mutation handlers. Suppress dead_code
-// at the module level until then.
+// As of Step 2c every mutation handler routes through this client, so the broad
+// module-level dead_code allow is gone. A few members are still unused in
+// non-test code and are kept for imminent steps / completeness:
+//   - `version` (field + getter): captured from /healthz; surfaced in a later
+//     UI step. Exercised by client tests.
+//   - `update_config`: lands when the theme/agent/worktree handlers persist via
+//     `PATCH /config` (Task 2c-4). Exercised by client tests.
+//   - `get_project`: read helper kept for symmetry with `list_projects`.
+//   - `ClientError::Decode`'s payload is read via `Debug` only.
 #![allow(dead_code)]
 
 use kamaji_core::config::Config;

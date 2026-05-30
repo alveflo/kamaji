@@ -19,7 +19,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use sse::SseMsg;
 
@@ -93,8 +93,6 @@ fn run_tui(opts: cli::DaemonOpts) -> Result<()> {
     let (sse_tx, sse_rx) = std::sync::mpsc::channel::<sse::SseMsg>();
     let _sse_handle = sse::spawn(client.base().to_string(), sse_tx);
 
-    let db = Db::open(&db_path()?)?;
-
     // Background, best-effort "newer version available" check. Never blocks the
     // UI; failures are silent. Result lands in this shared slot.
     let update_status: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -110,7 +108,7 @@ fn run_tui(opts: cli::DaemonOpts) -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, client, db, config, update_status, sse_rx);
+    let result = run(&mut terminal, client, config, update_status, sse_rx);
     ratatui::restore();
     result
 }
@@ -118,7 +116,6 @@ fn run_tui(opts: cli::DaemonOpts) -> Result<()> {
 fn run(
     terminal: &mut DefaultTerminal,
     mut client: client::DaemonClient,
-    mut db: Db,
     config: config::Config,
     update_status: Arc<Mutex<Option<String>>>,
     sse_rx: Receiver<SseMsg>,
@@ -141,15 +138,12 @@ fn run(
             .map_err(picker::client_err)?;
         let mut app = App::new(project, tickets);
         app.theme = theme;
-        let mut engine = Engine::new(client, db, config, app);
-        // Drop any recorded sessions that no longer exist in zellij.
-        engine.reconcile()?;
+        let mut engine = Engine::new(client, config, app);
 
         let switch_project = run_board(terminal, &mut engine, &update_status, &sse_rx)?;
 
-        // Reclaim client + db + config for the next project (or to drop on quit).
+        // Reclaim client + config for the next project (or to drop on quit).
         client = engine.client;
-        db = engine.db;
         config = engine.config;
 
         if !switch_project {
@@ -166,7 +160,6 @@ fn run_board(
     update_status: &Arc<Mutex<Option<String>>>,
     sse_rx: &Receiver<SseMsg>,
 ) -> Result<bool> {
-    let mut last_tick = Instant::now();
     loop {
         // Drain SSE messages and apply them to the board. On (re)connect the
         // whole list is re-fetched so we never miss deltas dropped while
@@ -183,12 +176,10 @@ fn run_board(
         if let Ok(guard) = update_status.lock() {
             engine.app.update = guard.clone();
         }
-        if engine.config.auto_review.enabled && last_tick.elapsed() >= engine.config.poll_interval()
-        {
-            engine.detect_tick()?;
-            last_tick = Instant::now();
-        }
-        terminal.draw(|frame| ui::render(frame, &engine.app, engine.poll.levels()))?;
+        // Auto-review detection now runs in the daemon; its moves arrive via SSE.
+        // The "working" bullet that read these levels is a follow-up, so pass an
+        // empty map (the `ui/` signature is unchanged).
+        terminal.draw(|frame| ui::render(frame, &engine.app, &std::collections::HashMap::new()))?;
 
         if !event::poll(Duration::from_millis(200))? {
             continue;
@@ -204,48 +195,8 @@ fn run_board(
         match effect {
             Effect::None => {}
             Effect::SwitchProject => return Ok(true),
-            Effect::RunSession { name, layout_path } => {
-                run_zellij(terminal, engine, |_| {
-                    zellij::create_session(&name, &layout_path)
-                })?;
-            }
             Effect::Attach { name } => {
                 run_zellij(terminal, engine, |_| zellij::attach_session(&name))?;
-            }
-            Effect::ResumeSession { name, layout_path } => {
-                // Drop the stale exited/resurrectable session so zellij doesn't
-                // refuse the name or replay the original (fresh) command, then
-                // recreate it from the resume layout and attach.
-                run_zellij(terminal, engine, |_| {
-                    zellij::terminate_session(&name);
-                    zellij::create_session(&name, &layout_path)
-                })?;
-            }
-            Effect::RunSessionBackground {
-                name,
-                layout_path,
-                cwd,
-            } => {
-                match zellij::create_session_background(&name, &layout_path, &cwd) {
-                    Ok(()) => {
-                        engine
-                            .app
-                            .set_info(format!("Started '{name}' in the background"));
-                    }
-                    Err(e) => {
-                        engine
-                            .app
-                            .set_error(format!("background session failed: {e}"));
-                        // Tear down any partially-created session first: zellij
-                        // may have made the session before erroring, and
-                        // reconcile only clears sessions ABSENT from
-                        // `list-sessions`. Killing it makes reconcile drop the
-                        // columns. Then the card has no session (status stays In
-                        // Progress; recoverable via Enter, which starts fresh).
-                        zellij::terminate_session(&name);
-                        engine.reconcile()?;
-                    }
-                }
             }
             Effect::SelfUpdate { version } => {
                 ratatui::restore();
@@ -269,7 +220,7 @@ fn run_board(
 }
 
 /// Release the terminal, run a zellij command (inherits the real TTY), then
-/// re-initialize ratatui and reconcile session state.
+/// re-initialize ratatui and refresh the board from the daemon.
 fn run_zellij<F>(terminal: &mut DefaultTerminal, engine: &mut Engine, f: F) -> Result<()>
 where
     F: FnOnce(()) -> Result<std::process::ExitStatus>,
@@ -283,8 +234,8 @@ where
     if let Err(e) = outcome {
         engine.app.set_error(format!("zellij error: {e}"));
     }
-    // reconcile() reloads tickets and drops any sessions that vanished.
-    engine.reconcile()?;
+    // The daemon reconciles session state; re-fetch the board after attach.
+    engine.refresh_from_client()?;
     Ok(())
 }
 
