@@ -7,6 +7,7 @@ pub mod error;
 pub mod poll_task;
 pub mod routes;
 pub mod state;
+pub mod zellij_web;
 
 use axum::routing::get;
 use axum::Router;
