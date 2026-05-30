@@ -14,8 +14,8 @@ use crate::theme::Theme;
 use kamaji_core::models::Project;
 
 /// Map a daemon `ClientError` into an `anyhow::Error` for the picker's
-/// `Result`-returning loop.
-fn client_err(e: ClientError) -> anyhow::Error {
+/// `Result`-returning loop. Shared with `main.rs`'s board-seeding reads.
+pub(crate) fn client_err(e: ClientError) -> anyhow::Error {
     anyhow::anyhow!("daemon request failed: {e:?}")
 }
 

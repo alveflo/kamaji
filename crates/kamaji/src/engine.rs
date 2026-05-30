@@ -3,6 +3,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::path::PathBuf;
 
 use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm};
+use crate::client::DaemonClient;
 use crate::dir_select::{self, RootCheck};
 use crate::theme::Theme;
 use kamaji_core::config::Config;
@@ -45,6 +46,10 @@ pub enum Effect {
 }
 
 pub struct Engine {
+    /// Read source of truth (and, from 2c on, the write path too): the kamajid
+    /// daemon over HTTP. In 2b reads + SSE application go through this client;
+    /// writes still go through `db`.
+    pub client: DaemonClient,
     pub db: Db,
     pub config: Config,
     pub app: App,
@@ -58,8 +63,9 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(db: Db, config: Config, app: App) -> Self {
+    pub fn new(client: DaemonClient, db: Db, config: Config, app: App) -> Self {
         Engine {
+            client,
             db,
             config,
             app,
@@ -67,6 +73,24 @@ impl Engine {
             state_dir: detect::default_state_dir(),
             config_path: kamaji_core::config::config_path().unwrap_or_default(),
         }
+    }
+
+    /// Re-fetch the current project's tickets from the daemon and re-clamp the
+    /// UI. Used after SSE deltas and after attach. The daemon is the read source
+    /// of truth; local DB reads are being retired.
+    // Wired into `run_board`'s SSE drain in Task 2b-3.
+    #[allow(dead_code)]
+    pub fn refresh_from_client(&mut self) -> anyhow::Result<()> {
+        match self.client.list_tickets(self.app.project.id) {
+            Ok(tickets) => self.app.tickets = tickets,
+            Err(e) => self
+                .app
+                .set_error(format!("could not refresh board: {e:?}")),
+        }
+        self.poll.rehydrate(&self.app.tickets);
+        self.app.reclamp();
+        self.app.prune_selection();
+        Ok(())
     }
 
     pub fn reload(&mut self) -> Result<()> {
@@ -784,11 +808,23 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
+    /// Connect a `DaemonClient` to a single shared in-process kamajid spawned
+    /// once for the whole test binary. Reads don't persist, so a throwaway
+    /// in-memory daemon is enough for the engine tests (writes still go through
+    /// `db` in 2b).
+    fn test_client() -> DaemonClient {
+        use crate::test_support::spawn_test_daemon;
+        use std::sync::OnceLock;
+        static BASE: OnceLock<String> = OnceLock::new();
+        let base = BASE.get_or_init(spawn_test_daemon).clone();
+        DaemonClient::connect(base).unwrap()
+    }
+
     fn engine_with_project(root: std::path::PathBuf) -> Engine {
         let db = Db::open_in_memory().unwrap();
         let project = db.create_project("p", &root, None).unwrap();
         let app = App::new(project, vec![]);
-        Engine::new(db, Config::default(), app)
+        Engine::new(test_client(), db, Config::default(), app)
     }
 
     /// Initialize a real git repo with one commit at `root` so `start_session`

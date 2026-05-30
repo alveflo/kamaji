@@ -6,6 +6,8 @@ mod dir_select;
 mod engine;
 mod picker;
 mod sse;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod ui;
 mod update;
@@ -115,28 +117,38 @@ fn run_tui(opts: cli::DaemonOpts) -> Result<()> {
 
 fn run(
     terminal: &mut DefaultTerminal,
-    client: client::DaemonClient,
+    mut client: client::DaemonClient,
     mut db: Db,
-    mut config: config::Config,
+    config: config::Config,
     update_status: Arc<Mutex<Option<String>>>,
     sse_rx: Receiver<SseMsg>,
 ) -> Result<()> {
+    // Theme/agent come from the daemon's loaded config so the TUI reflects the
+    // daemon's state. Fall back to the locally-loaded config if the daemon
+    // can't be reached for it.
+    let mut config = client
+        .get_config()
+        .map_err(picker::client_err)
+        .unwrap_or(config);
     loop {
         let theme = crate::theme::Theme::by_name(&config.theme);
         let Some(project) = picker::run(terminal, &client, theme)? else {
             return Ok(());
         };
 
-        let tickets = db.list_tickets(project.id)?;
+        let tickets = client
+            .list_tickets(project.id)
+            .map_err(picker::client_err)?;
         let mut app = App::new(project, tickets);
         app.theme = theme;
-        let mut engine = Engine::new(db, config, app);
+        let mut engine = Engine::new(client, db, config, app);
         // Drop any recorded sessions that no longer exist in zellij.
         engine.reconcile()?;
 
         let switch_project = run_board(terminal, &mut engine, &update_status, &sse_rx)?;
 
-        // Reclaim db + config for the next project (or to drop on quit).
+        // Reclaim client + db + config for the next project (or to drop on quit).
+        client = engine.client;
         db = engine.db;
         config = engine.config;
 

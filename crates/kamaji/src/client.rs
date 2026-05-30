@@ -253,33 +253,8 @@ impl DaemonClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::spawn_test_daemon as spawn_daemon;
     use kamaji_core::models::{Agent, Status};
-
-    /// Boot a real kamajid on 127.0.0.1:0, returning its base URL. The tokio
-    /// runtime is kept alive in the spawned thread for the test's lifetime so
-    /// the server keeps serving.
-    fn spawn_daemon() -> String {
-        use kamaji_core::config::Config;
-        use kamaji_core::db::Db;
-        use kamajid::state::AppState;
-
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            rt.block_on(async move {
-                let state = AppState::new(Db::open_in_memory().unwrap(), Config::default());
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let addr = listener.local_addr().unwrap();
-                tx.send(format!("http://{addr}")).unwrap();
-                // kamajid::serve returns anyhow::Result; unwrap to propagate panics.
-                kamajid::serve(listener, state).await.unwrap();
-            });
-        });
-        rx.recv().unwrap()
-    }
 
     fn seed_project_and_ticket(base: &str) -> (i64, i64) {
         // Use raw HTTP to seed so the read tests are independent of create methods.
