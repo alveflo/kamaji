@@ -243,3 +243,67 @@ pub async fn start(
         .ok_or(ApiError::NotFound)?;
     Ok(Json(ticket))
 }
+
+#[derive(Deserialize)]
+pub struct DoneTicket {
+    /// When true, tear down the ticket's worktree + zellij session + branch.
+    #[serde(default)]
+    pub cleanup: bool,
+}
+
+/// `POST /tickets/:id/done` → move the ticket to Done. With `{"cleanup": true}`,
+/// also tears down its worktree/session/branch. Emits `ticket.moved` (to done)
+/// and, when cleaned and a session existed, `session.exited`.
+pub async fn done(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(body): Json<DoneTicket>,
+) -> Result<Json<Ticket>, ApiError> {
+    let state_dir = state.state_dir().to_path_buf();
+    let cleanup = body.cleanup;
+
+    let outcome = state
+        .with_db(move |db| {
+            let Some(ticket) = db.get_ticket(id)? else {
+                return Ok(None);
+            };
+            let from = ticket.status;
+            let session_name = ticket.session_name.clone();
+            if cleanup {
+                // root_dir comes from the ticket's project.
+                if let Some(project) = db.get_project(ticket.project_id)? {
+                    session::cleanup_ticket(db, &project.root_dir, &state_dir, id)?;
+                } else {
+                    // An orphaned ticket (project gone): we still mark it Done,
+                    // but its worktree/session can't be torn down — flag it.
+                    tracing::warn!(
+                        ticket_id = id,
+                        "cleanup requested but ticket's project is missing; worktree/session left intact"
+                    );
+                }
+            }
+            db.set_ticket_status(id, kamaji_core::models::Status::Done)?;
+            let updated = db.get_ticket(id)?.expect("ticket exists; just updated");
+            Ok(Some((from, session_name, updated)))
+        })
+        .await?;
+
+    let (from, session_name, ticket) = outcome.ok_or(ApiError::NotFound)?;
+    if from != kamaji_core::models::Status::Done {
+        state.emit(Event::TicketMoved {
+            id,
+            from,
+            to: kamaji_core::models::Status::Done,
+            at: chrono::Utc::now().to_rfc3339(),
+        });
+    }
+    if cleanup {
+        if let Some(name) = session_name {
+            state.emit(Event::SessionExited {
+                ticket_id: id,
+                session_name: name,
+            });
+        }
+    }
+    Ok(Json(ticket))
+}

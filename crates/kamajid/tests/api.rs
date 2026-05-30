@@ -460,3 +460,76 @@ async fn start_rolls_back_fully_on_session_spawn_failure() {
     assert_eq!(t["status"], "todo");
     assert!(t["session_name"].is_null());
 }
+
+#[tokio::test]
+async fn done_without_cleanup_moves_to_done_and_keeps_session() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            // Give it a recorded session so we can assert cleanup did NOT run.
+            db.set_ticket_session(t.id, "kamaji-1-t", "/wt", "kamaji-1-t")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let ticket: serde_json::Value = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/done"))
+        .json(&serde_json::json!({ "cleanup": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ticket["status"], "done");
+    // cleanup=false must leave the session columns intact (no teardown).
+    assert_eq!(ticket["session_name"], "kamaji-1-t");
+}
+
+#[tokio::test]
+async fn done_with_cleanup_tears_down_worktree() {
+    let (base, state) = spawn().await;
+    let repo = support::committed_repo();
+    let worktree = repo.path().join("..").join("kamaji-wt-done");
+    let _ = kamaji_core::git::remove_worktree(repo.path(), &worktree);
+    kamaji_core::git::add_worktree(repo.path(), &worktree, "kamaji-9-x", "main").unwrap();
+    assert!(worktree.exists());
+
+    let tid = state
+        .with_db({
+            let root = repo.path().to_path_buf();
+            let wt = worktree.to_string_lossy().to_string();
+            move |db| {
+                let p = db.create_project("p", &root, None)?;
+                let t =
+                    db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+                db.set_ticket_session(t.id, "kamaji-9-x", &wt, "kamaji-9-x")?;
+                db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+                Ok(t.id)
+            }
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/done"))
+        .json(&serde_json::json!({ "cleanup": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(!worktree.exists(), "cleanup should remove the worktree");
+
+    let t: serde_json::Value = reqwest::get(format!("{base}/tickets/{tid}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["status"], "done");
+    assert!(t["session_name"].is_null());
+}
