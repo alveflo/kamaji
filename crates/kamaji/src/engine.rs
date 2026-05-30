@@ -1061,6 +1061,9 @@ mod tests {
     /// (and never the developer's real `~/.config/kamaji/config.toml`).
     #[test]
     fn theme_picker_enter_persists_via_daemon() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
 
@@ -1116,6 +1119,9 @@ mod tests {
     /// reflects the current theme.
     #[test]
     fn picker_enter_persists_even_with_no_change() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
 
@@ -1172,6 +1178,9 @@ mod tests {
 
     #[test]
     fn agent_picker_enter_persists_default_via_daemon() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
 
@@ -1496,6 +1505,9 @@ mod tests {
     /// daemon and closes the modal.
     #[test]
     fn worktree_picker_enter_saves_existing_dir_via_daemon() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
         let target = dir.path().join("worktrees");
@@ -1522,6 +1534,9 @@ mod tests {
     /// create-confirm prompt instead.
     #[test]
     fn worktree_picker_missing_dir_arms_confirm_before_saving() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
         let target = dir.path().join("does-not-exist-yet");
@@ -1544,6 +1559,8 @@ mod tests {
             e.config.worktree_base,
             Some(target.to_string_lossy().to_string())
         );
+        let saved = e.client.get_config().unwrap();
+        assert_eq!(saved.worktree_base, e.config.worktree_base);
         assert!(matches!(e.app.modal, Modal::None));
     }
 

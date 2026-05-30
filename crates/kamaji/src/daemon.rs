@@ -265,6 +265,11 @@ mod tests {
     fn ensure_daemon_spawns_and_connects() {
         use kamaji_core::config::Config;
 
+        // Serialize against other env-mutating tests (XDG_* are process-global);
+        // held across the mutations + daemon spawn + asserts.
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         // Isolate every runtime/data/config base into the tempdir so the spawned
         // daemon and this test agree on the pidfile/addrfile location and the

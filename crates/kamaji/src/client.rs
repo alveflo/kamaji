@@ -1,24 +1,20 @@
 //! Blocking HTTP client over the kamajid REST API. The TUI loop is sync, so
 //! commands are `reqwest::blocking` round-trips to localhost (sub-ms).
 
-// As of Step 2c every mutation handler routes through this client, so the broad
-// module-level dead_code allow is gone. A few members are still unused in
-// non-test code and are kept for imminent steps / completeness:
-//   - `version` (field + getter): captured from /healthz; surfaced in a later
-//     UI step. Exercised by client tests.
-//   - `get_project`: read helper kept for symmetry with `list_projects`.
-//   - `ClientError::Decode`'s payload is read via `Debug` only.
-#![allow(dead_code)]
-
 use kamaji_core::config::Config;
 use kamaji_core::models::{Agent, Project, Status, Ticket};
 
+// The `Server`/`Unreachable`/`Decode` payloads are surfaced only through the
+// `Debug` derive (diagnostics/toasts), so the compiler sees them as never read.
 #[derive(Debug)]
 pub enum ClientError {
     NotFound,
     BadRequest(String),
+    #[allow(dead_code)]
     Server(String),
+    #[allow(dead_code)]
     Unreachable(reqwest::Error),
+    #[allow(dead_code)]
     Decode(String),
 }
 
@@ -35,6 +31,9 @@ pub fn is_connection_lost(e: &ClientError) -> bool {
 pub struct DaemonClient {
     http: reqwest::blocking::Client,
     base: String,
+    // Captured from /healthz; consumed by the deferred version-skew warning
+    // toast (a tracked follow-up). Exercised by the client tests today.
+    #[allow(dead_code)]
     version: String,
 }
 
@@ -69,6 +68,7 @@ impl DaemonClient {
         &self.base
     }
 
+    #[allow(dead_code)]
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -396,6 +396,11 @@ mod tests {
 
     #[test]
     fn update_config_via_client() {
+        // Serialize against other env-mutating tests (XDG_CONFIG_HOME is
+        // process-global); held across the mutation + daemon spawn + asserts.
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Isolate config persistence from the developer's real ~/.config/kamaji.
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CONFIG_HOME", tmp.path());
