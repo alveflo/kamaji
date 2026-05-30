@@ -202,7 +202,7 @@ pub async fn start(
     Path(id): Path<i64>,
 ) -> Result<Json<Ticket>, ApiError> {
     let state_dir = state.state_dir().to_path_buf();
-    let config = (*state.config).clone();
+    let config = state.config_async().await;
 
     // Fetch ticket + its project up front so a missing row is a clean 404.
     let (ticket, project) = state
