@@ -32,8 +32,6 @@ pub fn web_url(base: &str, session_name: &str) -> String {
 pub struct ZellijWeb {
     base_url: String,
     /// Cached login token (created lazily via `zellij web --create-token`).
-    /// Task 2 reads this in `ensure_running`; suppress dead_code until then.
-    #[allow(dead_code)]
     token: Mutex<Option<String>>,
     /// In `fake` mode this token is returned directly and no subprocess runs.
     fake_token: Option<String>,
@@ -76,9 +74,100 @@ impl ZellijWeb {
         })
     }
 
+    /// Ensure the `zellij web` server is reachable and we hold a login token.
+    /// Returns the token. Steps (spec §6): (1) create + cache a token if we have
+    /// none, (2) probe the server's port; if unreachable, spawn `zellij web` and
+    /// poll until it answers (≤3s). Best-effort: a spawn we don't own (server
+    /// already running) is fine — we just reuse it.
     fn ensure_running(&self) -> anyhow::Result<String> {
-        anyhow::bail!("zellij web management not yet implemented")
+        // (1) Token: create once, then cache. Tokens persist in zellij's own
+        // store across server restarts, so a cached one keeps working.
+        let token = {
+            let mut guard = self.token.lock().expect("token mutex poisoned");
+            if guard.is_none() {
+                *guard = Some(create_token()?);
+            }
+            guard.clone().expect("token just set")
+        };
+
+        // (2) Ensure the server is up.
+        if !port_reachable(&self.base_url) {
+            spawn_zellij_web()?;
+            wait_until_reachable(&self.base_url, std::time::Duration::from_secs(3))?;
+        }
+        Ok(token)
     }
+}
+
+/// Run `zellij web --create-token` once and parse the printed token.
+///
+/// NOTE: the exact stdout format must be verified against the installed
+/// `zellij` during implementation (the spec flags this as a spike). The current
+/// parse takes the last non-empty whitespace-delimited token of stdout, which
+/// matches `zellij`'s "Token: <value>" / bare-token styles. The `#[ignore]`d
+/// live test and the manual smoke are how this is validated.
+fn create_token() -> anyhow::Result<String> {
+    let out = std::process::Command::new("zellij")
+        .args(["web", "--create-token"])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "zellij web --create-token failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // `split_whitespace` skips empty runs, so `last()` is a non-empty token
+    // (or `None` when stdout is blank → the error below).
+    let token = stdout
+        .split_whitespace()
+        .last()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("could not parse a token from: {stdout:?}"))?;
+    Ok(token)
+}
+
+/// Spawn a detached `zellij web` server. We do not hold the child (the spec
+/// accepts that the server outlives the daemon and is reused on next start).
+fn spawn_zellij_web() -> anyhow::Result<()> {
+    std::process::Command::new("zellij")
+        .arg("web")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
+/// True if the host:port of `base_url` accepts a TCP connection right now.
+fn port_reachable(base_url: &str) -> bool {
+    if let Some(addr) = base_url_to_socket_addr(base_url) {
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300)).is_ok()
+    } else {
+        false
+    }
+}
+
+/// Poll the port until reachable or the deadline elapses.
+fn wait_until_reachable(base_url: &str, timeout: std::time::Duration) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if port_reachable(base_url) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    anyhow::bail!("zellij web did not become reachable within {timeout:?}")
+}
+
+/// Parse the `host:port` out of a `http://host:port` base URL into a SocketAddr.
+fn base_url_to_socket_addr(base_url: &str) -> Option<std::net::SocketAddr> {
+    let hostport = base_url
+        .strip_prefix("http://")
+        .or_else(|| base_url.strip_prefix("https://"))?;
+    let hostport = hostport.trim_end_matches('/');
+    use std::net::ToSocketAddrs;
+    hostport.to_socket_addrs().ok()?.next()
 }
 
 impl Default for ZellijWeb {
@@ -111,5 +200,37 @@ mod tests {
         assert_eq!(info.session_name, "kamaji-1-x");
         assert_eq!(info.web_url, "http://127.0.0.1:8082/kamaji-1-x");
         assert_eq!(info.token, "test-token");
+    }
+
+    #[test]
+    fn base_url_parses_to_socket_addr() {
+        let addr = base_url_to_socket_addr("http://127.0.0.1:8082").unwrap();
+        assert_eq!(addr.port(), 8082);
+        assert_eq!(addr.ip().to_string(), "127.0.0.1");
+        // Trailing slash tolerated.
+        assert!(base_url_to_socket_addr("http://127.0.0.1:8082/").is_some());
+        // Garbage → None.
+        assert!(base_url_to_socket_addr("not a url").is_none());
+    }
+
+    #[test]
+    fn unreachable_port_is_false() {
+        // Port 1 on localhost is not listening in any sane test environment.
+        assert!(!port_reachable("http://127.0.0.1:1"));
+    }
+
+    /// Live test: requires a real `zellij` ≥ 0.43 on PATH. Not run in CI.
+    /// `cargo test -p kamajid -- --ignored zellij_web_real_attach_info`
+    #[test]
+    #[ignore = "requires a real zellij binary; run manually with --ignored"]
+    fn zellij_web_real_attach_info() {
+        let zw = ZellijWeb::new();
+        let info = zw.attach_info("kamaji-smoke-test").unwrap();
+        assert_eq!(info.session_name, "kamaji-smoke-test");
+        assert_eq!(info.web_url, "http://127.0.0.1:8082/kamaji-smoke-test");
+        assert!(
+            !info.token.is_empty(),
+            "real attach must yield a non-empty token"
+        );
     }
 }
