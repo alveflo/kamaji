@@ -152,6 +152,37 @@ pub fn cleanup_ticket(db: &Db, root_dir: &Path, state_dir: &Path, ticket_id: i64
     Ok(())
 }
 
+/// Reconcile recorded sessions against the live `zellij list-sessions` output.
+/// For every ticket whose `session_name` is NOT present in `sessions`, clear its
+/// session columns and remove its idle marker, and collect `(id, name)`. When
+/// `sessions` is `None` (zellij couldn't be queried) this is a no-op, so a
+/// transient failure never wipes valid state. The session list is a parameter
+/// (not fetched here) so callers control it and tests can inject a crafted list.
+pub fn reconcile(
+    db: &Db,
+    tickets: &[Ticket],
+    state_dir: &Path,
+    sessions: Option<&str>,
+) -> Result<Vec<(i64, String)>> {
+    let Some(list) = sessions else {
+        return Ok(Vec::new());
+    };
+    let vanished: Vec<(i64, String)> = tickets
+        .iter()
+        .filter_map(|t| {
+            t.session_name
+                .as_deref()
+                .filter(|n| !zellij::session_in_list(list, n))
+                .map(|n| (t.id, n.to_string()))
+        })
+        .collect();
+    for (id, name) in &vanished {
+        db.clear_ticket_session(*id)?;
+        let _ = std::fs::remove_file(detect::marker_path(state_dir, name));
+    }
+    Ok(vanished)
+}
+
 /// Write a rendered layout to a uniquely-named temp file and return its path.
 fn layout_file(name: &str, contents: &str) -> Result<PathBuf> {
     static LAYOUT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -167,6 +198,80 @@ fn layout_file(name: &str, contents: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconcile_clears_vanished_sessions_and_returns_them() {
+        let db = Db::open_in_memory().unwrap();
+        let p = db
+            .create_project("p", std::path::Path::new("/tmp/p"), None)
+            .unwrap();
+        // t1 has a session that is STILL in the list; t2's session has vanished.
+        let t1 = db
+            .create_ticket(p.id, "a", "", None, Agent::Claude)
+            .unwrap();
+        db.set_ticket_session(t1.id, "kamaji-1-a", "/wt1", "kamaji-1-a")
+            .unwrap();
+        let t2 = db
+            .create_ticket(p.id, "b", "", None, Agent::Claude)
+            .unwrap();
+        db.set_ticket_session(t2.id, "kamaji-2-b", "/wt2", "kamaji-2-b")
+            .unwrap();
+        // t3 has no session at all — it must be skipped entirely.
+        let t3 = db
+            .create_ticket(p.id, "c", "", None, Agent::Claude)
+            .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let marker2 = crate::detect::marker_path(state_dir.path(), "kamaji-2-b");
+        std::fs::write(&marker2, "").unwrap();
+
+        let tickets = db.list_tickets(p.id).unwrap();
+        // The session list contains only t1's session — t2's has vanished.
+        let sessions = "kamaji-1-a [Created 1h ago]\n";
+        let vanished = reconcile(&db, &tickets, state_dir.path(), Some(sessions)).unwrap();
+
+        // Only t2 vanished; t3 (no session) is not even considered.
+        assert_eq!(vanished, vec![(t2.id, "kamaji-2-b".to_string())]);
+        assert_eq!(db.get_ticket(t3.id).unwrap().unwrap().session_name, None);
+        // t2's columns cleared + marker removed; t1 untouched.
+        assert_eq!(db.get_ticket(t2.id).unwrap().unwrap().session_name, None);
+        assert!(!marker2.exists());
+        assert_eq!(
+            db.get_ticket(t1.id)
+                .unwrap()
+                .unwrap()
+                .session_name
+                .as_deref(),
+            Some("kamaji-1-a")
+        );
+    }
+
+    #[test]
+    fn reconcile_is_a_noop_when_session_list_is_unavailable() {
+        let db = Db::open_in_memory().unwrap();
+        let p = db
+            .create_project("p", std::path::Path::new("/tmp/p"), None)
+            .unwrap();
+        let t = db
+            .create_ticket(p.id, "a", "", None, Agent::Claude)
+            .unwrap();
+        db.set_ticket_session(t.id, "kamaji-1-a", "/wt", "kamaji-1-a")
+            .unwrap();
+        let tickets = db.list_tickets(p.id).unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+
+        // `None` means zellij couldn't be queried — never clear anything.
+        let vanished = reconcile(&db, &tickets, state_dir.path(), None).unwrap();
+        assert!(vanished.is_empty());
+        assert_eq!(
+            db.get_ticket(t.id)
+                .unwrap()
+                .unwrap()
+                .session_name
+                .as_deref(),
+            Some("kamaji-1-a")
+        );
+    }
 
     fn project(id: i64, root: PathBuf, default_agent: Option<Agent>) -> Project {
         Project {
