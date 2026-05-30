@@ -8,7 +8,6 @@ mod ui;
 mod update;
 
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use std::io::{self, Write};
@@ -19,11 +18,12 @@ use std::time::{Duration, Instant};
 use app::App;
 use engine::{Effect, Engine};
 use kamaji_core::db::Db;
-use kamaji_core::{config, detect, models, zellij};
+use kamaji_core::{config, detect, models, paths, zellij};
 
 fn db_path() -> Result<PathBuf> {
-    let dirs = ProjectDirs::from("", "", "kamaji").context("cannot determine data dir")?;
-    Ok(dirs.data_dir().join("kamaji.db"))
+    Ok(paths::data_dir()
+        .context("cannot determine data dir")?
+        .join("kamaji.db"))
 }
 
 fn main() -> Result<()> {
