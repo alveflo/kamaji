@@ -1,5 +1,4 @@
 use crate::models::Status;
-use directories::ProjectDirs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -45,8 +44,8 @@ pub fn decide(
 
 /// Directory holding per-session idle markers (XDG data dir; temp fallback).
 pub fn default_state_dir() -> PathBuf {
-    ProjectDirs::from("", "", "kamaji")
-        .map(|d| d.data_dir().join("state"))
+    crate::paths::data_dir()
+        .map(|d| d.join("state"))
         .unwrap_or_else(|| std::env::temp_dir().join("kamaji").join("state"))
 }
 

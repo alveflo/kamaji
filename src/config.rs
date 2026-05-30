@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -191,8 +190,9 @@ impl Config {
 }
 
 pub fn config_path() -> Result<PathBuf> {
-    let dirs = ProjectDirs::from("", "", "kamaji").context("cannot determine config dir")?;
-    Ok(dirs.config_dir().join("config.toml"))
+    Ok(crate::paths::config_dir()
+        .context("cannot determine config dir")?
+        .join("config.toml"))
 }
 
 pub fn load_from(path: &Path) -> Result<Config> {

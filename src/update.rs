@@ -1,7 +1,6 @@
 //! Version checking and self-update against GitHub Releases.
 
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Read;
@@ -131,8 +130,7 @@ const RELEASES_API: &str = "https://api.github.com/repos/alveflo/kamaji/releases
 
 /// On-disk cache path: `<cache_dir>/update-check.json`.
 pub fn cache_path() -> Option<PathBuf> {
-    let dirs = ProjectDirs::from("", "", "kamaji")?;
-    Some(dirs.cache_dir().join("update-check.json"))
+    Some(crate::paths::cache_dir()?.join("update-check.json"))
 }
 
 /// GET the latest release tag from the GitHub API. GitHub rejects requests
