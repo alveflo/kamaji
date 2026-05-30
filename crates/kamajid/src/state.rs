@@ -1,6 +1,7 @@
 //! Shared daemon state: the SQLite handle (accessed on the blocking pool since
 //! rusqlite is sync), the loaded config, and the event broadcast channel.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use kamaji_core::config::Config;
@@ -19,6 +20,7 @@ pub struct AppState {
     db: Arc<Mutex<Db>>,
     pub config: Arc<Config>,
     pub tx: broadcast::Sender<Event>,
+    state_dir: Arc<PathBuf>,
 }
 
 impl AppState {
@@ -28,7 +30,25 @@ impl AppState {
             db: Arc::new(Mutex::new(db)),
             config: Arc::new(config),
             tx,
+            state_dir: Arc::new(kamaji_core::detect::default_state_dir()),
         }
+    }
+
+    /// Override the per-session idle-marker directory. Call before sharing the
+    /// state (tests use a temp dir; production uses the default).
+    pub fn set_state_dir(&mut self, dir: PathBuf) {
+        self.state_dir = Arc::new(dir);
+    }
+
+    /// The per-session idle-marker directory.
+    pub fn state_dir(&self) -> &std::path::Path {
+        &self.state_dir
+    }
+
+    /// A clone of the shared DB handle, for code that locks it directly (the
+    /// poll task) rather than going through the async `with_db` helper.
+    pub fn db_handle(&self) -> Arc<Mutex<Db>> {
+        self.db.clone()
     }
 
     /// Run a DB operation on the blocking thread pool. rusqlite is synchronous,

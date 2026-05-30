@@ -1,6 +1,8 @@
 //! Integration tests: boot the daemon on an ephemeral port with an in-memory
 //! DB, drive it over HTTP with reqwest, and assert responses + SSE events.
 
+mod support;
+
 use futures::StreamExt;
 use kamaji_core::config::Config;
 use kamaji_core::db::Db;
@@ -312,4 +314,149 @@ async fn moving_a_ticket_emits_ticket_moved_on_sse() {
     assert_eq!(data["id"], tid);
     assert_eq!(data["from"], "todo");
     assert_eq!(data["to"], "in_progress");
+}
+
+#[tokio::test]
+async fn start_without_worktree_base_is_400() {
+    // Default config has worktree_base = None, so prepare fails before zellij.
+    let (base, state) = spawn().await;
+    let repo = support::committed_repo();
+    let tid = state
+        .with_db({
+            let root = repo.path().to_path_buf();
+            move |db| {
+                let p = db.create_project("p", &root, None)?;
+                let t =
+                    db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+                Ok(t.id)
+            }
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["kind"], "bad_request");
+    // The ticket has no session recorded.
+    let t: serde_json::Value = reqwest::get(format!("{base}/tickets/{tid}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(t["session_name"].is_null());
+}
+
+#[tokio::test]
+async fn start_on_non_git_project_is_400() {
+    // worktree_base set, but the project root is not a git repo → prepare fails.
+    let cfg = kamaji_core::config::Config {
+        worktree_base: Some(format!("{}/wt", std::env::temp_dir().display())),
+        ..Default::default()
+    };
+    let mut state = kamajid::state::AppState::new(Db::open_in_memory().unwrap(), cfg);
+    // Bind the temp dir for the test's lifetime so it isn't cleaned early.
+    let sd = tempfile::tempdir().unwrap();
+    state.set_state_dir(sd.path().to_path_buf());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let not_a_repo = tempfile::tempdir().unwrap();
+    let tid = state
+        .with_db({
+            let root = not_a_repo.path().to_path_buf();
+            move |db| {
+                let p = db.create_project("p", &root, None)?;
+                let t =
+                    db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+                Ok(t.id)
+            }
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn start_missing_ticket_is_404() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/999/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn start_rolls_back_fully_on_session_spawn_failure() {
+    // Prepare succeeds (real git repo + worktree_base set), but spawning the
+    // zellij session fails when no zellij binary is present — exercising the
+    // rollback. Skipped when zellij IS available (it would spawn a real session).
+    if support::zellij_available() {
+        return;
+    }
+    let repo = support::committed_repo();
+    let wt_base = tempfile::tempdir().unwrap();
+    let cfg = kamaji_core::config::Config {
+        worktree_base: Some(wt_base.path().join("wt").to_string_lossy().to_string()),
+        ..kamaji_core::config::Config::default()
+    };
+    let mut state = kamajid::state::AppState::new(Db::open_in_memory().unwrap(), cfg);
+    let sd = tempfile::tempdir().unwrap();
+    state.set_state_dir(sd.path().to_path_buf());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let tid = state
+        .with_db({
+            let root = repo.path().to_path_buf();
+            move |db| {
+                let p = db.create_project("p", &root, None)?;
+                let t =
+                    db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+                Ok(t.id)
+            }
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 500);
+
+    // Rolled back fully: the ticket is back in its prior column (Todo) with no
+    // session recorded — the failed start left no trace in the DB.
+    let t: serde_json::Value = reqwest::get(format!("{base}/tickets/{tid}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["status"], "todo");
+    assert!(t["session_name"].is_null());
 }
