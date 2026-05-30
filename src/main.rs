@@ -9,6 +9,7 @@ mod engine;
 mod git;
 mod layout;
 mod models;
+mod paths;
 mod picker;
 mod session;
 mod slug;
@@ -19,7 +20,6 @@ mod zellij;
 mod zellij_config;
 
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use std::io::{self, Write};
@@ -32,8 +32,9 @@ use db::Db;
 use engine::{Effect, Engine};
 
 fn db_path() -> Result<PathBuf> {
-    let dirs = ProjectDirs::from("", "", "kamaji").context("cannot determine data dir")?;
-    Ok(dirs.data_dir().join("kamaji.db"))
+    Ok(paths::data_dir()
+        .context("cannot determine data dir")?
+        .join("kamaji.db"))
 }
 
 fn main() -> Result<()> {
