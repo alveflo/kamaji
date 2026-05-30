@@ -16,7 +16,6 @@ use anyhow::{Context, Result};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -45,14 +44,7 @@ impl Sse {
 
 use app::App;
 use engine::{Effect, Engine};
-use kamaji_core::db::Db;
-use kamaji_core::{config, detect, models, paths, zellij};
-
-fn db_path() -> Result<PathBuf> {
-    Ok(paths::data_dir()
-        .context("cannot determine data dir")?
-        .join("kamaji.db"))
-}
+use kamaji_core::{config, zellij};
 
 fn main() -> Result<()> {
     // Clear any binary set aside by a prior Windows self-update (no-op on Unix).
@@ -70,26 +62,14 @@ fn main() -> Result<()> {
         }
         cli::Command::CreateTicket(args) => {
             let config = config::load_or_init()?;
-            let db = Db::open(&db_path()?)?;
+            // Ensure a healthy kamajid is up (reuse or spawn detached); the
+            // daemon owns ticket creation and the background session start.
+            let client = daemon::ensure_daemon(&config, None, true)
+                .map_err(|e| anyhow::anyhow!("could not start kamaji: {e}"))?;
             let cwd = std::env::current_dir().context("determining current directory")?;
-            let state_dir = detect::default_state_dir();
-            let outcome = cli::run_create_ticket(&db, &config, &args, &cwd, &state_dir)?;
+            let outcome = cli::run_create_ticket(&client, &config, &args, &cwd)?;
             println!("{}", outcome.message);
-            if let Some(spec) = outcome.launch {
-                match zellij::create_session_background(&spec.name, &spec.layout_path, &spec.cwd) {
-                    Ok(()) => println!("Started '{}' in the background", spec.name),
-                    Err(e) => {
-                        eprintln!("could not start session: {e}");
-                        // Tear down the half-started session so the card is left
-                        // clean (no session, back in Todo) and recoverable.
-                        zellij::terminate_session(&spec.name);
-                        let _ = std::fs::remove_file(detect::marker_path(&state_dir, &spec.name));
-                        db.clear_ticket_session(spec.ticket_id)?;
-                        db.set_ticket_status(spec.ticket_id, models::Status::Todo)?;
-                        std::process::exit(1);
-                    }
-                }
-            } else if outcome.background_failed {
+            if outcome.background_failed {
                 if let Some(warning) = outcome.warning {
                     eprintln!("{warning}");
                 }
