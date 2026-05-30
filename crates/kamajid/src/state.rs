@@ -10,6 +10,7 @@ use kamaji_core::events::Event;
 use tokio::sync::broadcast;
 
 use crate::error::ApiError;
+use crate::zellij_web::ZellijWeb;
 
 /// Capacity of the per-daemon event broadcast. A slow SSE client that lags past
 /// this drops events and reconnects (lossy by design — see the spec §5).
@@ -21,6 +22,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub tx: broadcast::Sender<Event>,
     state_dir: Arc<PathBuf>,
+    zellij_web: Arc<ZellijWeb>,
 }
 
 impl AppState {
@@ -31,6 +33,7 @@ impl AppState {
             config: Arc::new(config),
             tx,
             state_dir: Arc::new(kamaji_core::detect::default_state_dir()),
+            zellij_web: Arc::new(ZellijWeb::new()),
         }
     }
 
@@ -43,6 +46,16 @@ impl AppState {
     /// The per-session idle-marker directory.
     pub fn state_dir(&self) -> &std::path::Path {
         &self.state_dir
+    }
+
+    /// Override the `zellij web` manager (tests inject `ZellijWeb::fake(...)`).
+    pub fn set_zellij_web(&mut self, zw: ZellijWeb) {
+        self.zellij_web = Arc::new(zw);
+    }
+
+    /// The `zellij web` manager (lazy server + token).
+    pub fn zellij_web(&self) -> &ZellijWeb {
+        &self.zellij_web
     }
 
     /// A clone of the shared DB handle, for code that locks it directly (the

@@ -49,11 +49,13 @@ impl ZellijWeb {
     }
 
     /// A test double: every `attach_info` returns `token` and the assembled URL,
-    /// with no `zellij` subprocess. Used by integration tests and CI.
+    /// with no `zellij` subprocess. Used by integration tests and CI. The real
+    /// `token` cache stays empty — fake mode returns `fake_token` directly and
+    /// never reaches `ensure_running` (the only reader of the cache).
     pub fn fake(token: &str) -> Self {
         ZellijWeb {
             base_url: DEFAULT_BASE_URL.to_string(),
-            token: Mutex::new(Some(token.to_string())),
+            token: Mutex::new(None),
             fake_token: Some(token.to_string()),
         }
     }
@@ -101,11 +103,10 @@ impl ZellijWeb {
 
 /// Run `zellij web --create-token` once and parse the printed token.
 ///
-/// NOTE: the exact stdout format must be verified against the installed
-/// `zellij` during implementation (the spec flags this as a spike). The current
-/// parse takes the last non-empty whitespace-delimited token of stdout, which
-/// matches `zellij`'s "Token: <value>" / bare-token styles. The `#[ignore]`d
-/// live test and the manual smoke are how this is validated.
+/// NOTE: the parse takes the last whitespace-delimited token of stdout. Verified
+/// end-to-end against zellij 0.43.1 (the `#[ignore]`d `zellij_web_real_attach_info`
+/// test passes there); if a future zellij changes the `--create-token` output
+/// format, re-run that test with `--ignored` and adjust this parser.
 fn create_token() -> anyhow::Result<String> {
     let out = std::process::Command::new("zellij")
         .args(["web", "--create-token"])

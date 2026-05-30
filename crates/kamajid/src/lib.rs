@@ -48,6 +48,10 @@ pub fn router(state: AppState) -> Router {
             "/tickets/:id/done",
             axum::routing::post(routes::tickets::done),
         )
+        .route(
+            "/tickets/:id/attach",
+            axum::routing::post(routes::tickets::attach),
+        )
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }
