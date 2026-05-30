@@ -1,4 +1,4 @@
-pub fn kdl_escape(s: &str) -> String {
+pub(crate) fn kdl_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
