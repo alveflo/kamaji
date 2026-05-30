@@ -1,0 +1,315 @@
+//! Integration tests: boot the daemon on an ephemeral port with an in-memory
+//! DB, drive it over HTTP with reqwest, and assert responses + SSE events.
+
+use futures::StreamExt;
+use kamaji_core::config::Config;
+use kamaji_core::db::Db;
+use kamajid::state::AppState;
+
+/// Boot a daemon on 127.0.0.1:0 with a fresh in-memory DB. Returns the base URL
+/// and the `AppState` (so a test can also inspect/seed the DB or the channel).
+async fn spawn() -> (String, AppState) {
+    let state = AppState::new(Db::open_in_memory().unwrap(), Config::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), state)
+}
+
+#[tokio::test]
+async fn healthz_reports_ok_and_version() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::get(format!("{base}/healthz")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[tokio::test]
+async fn lists_and_gets_projects_and_tickets() {
+    let (base, state) = spawn().await;
+    // Seed directly through the DB the daemon owns.
+    let (pid, tid) = state
+        .with_db(|db| {
+            let p = db.create_project("acme", std::path::Path::new("/tmp/acme"), None)?;
+            let t = db.create_ticket(
+                p.id,
+                "Add login",
+                "desc",
+                Some("do it"),
+                kamaji_core::models::Agent::Claude,
+            )?;
+            Ok((p.id, t.id))
+        })
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+
+    let projects: serde_json::Value = client
+        .get(format!("{base}/projects"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(projects.as_array().unwrap().len(), 1);
+    assert_eq!(projects[0]["name"], "acme");
+
+    let project: serde_json::Value = client
+        .get(format!("{base}/projects/{pid}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(project["id"], pid);
+
+    let tickets: serde_json::Value = client
+        .get(format!("{base}/projects/{pid}/tickets"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(tickets.as_array().unwrap().len(), 1);
+    assert_eq!(tickets[0]["title"], "Add login");
+    assert_eq!(tickets[0]["agent"], "claude");
+    assert_eq!(tickets[0]["status"], "todo");
+
+    let ticket: serde_json::Value = client
+        .get(format!("{base}/tickets/{tid}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ticket["id"], tid);
+}
+
+#[tokio::test]
+async fn missing_ticket_is_404() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::get(format!("{base}/tickets/999")).await.unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["kind"], "not_found");
+}
+
+#[tokio::test]
+async fn config_is_readable() {
+    let (base, _state) = spawn().await;
+    let cfg: serde_json::Value = reqwest::get(format!("{base}/config"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cfg["default_agent"], "claude");
+    assert_eq!(cfg["daemon"]["bind"], "127.0.0.1:8755");
+}
+
+#[tokio::test]
+async fn create_edit_move_delete_ticket_lifecycle() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+
+    // Create.
+    let resp = client
+        .post(format!("{base}/tickets"))
+        .json(&serde_json::json!({
+            "project_id": pid, "title": "Add SSO", "agent": "claude"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let created: serde_json::Value = resp.json().await.unwrap();
+    let tid = created["id"].as_i64().unwrap();
+    assert_eq!(created["status"], "todo");
+
+    // Edit.
+    let edited: serde_json::Value = client
+        .patch(format!("{base}/tickets/{tid}"))
+        .json(&serde_json::json!({ "title": "Add SAML", "description": "scope it" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(edited["title"], "Add SAML");
+    assert_eq!(edited["description"], "scope it");
+
+    // Move.
+    let moved: serde_json::Value = client
+        .post(format!("{base}/tickets/{tid}/move"))
+        .json(&serde_json::json!({ "target": "in_progress" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(moved["status"], "in_progress");
+
+    // Delete.
+    let resp = client
+        .delete(format!("{base}/tickets/{tid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    let resp = client
+        .get(format!("{base}/tickets/{tid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn create_ticket_rejects_empty_title() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets"))
+        .json(&serde_json::json!({ "project_id": pid, "title": "  ", "agent": "claude" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["kind"], "bad_request");
+}
+
+/// Open `/events` and return the live byte stream (box-pinned so it is `Unpin`,
+/// which `StreamExt::next` requires). When this returns, the server-side
+/// broadcast subscription is already active, so any command emitted afterwards
+/// is guaranteed to be delivered on this stream.
+type ByteStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>;
+
+async fn connect_events(base: &str) -> ByteStream {
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/events"))
+        .send()
+        .await
+        .unwrap();
+    Box::pin(resp.bytes_stream())
+}
+
+/// Read SSE records from `stream` until one whose `event:` name equals `want`,
+/// returning `(name, parsed_data_json)`. Times out after ~2s to avoid hanging CI.
+async fn read_named_event<S>(stream: &mut S, want: &str) -> (String, serde_json::Value)
+where
+    S: futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin,
+{
+    let mut buf = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let chunk = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .expect("timed out waiting for SSE event")
+            .expect("SSE stream ended")
+            .expect("SSE chunk error");
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        // SSE records are separated by a blank line. Parse complete records.
+        while let Some(idx) = buf.find("\n\n") {
+            let record: String = buf.drain(..idx + 2).collect();
+            let mut name = None;
+            let mut data = None;
+            for line in record.lines() {
+                if let Some(v) = line.strip_prefix("event:") {
+                    name = Some(v.trim().to_string());
+                } else if let Some(v) = line.strip_prefix("data:") {
+                    data = Some(v.trim().to_string());
+                }
+            }
+            if let (Some(name), Some(data)) = (name, data) {
+                if name == want {
+                    return (name, serde_json::from_str(&data).unwrap());
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn creating_a_ticket_emits_ticket_created_on_sse() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+
+    // Connect FIRST (subscription is live once this returns), then command, then read.
+    let mut stream = connect_events(&base).await;
+
+    reqwest::Client::new()
+        .post(format!("{base}/tickets"))
+        .json(&serde_json::json!({ "project_id": pid, "title": "Streamed", "agent": "claude" }))
+        .send()
+        .await
+        .unwrap();
+
+    let (name, data) = read_named_event(&mut stream, "ticket.created").await;
+    assert_eq!(name, "ticket.created");
+    assert_eq!(data["title"], "Streamed");
+    assert_eq!(data["status"], "todo");
+}
+
+#[tokio::test]
+async fn moving_a_ticket_emits_ticket_moved_on_sse() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let mut stream = connect_events(&base).await;
+
+    reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/move"))
+        .json(&serde_json::json!({ "target": "in_progress" }))
+        .send()
+        .await
+        .unwrap();
+
+    let (name, data) = read_named_event(&mut stream, "ticket.moved").await;
+    assert_eq!(name, "ticket.moved");
+    assert_eq!(data["id"], tid);
+    assert_eq!(data["from"], "todo");
+    assert_eq!(data["to"], "in_progress");
+}

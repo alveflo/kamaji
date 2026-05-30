@@ -39,12 +39,44 @@ fn default_theme() -> String {
     "catppuccin".to_string()
 }
 
+fn default_bind() -> String {
+    "127.0.0.1:8755".to_string()
+}
+fn default_log_format() -> String {
+    "human".to_string()
+}
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScrapePatterns {
     #[serde(default)]
     pub codex: Vec<String>,
     #[serde(default)]
     pub copilot: Vec<String>,
+}
+
+/// Daemon (`kamajid`) settings. Entirely optional and defaulted, so configs
+/// written before the daemon existed still load unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonConfig {
+    #[serde(default = "default_bind")]
+    pub bind: String,
+    #[serde(default = "default_log_format")]
+    pub log_format: String,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        DaemonConfig {
+            bind: default_bind(),
+            log_format: default_log_format(),
+            log_level: default_log_level(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +123,8 @@ pub struct Config {
     pub agents: Agents,
     #[serde(default)]
     pub auto_review: AutoReview,
+    #[serde(default)]
+    pub daemon: DaemonConfig,
 }
 
 impl Default for Config {
@@ -123,6 +157,7 @@ impl Default for Config {
                 },
             },
             auto_review: AutoReview::default(),
+            daemon: DaemonConfig::default(),
         }
     }
 }
@@ -467,6 +502,25 @@ mod tests {
             loaded.resume_command_for(Agent::Claude),
             Some(vec!["claude".to_string(), "--continue".to_string()])
         );
+    }
+
+    #[test]
+    fn daemon_section_defaults_and_loads_when_absent() {
+        // A config.toml predating the daemon must load with daemon defaults.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "default_agent = \"claude\"\nbase_branch = \"auto\"\n\
+             [agents.claude]\nwith_prompt = [\"claude\", \"{prompt}\"]\nno_prompt = [\"claude\"]\n\
+             [agents.codex]\nwith_prompt = [\"codex\", \"{prompt}\"]\nno_prompt = [\"codex\"]\n\
+             [agents.copilot]\nwith_prompt = [\"copilot\", \"{prompt}\"]\nno_prompt = [\"copilot\"]\n",
+        )
+        .unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(loaded.daemon.bind, "127.0.0.1:8755");
+        assert_eq!(loaded.daemon.log_format, "human");
+        assert_eq!(loaded.daemon.log_level, "info");
     }
 
     #[test]

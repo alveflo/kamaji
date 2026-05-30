@@ -3,4 +3,5 @@ resolver = "2"
 members = [
     "crates/kamaji-core",
     "crates/kamaji",
+    "crates/kamajid",
 ]
