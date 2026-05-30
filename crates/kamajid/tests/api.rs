@@ -782,3 +782,42 @@ async fn reconcile_emit_clears_vanished_session_and_emits_session_exited() {
         .unwrap();
     assert!(t["session_name"].is_null());
 }
+
+#[tokio::test]
+async fn create_ticket_under_missing_project_is_400() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets"))
+        .json(&serde_json::json!({ "project_id": 4242, "title": "t", "agent": "claude" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["kind"], "bad_request");
+}
+
+#[tokio::test]
+async fn start_on_already_started_ticket_is_400() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            // Already has a session.
+            db.set_ticket_session(t.id, "kamaji-1-t", "/wt", "kamaji-1-t")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["kind"], "bad_request");
+}

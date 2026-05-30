@@ -127,6 +127,7 @@ impl Db {
         }
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         Ok(Db { conn })
@@ -134,6 +135,7 @@ impl Db {
 
     pub fn open_in_memory() -> Result<Db> {
         let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         Ok(Db { conn })
@@ -384,6 +386,17 @@ mod tests {
         let got = db.get_ticket(t.id).unwrap().unwrap();
         assert!(!got.auto_reviewed);
         assert!(!got.instrumented);
+    }
+
+    #[test]
+    fn foreign_keys_are_enforced() {
+        let db = db();
+        // Inserting a ticket under a non-existent project must fail (FK ON).
+        let err = db.create_ticket(9999, "t", "", None, Agent::Claude);
+        assert!(
+            err.is_err(),
+            "FK enforcement should reject a bad project_id"
+        );
     }
 
     #[test]

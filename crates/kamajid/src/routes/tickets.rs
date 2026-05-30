@@ -54,15 +54,24 @@ pub async fn create(
     }
     let ticket = state
         .with_db(move |db| {
-            db.create_ticket(
+            if db.get_project(body.project_id)?.is_none() {
+                // Signal "bad project" distinctly from a real DB error.
+                return Ok(Err(format!("no such project: {}", body.project_id)));
+            }
+            let t = db.create_ticket(
                 body.project_id,
                 &body.title,
                 &body.description,
                 body.initial_prompt.as_deref(),
                 body.agent,
-            )
+            )?;
+            Ok(Ok(t))
         })
         .await?;
+    let ticket = match ticket {
+        Ok(t) => t,
+        Err(msg) => return Err(ApiError::BadRequest(msg)),
+    };
     state.emit(Event::TicketCreated(ticket.clone()));
     Ok((StatusCode::CREATED, Json(ticket)))
 }
@@ -183,6 +192,11 @@ pub async fn start(
         .await?;
     let ticket = ticket.ok_or(ApiError::NotFound)?;
     let project = project.ok_or(ApiError::NotFound)?;
+    if ticket.session_name.is_some() {
+        return Err(ApiError::BadRequest(
+            "ticket already has a session; stop it first".into(),
+        ));
+    }
     // Remember the prior column so a failed start can be fully rolled back, and
     // so we can emit ticket.moved only when the column actually changes.
     let original_status = ticket.status;
