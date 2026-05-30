@@ -269,10 +269,15 @@ pub async fn done(
             };
             let from = ticket.status;
             let session_name = ticket.session_name.clone();
+            // Track whether teardown actually ran, so `session.exited` is only
+            // emitted when a session was really torn down (not, e.g., for an
+            // orphaned ticket whose project is gone).
+            let mut cleaned = false;
             if cleanup {
                 // root_dir comes from the ticket's project.
                 if let Some(project) = db.get_project(ticket.project_id)? {
                     session::cleanup_ticket(db, &project.root_dir, &state_dir, id)?;
+                    cleaned = true;
                 } else {
                     // An orphaned ticket (project gone): we still mark it Done,
                     // but its worktree/session can't be torn down — flag it.
@@ -284,11 +289,11 @@ pub async fn done(
             }
             db.set_ticket_status(id, kamaji_core::models::Status::Done)?;
             let updated = db.get_ticket(id)?.expect("ticket exists; just updated");
-            Ok(Some((from, session_name, updated)))
+            Ok(Some((from, session_name, cleaned, updated)))
         })
         .await?;
 
-    let (from, session_name, ticket) = outcome.ok_or(ApiError::NotFound)?;
+    let (from, session_name, cleaned, ticket) = outcome.ok_or(ApiError::NotFound)?;
     if from != kamaji_core::models::Status::Done {
         state.emit(Event::TicketMoved {
             id,
@@ -297,7 +302,8 @@ pub async fn done(
             at: chrono::Utc::now().to_rfc3339(),
         });
     }
-    if cleanup {
+    // Only when teardown actually ran AND there was a session to exit.
+    if cleaned {
         if let Some(name) = session_name {
             state.emit(Event::SessionExited {
                 ticket_id: id,

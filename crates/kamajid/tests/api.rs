@@ -533,3 +533,130 @@ async fn done_with_cleanup_tears_down_worktree() {
     assert_eq!(t["status"], "done");
     assert!(t["session_name"].is_null());
 }
+
+#[tokio::test]
+async fn poll_round_moves_idle_claude_ticket_to_review_and_emits() {
+    use kamaji_core::poll::PollLoop;
+
+    // A daemon whose marker dir is a temp dir we control.
+    let state_dir = tempfile::tempdir().unwrap();
+    let mut state = kamajid::state::AppState::new(
+        Db::open_in_memory().unwrap(),
+        kamaji_core::config::Config::default(),
+    );
+    state.set_state_dir(state_dir.path().to_path_buf());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    // An instrumented Claude ticket In Progress with a session — its idle signal
+    // is a marker FILE, so detection works without zellij.
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            db.set_ticket_session(t.id, "kamaji-1-t", "/wt", "kamaji-1-t")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            db.set_ticket_instrumented(t.id, true)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    // Connect SSE first so the move event is delivered.
+    let mut stream = connect_events(&base).await;
+
+    // Drive rounds deterministically (no interval timer):
+    let mut poll = PollLoop::new();
+    let sd = state_dir.path().to_path_buf();
+    // Round 1: no marker → Active baseline, no move.
+    poll = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+    // The agent "stops": its Stop hook creates the idle marker.
+    let marker = kamaji_core::detect::marker_path(state_dir.path(), "kamaji-1-t");
+    std::fs::write(&marker, "").unwrap();
+    // Round 2: marker present → Idle → move to Review + emit. (Returned PollLoop
+    // isn't needed after the final round.)
+    let _ = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+
+    let (name, data) = read_named_event(&mut stream, "ticket.moved").await;
+    assert_eq!(name, "ticket.moved");
+    assert_eq!(data["id"], tid);
+    assert_eq!(data["to"], "review");
+
+    // The DB reflects the auto-move.
+    let t: serde_json::Value = reqwest::get(format!("{base}/tickets/{tid}"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["status"], "review");
+}
+
+#[tokio::test]
+async fn poll_respects_externally_cleared_auto_review_provenance() {
+    // Regression: a human who manually keeps a card in Review (POST /move clears
+    // its `auto_reviewed` column) must not have it dragged back to In Progress by
+    // a later active signal. The poll task re-syncs provenance from the DB each
+    // round, so the externally-cleared flag is honored.
+    use kamaji_core::poll::PollLoop;
+
+    let state_dir = tempfile::tempdir().unwrap();
+    let mut state = kamajid::state::AppState::new(
+        Db::open_in_memory().unwrap(),
+        kamaji_core::config::Config::default(),
+    );
+    state.set_state_dir(state_dir.path().to_path_buf());
+
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            db.set_ticket_session(t.id, "kamaji-2-t", "/wt", "kamaji-2-t")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            db.set_ticket_instrumented(t.id, true)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let mut poll = PollLoop::new();
+    let sd = state_dir.path().to_path_buf();
+    let marker = kamaji_core::detect::marker_path(state_dir.path(), "kamaji-2-t");
+
+    // Round 1: no marker → Active baseline. Round 2: marker → Idle → auto-move to Review.
+    poll = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+    std::fs::write(&marker, "").unwrap();
+    poll = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+    assert_eq!(
+        state
+            .with_db(move |db| Ok(db.get_ticket(tid)?.unwrap().status))
+            .await
+            .unwrap(),
+        kamaji_core::models::Status::Review
+    );
+
+    // The human clears auto-review provenance in the DB (what POST /move does).
+    state
+        .with_db(move |db| db.set_ticket_auto_reviewed(tid, false))
+        .await
+        .unwrap();
+
+    // The agent resumes (marker gone → Active). Without the per-round rehydrate,
+    // the stale in-memory provenance would drag the card back to In Progress.
+    std::fs::remove_file(&marker).unwrap();
+    let _ = kamajid::poll_task::poll_round(&state, poll, &sd).await;
+
+    assert_eq!(
+        state
+            .with_db(move |db| Ok(db.get_ticket(tid)?.unwrap().status))
+            .await
+            .unwrap(),
+        kamaji_core::models::Status::Review,
+        "a manually-kept Review card must not be auto-dragged back"
+    );
+}
