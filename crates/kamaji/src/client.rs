@@ -26,6 +26,14 @@ pub enum ClientError {
 
 pub type Result<T> = std::result::Result<T, ClientError>;
 
+/// True when the error means the daemon is unreachable (vs. a domain error),
+/// signaling the UI to re-probe/respawn the daemon. A `BadRequest`/`NotFound`/
+/// `Server`/`Decode` is a reply from a *live* daemon and must never trigger a
+/// reconnect.
+pub fn is_connection_lost(e: &ClientError) -> bool {
+    matches!(e, ClientError::Unreachable(_))
+}
+
 pub struct DaemonClient {
     http: reqwest::blocking::Client,
     base: String,
@@ -284,6 +292,18 @@ mod tests {
             .json()
             .unwrap();
         (pid, t["id"].as_i64().unwrap())
+    }
+
+    #[test]
+    fn bad_request_does_not_request_reconnect() {
+        // Domain errors come from a *live* daemon, so they must never trip the
+        // reconnect path. `Unreachable` is hard to construct (no public
+        // `reqwest::Error` ctor), so we cover the negative cases exhaustively
+        // here; the positive case is exercised end-to-end via the engine flag.
+        assert!(!is_connection_lost(&ClientError::BadRequest("x".into())));
+        assert!(!is_connection_lost(&ClientError::NotFound));
+        assert!(!is_connection_lost(&ClientError::Server("x".into())));
+        assert!(!is_connection_lost(&ClientError::Decode("x".into())));
     }
 
     #[test]

@@ -36,6 +36,11 @@ pub struct Engine {
     /// Where the theme picker persists the chosen theme. Defaults to the real
     /// config path; tests override it.
     pub config_path: std::path::PathBuf,
+    /// Set when a client call (or the SSE stream) reports the daemon is
+    /// unreachable. The mutation handlers convert client errors into toasts
+    /// internally, so this flag is how a connection-loss signal reaches the main
+    /// loop, which drains it via `take_connection_lost` and attempts a reconnect.
+    connection_lost: bool,
 }
 
 impl Engine {
@@ -45,7 +50,29 @@ impl Engine {
             config,
             app,
             config_path: kamaji_core::config::config_path().unwrap_or_default(),
+            connection_lost: false,
         }
+    }
+
+    /// Record a client error: if it means the daemon is unreachable, raise the
+    /// `connection_lost` flag so the main loop attempts a reconnect. Domain
+    /// errors (BadRequest/NotFound/…) leave the flag untouched.
+    fn note_client_error(&mut self, e: &ClientError) {
+        if crate::client::is_connection_lost(e) {
+            self.connection_lost = true;
+        }
+    }
+
+    /// Directly flag a connection loss (used when the SSE stream reports it is
+    /// disconnected, a secondary trigger independent of the command path).
+    pub fn flag_connection_lost(&mut self) {
+        self.connection_lost = true;
+    }
+
+    /// Read-and-clear the connection-lost flag. The main loop calls this after
+    /// handling input / draining SSE; a `true` return means "attempt reconnect".
+    pub fn take_connection_lost(&mut self) -> bool {
+        std::mem::take(&mut self.connection_lost)
     }
 
     /// Re-fetch the current project's tickets from the daemon and re-clamp the
@@ -54,9 +81,11 @@ impl Engine {
     pub fn refresh_from_client(&mut self) -> anyhow::Result<()> {
         match self.client.list_tickets(self.app.project.id) {
             Ok(tickets) => self.app.tickets = tickets,
-            Err(e) => self
-                .app
-                .set_error(format!("could not refresh board: {e:?}")),
+            Err(e) => {
+                self.note_client_error(&e);
+                self.app
+                    .set_error(format!("could not refresh board: {e:?}"));
+            }
         }
         self.app.reclamp();
         self.app.prune_selection();
@@ -150,6 +179,7 @@ impl Engine {
             return match ticket.session_name.clone() {
                 Some(name) => {
                     if let Err(e) = self.client.move_ticket(ticket.id, Status::InProgress) {
+                        self.note_client_error(&e);
                         self.app.set_error(format!("could not move: {e:?}"));
                         return Ok(Effect::None);
                     }
@@ -169,6 +199,7 @@ impl Engine {
                         Ok(Effect::None)
                     }
                     Err(e) => {
+                        self.note_client_error(&e);
                         self.app.set_error(format!("could not start: {e:?}"));
                         Ok(Effect::None)
                     }
@@ -177,7 +208,10 @@ impl Engine {
         }
         match self.client.move_ticket(ticket.id, target) {
             Ok(_) => self.refresh_from_client()?,
-            Err(e) => self.app.set_error(format!("could not move: {e:?}")),
+            Err(e) => {
+                self.note_client_error(&e);
+                self.app.set_error(format!("could not move: {e:?}"));
+            }
         }
         Ok(Effect::None)
     }
@@ -193,7 +227,10 @@ impl Engine {
                     Some(form.agent),
                 ) {
                     Ok(_) => self.refresh_from_client()?,
-                    Err(e) => self.app.set_error(format!("could not save ticket: {e:?}")),
+                    Err(e) => {
+                        self.note_client_error(&e);
+                        self.app.set_error(format!("could not save ticket: {e:?}"));
+                    }
                 }
                 Ok(Effect::None)
             }
@@ -207,6 +244,7 @@ impl Engine {
                 ) {
                     Ok(t) => t,
                     Err(e) => {
+                        self.note_client_error(&e);
                         self.app
                             .set_error(format!("could not create ticket: {e:?}"));
                         return Ok(Effect::None);
@@ -225,9 +263,11 @@ impl Engine {
                         ));
                     }
                     Err(ClientError::BadRequest(m)) => self.app.set_error(m),
-                    Err(e) => self
-                        .app
-                        .set_error(format!("could not start session: {e:?}")),
+                    Err(e) => {
+                        self.note_client_error(&e);
+                        self.app
+                            .set_error(format!("could not start session: {e:?}"));
+                    }
                 }
                 Ok(Effect::None)
             }
@@ -326,6 +366,7 @@ impl Engine {
                     // 'y' closes with cleanup (terminate session, remove worktree).
                     for id in &ticket_ids {
                         if let Err(e) = self.client.done_ticket(*id, true) {
+                            self.note_client_error(&e);
                             self.app
                                 .set_error(format!("could not complete #{id}: {e:?}"));
                         }
@@ -338,6 +379,7 @@ impl Engine {
                     // 'n' marks done but leaves the session/worktree in place.
                     for id in &ticket_ids {
                         if let Err(e) = self.client.done_ticket(*id, false) {
+                            self.note_client_error(&e);
                             self.app
                                 .set_error(format!("could not complete #{id}: {e:?}"));
                         }
@@ -355,6 +397,7 @@ impl Engine {
             Modal::ConfirmDelete { ticket_id } => match key.code {
                 KeyCode::Char('y') => {
                     if let Err(e) = self.client.delete_ticket(ticket_id) {
+                        self.note_client_error(&e);
                         self.app
                             .set_error(format!("could not delete #{ticket_id}: {e:?}"));
                     }
@@ -575,6 +618,7 @@ impl Engine {
                 return match self.client.main_session(self.app.project.id) {
                     Ok(name) => Ok(Effect::Attach { name }),
                     Err(e) => {
+                        self.note_client_error(&e);
                         self.app
                             .set_error(format!("could not open main session: {e:?}"));
                         Ok(Effect::None)
@@ -730,6 +774,38 @@ mod tests {
             },
             Effect::Attach { name: "s".into() },
         ];
+    }
+
+    // ── connection-loss flag ─────────────────────────────────────────────────
+
+    #[test]
+    fn take_connection_lost_reads_and_clears() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        assert!(!e.take_connection_lost(), "starts clear");
+        e.flag_connection_lost();
+        assert!(e.take_connection_lost(), "flag is observed once");
+        assert!(!e.take_connection_lost(), "and cleared after reading");
+    }
+
+    /// A domain error from a *live* daemon (background start with no worktree
+    /// location → BadRequest) must NOT raise the reconnect flag — only
+    /// `Unreachable` does.
+    #[test]
+    fn bad_request_handler_does_not_flag_connection_lost() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('c')).unwrap();
+        for ch in "Add login".chars() {
+            e.on_key(key(ch)).unwrap();
+        }
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        // The background start hit a BadRequest (no worktree location); that is a
+        // domain error and must not request a reconnect.
+        assert_eq!(e.app.tickets.len(), 1);
+        assert!(
+            !e.take_connection_lost(),
+            "a BadRequest from a live daemon must not flag connection loss"
+        );
     }
 
     // ── SSE application ──────────────────────────────────────────────────────

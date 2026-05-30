@@ -19,9 +19,29 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use sse::SseMsg;
+
+/// Owns the live SSE listener thread and the channel the UI loop drains. Kept in
+/// one place so a reconnect can atomically swap in a fresh thread + channel
+/// (dropping the old receiver ends the old thread on its next send).
+struct Sse {
+    rx: Receiver<SseMsg>,
+    _handle: JoinHandle<()>,
+}
+
+impl Sse {
+    fn spawn(base: &str) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<SseMsg>();
+        let handle = sse::spawn(base.to_string(), tx);
+        Sse {
+            rx,
+            _handle: handle,
+        }
+    }
+}
 
 use app::App;
 use engine::{Effect, Engine};
@@ -89,9 +109,9 @@ fn run_tui(opts: cli::DaemonOpts) -> Result<()> {
     let client = daemon::ensure_daemon(&config, opts.forced_addr.as_deref(), !opts.no_spawn)
         .map_err(|e| anyhow::anyhow!("could not start kamaji: {e}"))?;
 
-    // SSE listener thread (2a: events are drained-and-discarded; applied in 2b).
-    let (sse_tx, sse_rx) = std::sync::mpsc::channel::<sse::SseMsg>();
-    let _sse_handle = sse::spawn(client.base().to_string(), sse_tx);
+    // SSE listener thread. Held in a swappable holder so a reconnect can drop
+    // the dead stream and re-spawn it against the new daemon (Task 2c-3).
+    let sse = Sse::spawn(client.base());
 
     // Background, best-effort "newer version available" check. Never blocks the
     // UI; failures are silent. Result lands in this shared slot.
@@ -108,7 +128,7 @@ fn run_tui(opts: cli::DaemonOpts) -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, client, config, update_status, sse_rx);
+    let result = run(&mut terminal, client, config, opts, update_status, sse);
     ratatui::restore();
     result
 }
@@ -117,8 +137,9 @@ fn run(
     terminal: &mut DefaultTerminal,
     mut client: client::DaemonClient,
     config: config::Config,
+    opts: cli::DaemonOpts,
     update_status: Arc<Mutex<Option<String>>>,
-    sse_rx: Receiver<SseMsg>,
+    mut sse: Sse,
 ) -> Result<()> {
     // Theme/agent come from the daemon's loaded config so the TUI reflects the
     // daemon's state. Fall back to the locally-loaded config if the daemon
@@ -140,7 +161,7 @@ fn run(
         app.theme = theme;
         let mut engine = Engine::new(client, config, app);
 
-        let switch_project = run_board(terminal, &mut engine, &update_status, &sse_rx)?;
+        let switch_project = run_board(terminal, &mut engine, &opts, &update_status, &mut sse)?;
 
         // Reclaim client + config for the next project (or to drop on quit).
         client = engine.client;
@@ -157,25 +178,51 @@ fn run(
 fn run_board(
     terminal: &mut DefaultTerminal,
     engine: &mut Engine,
+    opts: &cli::DaemonOpts,
     update_status: &Arc<Mutex<Option<String>>>,
-    sse_rx: &Receiver<SseMsg>,
+    sse: &mut Sse,
 ) -> Result<bool> {
+    // Count consecutive SSE `Disconnected` reports. The listener retries on its
+    // own, so a single blip is just an info toast; only a run of them (the
+    // daemon is actually gone, not a momentary stream reset) escalates to a
+    // full re-probe/respawn.
+    let mut disconnects: u32 = 0;
     loop {
         // Drain SSE messages and apply them to the board. On (re)connect the
         // whole list is re-fetched so we never miss deltas dropped while
         // disconnected; a lost stream just shows an info toast.
-        while let Ok(msg) = sse_rx.try_recv() {
+        while let Ok(msg) = sse.rx.try_recv() {
             match msg {
                 SseMsg::Connected => {
+                    disconnects = 0;
                     let _ = engine.refresh_from_client();
                 }
-                SseMsg::Disconnected => engine.app.set_info("daemon stream lost — reconnecting…"),
+                SseMsg::Disconnected => {
+                    disconnects = disconnects.saturating_add(1);
+                    engine.app.set_info("daemon stream lost — reconnecting…");
+                    // The listener retries a stream blip on its own; escalate to
+                    // a full re-probe/respawn only after a run of failures (the
+                    // daemon is actually gone, not a momentary stream reset).
+                    if disconnects >= 3 {
+                        engine.flag_connection_lost();
+                    }
+                }
                 SseMsg::Event(ev) => engine.apply_sse_event(*ev),
             }
         }
         if let Ok(guard) = update_status.lock() {
             engine.app.update = guard.clone();
         }
+
+        // Reconnect trigger: a command (or a board refresh) saw `Unreachable`,
+        // or the SSE stream reported repeated disconnects (flagged above). Either
+        // way the daemon looks gone — re-probe/respawn it once (bounded) and
+        // rebuild the stream. The flag is read-and-cleared so each loss is
+        // handled once; on success the disconnect counter resets.
+        if engine.take_connection_lost() && try_reconnect(engine, opts, sse) {
+            disconnects = 0;
+        }
+
         // Auto-review detection now runs in the daemon; its moves arrive via SSE.
         // The "working" bullet that read these levels is a follow-up, so pass an
         // empty map (the `ui/` signature is unchanged).
@@ -216,6 +263,39 @@ fn run_board(
         if engine.app.should_quit {
             return Ok(false);
         }
+    }
+}
+
+/// Re-probe / respawn the daemon after a connection loss and rebuild the SSE
+/// stream against it. Bounded: `daemon::ensure_daemon` itself does only a couple
+/// of health-waited attempts, so this never blocks the UI loop indefinitely.
+///
+/// On success the new `DaemonClient` replaces `engine.client`, the SSE listener
+/// is re-spawned against the new base (the old thread ends when its receiver is
+/// dropped), the board is refreshed, and `true` is returned. On give-up the
+/// sticky "unreachable — reconnecting…" toast is left in place, the stale board
+/// stays usable, and `false` is returned so the loop remains responsive and will
+/// retry on the next trigger.
+fn try_reconnect(engine: &mut Engine, opts: &cli::DaemonOpts, sse: &mut Sse) -> bool {
+    engine.app.set_info("daemon unreachable — reconnecting…");
+    // Clone the config so we can re-probe while mutating `engine.client`; this
+    // path is rare (only on an actual daemon loss).
+    let config = engine.config.clone();
+    match daemon::ensure_daemon(&config, opts.forced_addr.as_deref(), !opts.no_spawn) {
+        Ok(new_client) => {
+            // Drop the dead stream and start a fresh one against the new daemon.
+            *sse = Sse::spawn(new_client.base());
+            engine.client = new_client;
+            // Pull the current board from the reconnected daemon. If this still
+            // fails it re-flags connection loss, so the loop will retry.
+            let _ = engine.refresh_from_client();
+            if !engine.take_connection_lost() {
+                engine.app.set_info("daemon reconnected");
+                return true;
+            }
+            false
+        }
+        Err(_) => false,
     }
 }
 
