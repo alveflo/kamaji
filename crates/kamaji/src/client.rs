@@ -1,8 +1,11 @@
 //! Blocking HTTP client over the kamajid REST API. The TUI loop is sync, so
 //! commands are `reqwest::blocking` round-trips to localhost (sub-ms).
 
-// The client is not yet wired into the binary's command paths; suppress
-// dead_code until later tasks connect it.
+// Reads (list_projects/list_tickets/get_ticket/get_config/create_project) are
+// wired into the TUI as of Step 2b, but the write/command methods
+// (create/update/move/start/done/delete_ticket, main_session, update_config)
+// stay unused until Step 2c rewires the mutation handlers. Suppress dead_code
+// at the module level until then.
 #![allow(dead_code)]
 
 use kamaji_core::config::Config;

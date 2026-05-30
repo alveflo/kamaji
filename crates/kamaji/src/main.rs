@@ -168,15 +168,16 @@ fn run_board(
 ) -> Result<bool> {
     let mut last_tick = Instant::now();
     loop {
-        // 2a: drain SSE messages so the channel never fills. Events are not yet
-        // applied to the UI (that lands in 2b); discard every variant for now.
+        // Drain SSE messages and apply them to the board. On (re)connect the
+        // whole list is re-fetched so we never miss deltas dropped while
+        // disconnected; a lost stream just shows an info toast.
         while let Ok(msg) = sse_rx.try_recv() {
             match msg {
-                SseMsg::Connected => {}
-                SseMsg::Disconnected => {}
-                SseMsg::Event(ev) => {
-                    let _ = ev;
+                SseMsg::Connected => {
+                    let _ = engine.refresh_from_client();
                 }
+                SseMsg::Disconnected => engine.app.set_info("daemon stream lost — reconnecting…"),
+                SseMsg::Event(ev) => engine.apply_sse_event(*ev),
             }
         }
         if let Ok(guard) = update_status.lock() {

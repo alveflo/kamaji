@@ -78,8 +78,6 @@ impl Engine {
     /// Re-fetch the current project's tickets from the daemon and re-clamp the
     /// UI. Used after SSE deltas and after attach. The daemon is the read source
     /// of truth; local DB reads are being retired.
-    // Wired into `run_board`'s SSE drain in Task 2b-3.
-    #[allow(dead_code)]
     pub fn refresh_from_client(&mut self) -> anyhow::Result<()> {
         match self.client.list_tickets(self.app.project.id) {
             Ok(tickets) => self.app.tickets = tickets,
@@ -91,6 +89,64 @@ impl Engine {
         self.app.reclamp();
         self.app.prune_selection();
         Ok(())
+    }
+
+    /// Apply one SSE delta to the in-memory board for the CURRENT project. Events
+    /// for other projects are ignored. Id-only events that need the full row
+    /// (`session.*`) re-fetch via the client. Mirrors today's handle_poll_events
+    /// toast for an auto-review move.
+    pub fn apply_sse_event(&mut self, ev: kamaji_core::events::Event) {
+        use kamaji_core::events::Event;
+        let pid = self.app.project.id;
+        match ev {
+            Event::TicketCreated(t) | Event::TicketUpdated(t) => {
+                if t.project_id != pid {
+                    return;
+                }
+                match self.app.tickets.iter_mut().find(|x| x.id == t.id) {
+                    Some(slot) => *slot = t,
+                    None => self.app.tickets.push(t),
+                }
+            }
+            Event::TicketMoved { id, to, .. } => {
+                if let Some(slot) = self.app.tickets.iter_mut().find(|x| x.id == id) {
+                    slot.status = to;
+                    match to {
+                        Status::Review => self
+                            .app
+                            .set_info(format!("#{id} → Needs attention (agent idle)")),
+                        Status::InProgress => self
+                            .app
+                            .set_info(format!("#{id} → In Progress (agent active)")),
+                        _ => {}
+                    }
+                }
+            }
+            Event::TicketDeleted { id } => {
+                self.app.tickets.retain(|x| x.id != id);
+            }
+            Event::SessionStarted { ticket_id, .. } | Event::SessionExited { ticket_id, .. } => {
+                self.refetch_ticket(ticket_id);
+            }
+            Event::SessionIdle { .. } => { /* informational; the ticket.moved carries the column */
+            }
+        }
+        self.app.reclamp();
+        self.app.prune_selection();
+    }
+
+    /// Splice a freshly-fetched ticket row (after a session.* event). Best-effort:
+    /// a failed fetch leaves the stale row until the next refresh.
+    fn refetch_ticket(&mut self, id: i64) {
+        if let Ok(t) = self.client.get_ticket(id) {
+            if t.project_id != self.app.project.id {
+                return;
+            }
+            match self.app.tickets.iter_mut().find(|x| x.id == id) {
+                Some(slot) => *slot = t,
+                None => self.app.tickets.push(t),
+            }
+        }
     }
 
     pub fn reload(&mut self) -> Result<()> {
@@ -799,6 +855,7 @@ impl Engine {
 mod tests {
     use super::*;
     use kamaji_core::detect::SignalLevel;
+    use kamaji_core::events::Event as CoreEvent;
     use kamaji_core::models::Agent;
     use kamaji_core::slug;
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
@@ -825,6 +882,77 @@ mod tests {
         let project = db.create_project("p", &root, None).unwrap();
         let app = App::new(project, vec![]);
         Engine::new(test_client(), db, Config::default(), app)
+    }
+
+    /// A minimal `Ticket` for applier tests: only the fields the applier reads
+    /// (id, project_id, title, status) carry meaning; the rest are defaults.
+    fn sample_ticket(project_id: i64, id: i64, title: &str, status: Status) -> Ticket {
+        Ticket {
+            id,
+            project_id,
+            title: title.to_string(),
+            description: String::new(),
+            initial_prompt: None,
+            agent: Agent::Claude,
+            status,
+            position: 0,
+            session_name: None,
+            worktree_path: None,
+            branch: None,
+            auto_reviewed: false,
+            instrumented: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn sse_ticket_created_for_current_project_inserts() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        let t = sample_ticket(pid, 1, "New", Status::Todo);
+        e.apply_sse_event(CoreEvent::TicketCreated(t));
+        assert_eq!(e.app.tickets.len(), 1);
+        assert_eq!(e.app.tickets[0].title, "New");
+    }
+
+    #[test]
+    fn sse_ticket_created_for_other_project_is_ignored() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let other = sample_ticket(e.app.project.id + 999, 1, "Elsewhere", Status::Todo);
+        e.apply_sse_event(CoreEvent::TicketCreated(other));
+        assert!(
+            e.app.tickets.is_empty(),
+            "events for other projects are ignored"
+        );
+    }
+
+    #[test]
+    fn sse_ticket_moved_to_review_updates_status_and_toasts() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        e.app.tickets = vec![sample_ticket(pid, 1, "t", Status::InProgress)];
+        e.apply_sse_event(CoreEvent::TicketMoved {
+            id: 1,
+            from: Status::InProgress,
+            to: Status::Review,
+            at: String::new(),
+        });
+        assert_eq!(e.app.tickets[0].status, Status::Review);
+        let msg = e.app.status_message.as_ref().unwrap();
+        assert!(msg.text.contains("Needs attention"));
+        assert_eq!(msg.kind, crate::app::StatusKind::Info);
+    }
+
+    #[test]
+    fn sse_ticket_deleted_removes_and_prunes() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        e.app.tickets = vec![sample_ticket(pid, 1, "t", Status::Todo)];
+        e.app.selected_ids.insert(1);
+        e.apply_sse_event(CoreEvent::TicketDeleted { id: 1 });
+        assert!(e.app.tickets.is_empty());
+        assert!(!e.app.selected_ids.contains(&1));
     }
 
     /// Initialize a real git repo with one commit at `root` so `start_session`
