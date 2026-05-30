@@ -108,13 +108,14 @@ fn run_tui(opts: cli::DaemonOpts) -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, db, config, update_status, sse_rx);
+    let result = run(&mut terminal, client, db, config, update_status, sse_rx);
     ratatui::restore();
     result
 }
 
 fn run(
     terminal: &mut DefaultTerminal,
+    client: client::DaemonClient,
     mut db: Db,
     mut config: config::Config,
     update_status: Arc<Mutex<Option<String>>>,
@@ -122,7 +123,7 @@ fn run(
 ) -> Result<()> {
     loop {
         let theme = crate::theme::Theme::by_name(&config.theme);
-        let Some(project) = picker::run(terminal, &db, theme)? else {
+        let Some(project) = picker::run(terminal, &client, theme)? else {
             return Ok(());
         };
 

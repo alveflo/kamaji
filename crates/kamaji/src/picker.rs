@@ -8,10 +8,16 @@ use ratatui::{DefaultTerminal, Frame};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::client::{ClientError, DaemonClient};
 use crate::dir_select::{self, DirField, RootCheck};
 use crate::theme::Theme;
-use kamaji_core::db::Db;
 use kamaji_core::models::Project;
+
+/// Map a daemon `ClientError` into an `anyhow::Error` for the picker's
+/// `Result`-returning loop.
+fn client_err(e: ClientError) -> anyhow::Error {
+    anyhow::anyhow!("daemon request failed: {e:?}")
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectField {
@@ -119,9 +125,13 @@ struct PickerState {
 
 /// Run the project picker loop. Returns the chosen project, or None if the user
 /// quit without selecting.
-pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Option<Project>> {
+pub fn run(
+    terminal: &mut DefaultTerminal,
+    client: &DaemonClient,
+    theme: Theme,
+) -> Result<Option<Project>> {
     let mut state = PickerState {
-        projects: db.list_projects()?,
+        projects: client.list_projects().map_err(client_err)?,
         selected: 0,
         form: None,
         theme,
@@ -188,7 +198,9 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
                         // Second Enter: confirm creating the missing directory.
                         match form.confirm_create() {
                             Ok(Some(root)) => {
-                                let project = db.create_project(form.name.trim(), &root, None)?;
+                                let project = client
+                                    .create_project(form.name.trim(), &root, None)
+                                    .map_err(client_err)?;
                                 return Ok(Some(project));
                             }
                             Ok(None) => {}
@@ -199,7 +211,9 @@ pub fn run(terminal: &mut DefaultTerminal, db: &Db, theme: Theme) -> Result<Opti
                     } else {
                         match dir_select::check_root(form.resolved_root()) {
                             RootCheck::Ready(root) => {
-                                let project = db.create_project(form.name.trim(), &root, None)?;
+                                let project = client
+                                    .create_project(form.name.trim(), &root, None)
+                                    .map_err(client_err)?;
                                 return Ok(Some(project));
                             }
                             RootCheck::NeedsConfirm(path) => {
