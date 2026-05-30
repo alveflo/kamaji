@@ -1,6 +1,5 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm};
@@ -8,7 +7,7 @@ use crate::dir_select::{self, RootCheck};
 use crate::theme::Theme;
 use kamaji_core::config::Config;
 use kamaji_core::db::Db;
-use kamaji_core::detect::{self, SignalLevel};
+use kamaji_core::detect;
 use kamaji_core::models::{Agent, Status, Ticket};
 use kamaji_core::session::{self, Prepared};
 use kamaji_core::{git, slug, zellij};
@@ -49,12 +48,8 @@ pub struct Engine {
     pub db: Db,
     pub config: Config,
     pub app: App,
-    /// Last observed signal level per ticket id (in-memory; re-baselined on restart).
-    pub last_level: HashMap<i64, SignalLevel>,
-    /// Tickets kamaji auto-moved to Review (provenance gate for the move back).
-    pub auto_review_ids: HashSet<i64>,
-    /// Per-ticket scrape screen hash for the stability guard.
-    pub scrape_hash: HashMap<i64, Option<u64>>,
+    /// Auto-review detection runner (owns the per-session detection state).
+    pub poll: kamaji_core::poll::PollLoop,
     /// Where per-session idle markers live.
     pub state_dir: std::path::PathBuf,
     /// Where the theme picker persists the chosen theme. Defaults to the real
@@ -68,9 +63,7 @@ impl Engine {
             db,
             config,
             app,
-            last_level: HashMap::new(),
-            auto_review_ids: HashSet::new(),
-            scrape_hash: HashMap::new(),
+            poll: kamaji_core::poll::PollLoop::new(),
             state_dir: detect::default_state_dir(),
             config_path: kamaji_core::config::config_path().unwrap_or_default(),
         }
@@ -80,13 +73,7 @@ impl Engine {
         self.app.tickets = self.db.list_tickets(self.app.project.id)?;
         // Rehydrate the auto-review provenance cache from the persisted column so
         // it survives restarts (the move back from Needs attention depends on it).
-        self.auto_review_ids = self
-            .app
-            .tickets
-            .iter()
-            .filter(|t| t.auto_reviewed)
-            .map(|t| t.id)
-            .collect();
+        self.poll.rehydrate(&self.app.tickets);
         self.app.reclamp();
         self.app.prune_selection();
         Ok(())
@@ -206,7 +193,7 @@ impl Engine {
         // A manual move overrides auto-review provenance (so a card a human
         // places in Needs attention is not dragged back when its agent resumes).
         self.db.set_ticket_auto_reviewed(ticket.id, false)?;
-        self.auto_review_ids.remove(&ticket.id);
+        self.poll.clear_auto_review(ticket.id);
         if target == Status::InProgress {
             return match ticket.session_name.clone() {
                 Some(name) => {
@@ -279,49 +266,35 @@ impl Engine {
 
     /// Forget all in-memory detection state for a ticket (on teardown/vanish).
     fn forget_ticket_state(&mut self, id: i64) {
-        self.last_level.remove(&id);
-        self.auto_review_ids.remove(&id);
-        self.scrape_hash.remove(&id);
+        self.poll.forget_ticket(id);
     }
 
-    /// Apply move decisions given already-gathered signal levels. Split out from
-    /// the IO so it can be unit-tested with crafted levels.
-    fn detect_tick_with(&mut self, levels: &HashMap<i64, SignalLevel>) -> Result<()> {
+    /// One detection pass: delegate to the poll runner, then surface any moves
+    /// as the same informational toasts the TUI showed before, and reload.
+    pub fn detect_tick(&mut self) -> Result<()> {
+        let events = self
+            .poll
+            .tick(&self.app.tickets, &self.db, &self.config, &self.state_dir)?;
+        self.handle_poll_events(&events)
+    }
+
+    /// Translate poll events into UI toasts and reload if anything moved. Shared
+    /// by `detect_tick` and the test-only `detect_tick_with` seam.
+    fn handle_poll_events(&mut self, events: &[kamaji_core::events::Event]) -> Result<()> {
+        use kamaji_core::events::Event;
         let mut changed = false;
-        for (&id, &level) in levels {
-            // Copy out the status so we don't hold an app borrow across the db write.
-            let Some(status) = self
-                .app
-                .tickets
-                .iter()
-                .find(|t| t.id == id)
-                .map(|t| t.status)
-            else {
-                continue;
-            };
-            let last = self.last_level.get(&id).copied();
-            let was_auto = self.auto_review_ids.contains(&id);
-            if let Some(target) = detect::decide(last, level, status, was_auto) {
-                self.db.set_ticket_status(id, target)?;
-                match target {
-                    Status::Review => {
-                        self.db.set_ticket_auto_reviewed(id, true)?;
-                        self.auto_review_ids.insert(id);
-                        self.app
-                            .set_info(format!("#{id} → Needs attention (agent idle)"));
-                    }
-                    Status::InProgress => {
-                        self.db.set_ticket_auto_reviewed(id, false)?;
-                        self.auto_review_ids.remove(&id);
-                        self.app
-                            .set_info(format!("#{id} → In Progress (agent active)"));
-                    }
+        for ev in events {
+            if let Event::TicketMoved { id, to, .. } = ev {
+                match to {
+                    Status::Review => self
+                        .app
+                        .set_info(format!("#{id} → Needs attention (agent idle)")),
+                    Status::InProgress => self
+                        .app
+                        .set_info(format!("#{id} → In Progress (agent active)")),
                     _ => {}
                 }
                 changed = true;
-            }
-            if level != SignalLevel::Unknown {
-                self.last_level.insert(id, level);
             }
         }
         if changed {
@@ -330,64 +303,15 @@ impl Engine {
         Ok(())
     }
 
-    /// Read the current signal level for every live, in-progress/review ticket.
-    fn gather_levels(&mut self) -> HashMap<i64, SignalLevel> {
-        // Snapshot first so we don't borrow `app` while mutating scrape state.
-        let live: Vec<(i64, Agent, String, bool)> = self
-            .app
-            .tickets
-            .iter()
-            .filter(|t| matches!(t.status, Status::InProgress | Status::Review))
-            .filter_map(|t| {
-                t.session_name
-                    .clone()
-                    .map(|s| (t.id, t.agent, s, t.instrumented))
-            })
-            .collect();
-
-        // One session listing per tick, used to drop signals from exited
-        // (resurrectable) sessions whose agent is no longer running. `None`
-        // (couldn't ask) leaves detection untouched, like reconcile.
-        let sessions = zellij::list_sessions();
-
-        let mut out = HashMap::new();
-        for (id, agent, session, instrumented) in live {
-            // An exited session's agent is gone, so no signal is trustworthy.
-            if let Some(list) = &sessions {
-                if zellij::session_exited(list, &session) {
-                    out.insert(id, SignalLevel::Unknown);
-                    continue;
-                }
-            }
-            let level = match agent {
-                Agent::Claude => {
-                    // The marker only means "active when absent" if kamaji
-                    // installed the idle hooks; otherwise we can't tell.
-                    if instrumented {
-                        detect::marker_level(&detect::marker_path(&self.state_dir, &session))
-                    } else {
-                        SignalLevel::Unknown
-                    }
-                }
-                Agent::Codex | Agent::Copilot => {
-                    let patterns: Vec<String> = self.config.auto_review_patterns(agent).to_vec();
-                    if patterns.is_empty() {
-                        continue; // detector disabled for this agent
-                    }
-                    let screen = zellij::dump_screen(&session);
-                    let hash = self.scrape_hash.entry(id).or_insert(None);
-                    detect::scrape_level(screen.as_deref(), &patterns, hash)
-                }
-            };
-            out.insert(id, level);
-        }
-        out
-    }
-
-    /// One detection pass: gather levels, then apply move decisions.
-    pub fn detect_tick(&mut self) -> Result<()> {
-        let levels = self.gather_levels();
-        self.detect_tick_with(&levels)
+    /// Test-only seam: apply move decisions from crafted levels (mirrors the old
+    /// `detect_tick_with`) so detection-integration tests need no real zellij.
+    #[cfg(test)]
+    fn detect_tick_with(
+        &mut self,
+        levels: &std::collections::HashMap<i64, kamaji_core::detect::SignalLevel>,
+    ) -> Result<()> {
+        let events = self.poll.apply(&self.app.tickets, levels, &self.db)?;
+        self.handle_poll_events(&events)
     }
 
     fn submit_form(&mut self, form: &TicketForm) -> Result<Effect> {
@@ -993,7 +917,7 @@ mod tests {
             .unwrap();
         e.detect_tick_with(&levels(id, SignalLevel::Idle)).unwrap();
         assert_eq!(e.db.get_ticket(id).unwrap().unwrap().status, Status::Review);
-        assert!(e.auto_review_ids.contains(&id));
+        assert!(e.poll.is_auto_reviewed(id));
         // The toast names the column as the user sees it ("Needs attention"),
         // and an automatic status transition is informational, not an error.
         let msg = e.app.status_message.as_ref().unwrap();
@@ -1014,7 +938,7 @@ mod tests {
             e.db.get_ticket(id).unwrap().unwrap().status,
             Status::InProgress
         );
-        assert!(!e.auto_review_ids.contains(&id));
+        assert!(!e.poll.is_auto_reviewed(id));
     }
 
     /// The move back from Needs attention must survive a kamaji restart, which
@@ -1034,8 +958,7 @@ mod tests {
         assert!(e.db.get_ticket(id).unwrap().unwrap().auto_reviewed);
 
         // Simulate a restart: drop all in-memory detection state, reload from DB.
-        e.auto_review_ids.clear();
-        e.last_level.clear();
+        e.poll = kamaji_core::poll::PollLoop::new();
         e.reload().unwrap();
 
         // Resume the agent: re-baseline as Idle, then it becomes Active.
@@ -1089,14 +1012,19 @@ mod tests {
         e.reload().unwrap();
         let marker = kamaji_core::detect::marker_path(&e.state_dir, "kamaji-sess");
         std::fs::write(&marker, "").unwrap();
-        e.auto_review_ids.insert(t.id);
-        e.last_level.insert(t.id, SignalLevel::Idle);
+        // Seed poll state to be cleared by cleanup: persist auto-review
+        // provenance then rehydrate it via reload, and baseline last_level
+        // with one Active tick.
+        e.db.set_ticket_auto_reviewed(t.id, true).unwrap();
+        e.reload().unwrap();
+        e.detect_tick_with(&levels(t.id, SignalLevel::Active))
+            .unwrap();
 
         e.cleanup_ticket(t.id).unwrap();
 
         assert!(!marker.exists());
-        assert!(!e.auto_review_ids.contains(&t.id));
-        assert!(!e.last_level.contains_key(&t.id));
+        assert!(!e.poll.is_auto_reviewed(t.id));
+        assert!(!e.poll.levels().contains_key(&t.id));
     }
 
     #[test]
@@ -1172,7 +1100,7 @@ mod tests {
             Status::InProgress
         );
         assert!(!matches!(
-            e.last_level.get(&t.id),
+            e.poll.levels().get(&t.id),
             Some(SignalLevel::Active) | Some(SignalLevel::Idle)
         ));
     }

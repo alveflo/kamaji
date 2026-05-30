@@ -144,7 +144,7 @@ fn run_board(
             engine.detect_tick()?;
             last_tick = Instant::now();
         }
-        terminal.draw(|frame| ui::render(frame, &engine.app, &engine.last_level))?;
+        terminal.draw(|frame| ui::render(frame, &engine.app, engine.poll.levels()))?;
 
         if !event::poll(Duration::from_millis(200))? {
             continue;
