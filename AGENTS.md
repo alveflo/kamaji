@@ -12,6 +12,16 @@ a per-project Kanban board. See `docs/superpowers/specs/` for the design.
 
 Every piece of work follows the same loop: **isolate → build → ship**.
 
+### 0. Executing an implementation plan: always subagent-driven
+
+When executing a written implementation plan (one of `docs/superpowers/plans/`),
+**always use the `superpowers:subagent-driven-development` approach** — a fresh
+implementer subagent per task, followed by a spec-compliance review and a
+code-quality review before moving on, plus a final whole-branch review before
+shipping. This is the repo owner's standing preference: **do not ask which
+execution mode to use** — subagent-driven is the default for every plan. (Inline
+execution is only for an explicit one-off request.)
+
 ### 1. Always work in a git worktree
 
 Never commit on `main` directly, and never work in the primary working tree.
@@ -124,6 +134,7 @@ the filter if they differ.) Then `slay tasks done <id> --close`.
 
 | Situation                          | Do this                                             |
 |------------------------------------|-----------------------------------------------------|
+| Executing a plan                   | Subagent-driven (fresh subagent + reviews per task); never ask which mode |
 | Starting any task                  | New worktree + branch off `main`                    |
 | Noticed separate work              | `gh issue create` (only if genuinely out of scope)  |
 | Issue created                      | `slay tasks create "<title>" --project kamaji --description "Start working on GitHub issue #<n>." --external-provider github --external-id <n>` (description = the spawned Claude's prompt) |
