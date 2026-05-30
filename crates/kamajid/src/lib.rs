@@ -17,13 +17,26 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(routes::healthz::healthz))
         .route("/config", get(routes::config::get_config))
-        .route("/projects", get(routes::projects::list))
+        .route(
+            "/projects",
+            get(routes::projects::list).post(routes::projects::create),
+        )
         .route("/projects/:id", get(routes::projects::get_one))
         .route(
             "/projects/:id/tickets",
             get(routes::tickets::list_for_project),
         )
-        .route("/tickets/:id", get(routes::tickets::get_one))
+        .route("/tickets", axum::routing::post(routes::tickets::create))
+        .route(
+            "/tickets/:id",
+            get(routes::tickets::get_one)
+                .patch(routes::tickets::update)
+                .delete(routes::tickets::delete),
+        )
+        .route(
+            "/tickets/:id/move",
+            axum::routing::post(routes::tickets::move_ticket),
+        )
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }

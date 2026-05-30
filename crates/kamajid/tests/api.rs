@@ -115,3 +115,92 @@ async fn config_is_readable() {
     assert_eq!(cfg["default_agent"], "claude");
     assert_eq!(cfg["daemon"]["bind"], "127.0.0.1:8755");
 }
+
+#[tokio::test]
+async fn create_edit_move_delete_ticket_lifecycle() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+
+    // Create.
+    let resp = client
+        .post(format!("{base}/tickets"))
+        .json(&serde_json::json!({
+            "project_id": pid, "title": "Add SSO", "agent": "claude"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let created: serde_json::Value = resp.json().await.unwrap();
+    let tid = created["id"].as_i64().unwrap();
+    assert_eq!(created["status"], "todo");
+
+    // Edit.
+    let edited: serde_json::Value = client
+        .patch(format!("{base}/tickets/{tid}"))
+        .json(&serde_json::json!({ "title": "Add SAML", "description": "scope it" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(edited["title"], "Add SAML");
+    assert_eq!(edited["description"], "scope it");
+
+    // Move.
+    let moved: serde_json::Value = client
+        .post(format!("{base}/tickets/{tid}/move"))
+        .json(&serde_json::json!({ "target": "in_progress" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(moved["status"], "in_progress");
+
+    // Delete.
+    let resp = client
+        .delete(format!("{base}/tickets/{tid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    let resp = client
+        .get(format!("{base}/tickets/{tid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn create_ticket_rejects_empty_title() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets"))
+        .json(&serde_json::json!({ "project_id": pid, "title": "  ", "agent": "claude" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["kind"], "bad_request");
+}
