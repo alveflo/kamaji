@@ -1,4 +1,4 @@
-use crate::config::AgentCommands;
+use kamaji_core::config::AgentCommands;
 
 /// Resolve the argv to launch. With a non-empty prompt, `{prompt}` is replaced
 /// in each part of `with_prompt`; otherwise `no_prompt` is used verbatim.

@@ -1,7 +1,6 @@
 mod agent;
 mod app;
 mod cli;
-mod config;
 mod db;
 mod detect;
 mod dir_select;
@@ -11,7 +10,6 @@ mod session;
 mod theme;
 mod ui;
 mod update;
-mod zellij_config;
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -25,7 +23,7 @@ use std::time::{Duration, Instant};
 use app::App;
 use db::Db;
 use engine::{Effect, Engine};
-use kamaji_core::{models, zellij};
+use kamaji_core::{config, models, zellij};
 
 fn db_path() -> Result<PathBuf> {
     let dirs = ProjectDirs::from("", "", "kamaji").context("cannot determine data dir")?;

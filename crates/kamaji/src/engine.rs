@@ -4,12 +4,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm};
-use crate::config::Config;
 use crate::db::Db;
 use crate::detect::{self, SignalLevel};
 use crate::dir_select::{self, RootCheck};
 use crate::session::{self, Prepared};
 use crate::theme::Theme;
+use kamaji_core::config::Config;
 use kamaji_core::models::{Agent, Status, Ticket};
 use kamaji_core::{git, slug, zellij};
 
@@ -72,7 +72,7 @@ impl Engine {
             auto_review_ids: HashSet::new(),
             scrape_hash: HashMap::new(),
             state_dir: detect::default_state_dir(),
-            config_path: crate::config::config_path().unwrap_or_default(),
+            config_path: kamaji_core::config::config_path().unwrap_or_default(),
         }
     }
 
@@ -581,7 +581,7 @@ impl Engine {
                 KeyCode::Enter => {
                     let chosen = self.app.theme;
                     self.config.theme = chosen.name.to_string();
-                    match crate::config::save_to(&self.config_path, &self.config) {
+                    match kamaji_core::config::save_to(&self.config_path, &self.config) {
                         Ok(()) => {
                             self.app.set_info(format!("theme: {}", chosen.label));
                         }
@@ -619,7 +619,7 @@ impl Engine {
                         &mut self.config.default_agent,
                         chosen.as_str().to_string(),
                     );
-                    match crate::config::save_to(&self.config_path, &self.config) {
+                    match kamaji_core::config::save_to(&self.config_path, &self.config) {
                         Ok(()) => self
                             .app
                             .set_info(format!("default agent: {}", chosen.label())),
@@ -707,7 +707,7 @@ impl Engine {
     fn save_worktree_location(&mut self, path: &std::path::Path) {
         let prev = self.config.worktree_base.take();
         self.config.worktree_base = Some(path.to_string_lossy().to_string());
-        match crate::config::save_to(&self.config_path, &self.config) {
+        match kamaji_core::config::save_to(&self.config_path, &self.config) {
             Ok(()) => self.app.set_info(format!(
                 "worktree location: {}",
                 dir_select::contract_home(path)
@@ -1482,7 +1482,7 @@ mod tests {
             .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.config.theme, "nord");
-        let saved = crate::config::load_from(&e.config_path).unwrap();
+        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
         assert_eq!(saved.theme, "nord");
     }
 
@@ -1534,7 +1534,7 @@ mod tests {
         e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
-        let saved = crate::config::load_from(&e.config_path).unwrap();
+        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
         assert_eq!(saved.theme, crate::theme::Theme::ALL[0]().name);
     }
 
@@ -1588,7 +1588,7 @@ mod tests {
             .unwrap();
         assert!(matches!(e.app.modal, Modal::None));
         assert_eq!(e.config.default_agent, "copilot");
-        let saved = crate::config::load_from(&e.config_path).unwrap();
+        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
         assert_eq!(saved.default_agent, "copilot");
         assert_eq!(saved.default_agent().index(), Agent::Copilot.index());
     }
@@ -2018,7 +2018,7 @@ mod tests {
             e.config.worktree_base,
             Some(target.to_string_lossy().to_string())
         );
-        let saved = crate::config::load_from(&e.config_path).unwrap();
+        let saved = kamaji_core::config::load_from(&e.config_path).unwrap();
         assert_eq!(saved.worktree_base, e.config.worktree_base);
     }
 

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kamaji_core::models::Agent;
+use crate::models::Agent;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCommands {

@@ -1,4 +1,4 @@
-use kamaji_core::layout::BarStyle;
+use crate::layout::BarStyle;
 use std::path::PathBuf;
 
 /// Resolve the configured `zellij_bar` value into a concrete [`BarStyle`].
