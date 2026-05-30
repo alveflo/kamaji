@@ -821,3 +821,95 @@ async fn start_on_already_started_ticket_is_400() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["kind"], "bad_request");
 }
+
+#[tokio::test]
+async fn patch_ticket_updates_all_fields() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(
+                p.id,
+                "t",
+                "d",
+                Some("p1"),
+                kamaji_core::models::Agent::Claude,
+            )?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let edited: serde_json::Value = reqwest::Client::new()
+        .patch(format!("{base}/tickets/{tid}"))
+        .json(&serde_json::json!({
+            "title": "t2", "description": "d2", "initial_prompt": "p2", "agent": "codex"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(edited["title"], "t2");
+    assert_eq!(edited["description"], "d2");
+    assert_eq!(edited["initial_prompt"], "p2");
+    assert_eq!(edited["agent"], "codex");
+}
+
+#[tokio::test]
+async fn patch_and_delete_missing_ticket_are_404() {
+    let (base, _state) = spawn().await;
+    let client = reqwest::Client::new();
+
+    let patch = client
+        .patch(format!("{base}/tickets/777"))
+        .json(&serde_json::json!({ "title": "x", "agent": "claude" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(patch.status(), 404);
+
+    let del = client
+        .delete(format!("{base}/tickets/777"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 404);
+}
+
+#[tokio::test]
+async fn editing_and_deleting_emit_sse_events() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    // ticket.updated
+    let mut stream = connect_events(&base).await;
+    reqwest::Client::new()
+        .patch(format!("{base}/tickets/{tid}"))
+        .json(&serde_json::json!({ "title": "edited", "agent": "claude" }))
+        .send()
+        .await
+        .unwrap();
+    let (n1, d1) = read_named_event(&mut stream, "ticket.updated").await;
+    assert_eq!(n1, "ticket.updated");
+    assert_eq!(d1["title"], "edited");
+
+    // ticket.deleted
+    let mut stream2 = connect_events(&base).await;
+    reqwest::Client::new()
+        .delete(format!("{base}/tickets/{tid}"))
+        .send()
+        .await
+        .unwrap();
+    let (n2, d2) = read_named_event(&mut stream2, "ticket.deleted").await;
+    assert_eq!(n2, "ticket.deleted");
+    assert_eq!(d2["id"], tid);
+}

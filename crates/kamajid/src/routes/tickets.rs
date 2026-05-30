@@ -79,21 +79,46 @@ pub async fn create(
 #[derive(Deserialize)]
 pub struct UpdateTicket {
     pub title: String,
-    pub description: String,
+    /// Replaces the description when present; kept unchanged when omitted.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Replaces the initial prompt when present; kept unchanged when omitted.
+    #[serde(default)]
+    pub initial_prompt: Option<String>,
+    /// Replaces the agent when present; kept unchanged when omitted.
+    #[serde(default)]
+    pub agent: Option<Agent>,
 }
 
-/// `PATCH /tickets/:id` → edit title/description. Emits `ticket.updated`.
+/// `PATCH /tickets/:id` → replace `title`, and (when provided) description,
+/// initial_prompt, and agent. `title` is required and must be non-empty; every
+/// other field keeps its current value when omitted. Note: an omitted optional
+/// field and an explicit JSON `null` both mean "keep" — there is no way to clear
+/// a field back to null via PATCH today. 404 if missing. Emits `ticket.updated`.
 pub async fn update(
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(body): Json<UpdateTicket>,
 ) -> Result<Json<Ticket>, ApiError> {
+    if body.title.trim().is_empty() {
+        return Err(ApiError::BadRequest("title must not be empty".into()));
+    }
     let ticket = state
         .with_db(move |db| {
-            if db.get_ticket(id)?.is_none() {
+            let Some(current) = db.get_ticket(id)? else {
                 return Ok(None);
-            }
-            db.update_ticket_fields(id, &body.title, &body.description)?;
+            };
+            // description / initial_prompt / agent keep their current value when omitted.
+            let description = match &body.description {
+                Some(d) => d.as_str(),
+                None => current.description.as_str(),
+            };
+            let agent = body.agent.unwrap_or(current.agent);
+            let prompt = match &body.initial_prompt {
+                Some(p) => Some(p.as_str()),
+                None => current.initial_prompt.as_deref(),
+            };
+            db.update_ticket_full(id, &body.title, description, prompt, agent)?;
             db.get_ticket(id)
         })
         .await?

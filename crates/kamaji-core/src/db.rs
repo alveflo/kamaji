@@ -218,6 +218,24 @@ impl Db {
         Ok(())
     }
 
+    /// Edit all caller-editable ticket fields at once (full replace): title,
+    /// description, initial prompt, and agent.
+    pub fn update_ticket_full(
+        &self,
+        id: i64,
+        title: &str,
+        description: &str,
+        initial_prompt: Option<&str>,
+        agent: Agent,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tickets SET title = ?2, description = ?3, initial_prompt = ?4, agent = ?5,
+             updated_at = datetime('now') WHERE id = ?1",
+            params![id, title, description, initial_prompt, agent.as_str()],
+        )?;
+        Ok(())
+    }
+
     pub fn set_ticket_status(&self, id: i64, status: Status) -> Result<()> {
         self.conn.execute(
             "UPDATE tickets SET status = ?2, updated_at = datetime('now') WHERE id = ?1",
@@ -386,6 +404,24 @@ mod tests {
         let got = db.get_ticket(t.id).unwrap().unwrap();
         assert!(!got.auto_reviewed);
         assert!(!got.instrumented);
+    }
+
+    #[test]
+    fn update_ticket_full_replaces_all_fields() {
+        let db = db();
+        let p = db
+            .create_project("p", &PathBuf::from("/tmp/p"), None)
+            .unwrap();
+        let t = db
+            .create_ticket(p.id, "t", "d", Some("p1"), Agent::Claude)
+            .unwrap();
+        db.update_ticket_full(t.id, "t2", "d2", Some("p2"), Agent::Codex)
+            .unwrap();
+        let got = db.get_ticket(t.id).unwrap().unwrap();
+        assert_eq!(got.title, "t2");
+        assert_eq!(got.description, "d2");
+        assert_eq!(got.initial_prompt.as_deref(), Some("p2"));
+        assert_eq!(got.agent, Agent::Codex);
     }
 
     #[test]
