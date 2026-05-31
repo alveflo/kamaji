@@ -1,5 +1,8 @@
+pub mod assets;
 pub mod config;
 pub mod events;
 pub mod healthz;
 pub mod projects;
 pub mod tickets;
+pub mod ui;
+pub mod ui_events;

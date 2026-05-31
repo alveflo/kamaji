@@ -19,6 +19,10 @@ pub struct AttachInfo {
     pub web_url: String,
     /// The `zellij web` login token (consumed by the login page).
     pub token: String,
+    /// True only if a runtime probe found `web_url` permits framing (no
+    /// `X-Frame-Options: DENY/SAMEORIGIN` and no restrictive `frame-ancestors`).
+    /// Drives the gated inline-iframe enhancement; new-tab ships regardless.
+    pub iframeable: bool,
 }
 
 /// Build the per-session attach URL, tolerating a trailing slash on the base.
@@ -64,15 +68,18 @@ impl ZellijWeb {
     /// info for `session_name`. In `fake` mode this is pure; in real mode it may
     /// spawn the server and create a token (see [`Self::ensure_running`]).
     pub fn attach_info(&self, session_name: &str) -> anyhow::Result<AttachInfo> {
-        let token = if let Some(t) = &self.fake_token {
-            t.clone()
+        let web_url = web_url(&self.base_url, session_name);
+        let (token, iframeable) = if let Some(t) = &self.fake_token {
+            // Fake mode is pure: no probe, conservatively non-iframeable.
+            (t.clone(), false)
         } else {
-            self.ensure_running()?
+            (self.ensure_running()?, probe_iframeable(&web_url))
         };
         Ok(AttachInfo {
             session_name: session_name.to_string(),
-            web_url: web_url(&self.base_url, session_name),
+            web_url,
             token,
+            iframeable,
         })
     }
 
@@ -126,6 +133,17 @@ fn create_token() -> anyhow::Result<String> {
         .map(str::to_string)
         .ok_or_else(|| anyhow::anyhow!("could not parse a token from: {stdout:?}"))?;
     Ok(token)
+}
+
+/// Best-effort: GET `url` and decide whether zellij web permits framing.
+/// Conservative — returns false on any error or restrictive header.
+///
+/// A real framing probe (blocking GET, inspect `X-Frame-Options` /
+/// `Content-Security-Policy: frame-ancestors`) is a future spike; until then we
+/// default to false, so the inline-iframe enhancement stays gated off and the
+/// always-ships new-tab attach is unaffected.
+fn probe_iframeable(_url: &str) -> bool {
+    false
 }
 
 /// Spawn a detached `zellij web` server. We do not hold the child (the spec
@@ -201,6 +219,7 @@ mod tests {
         assert_eq!(info.session_name, "kamaji-1-x");
         assert_eq!(info.web_url, "http://127.0.0.1:8082/kamaji-1-x");
         assert_eq!(info.token, "test-token");
+        assert!(!info.iframeable, "fake attach defaults to non-iframeable");
     }
 
     #[test]
@@ -233,5 +252,21 @@ mod tests {
             !info.token.is_empty(),
             "real attach must yield a non-empty token"
         );
+        assert!(
+            !info.iframeable,
+            "real attach defaults to non-iframeable until a framing probe is built"
+        );
+    }
+
+    /// Live test: requires a real `zellij` ≥ 0.43 on PATH. Not run in CI.
+    /// Documents the observed `iframeable` value against a real `zellij web`
+    /// session, which gates a future inline-iframe panel.
+    #[test]
+    #[ignore = "requires a real zellij; checks web_url framing headers manually"]
+    fn zellij_web_real_iframe_probe() {
+        let zw = ZellijWeb::new();
+        let info = zw.attach_info("kamaji-smoke-test").unwrap();
+        // Document the observed value; zellij web typically sends X-Frame-Options.
+        eprintln!("iframeable = {}", info.iframeable);
     }
 }

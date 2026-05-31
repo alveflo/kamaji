@@ -7,6 +7,7 @@ pub mod error;
 pub mod poll_task;
 pub mod routes;
 pub mod state;
+pub mod views;
 pub mod zellij_web;
 
 use axum::routing::get;
@@ -17,8 +18,12 @@ use state::AppState;
 /// Build the full router with all routes mounted and the shared state attached.
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(routes::ui::board))
         .route("/healthz", get(routes::healthz::healthz))
         .route("/events", get(routes::events::events))
+        .route("/ui/events", get(routes::ui_events::events))
+        .route("/ui/tickets/new", get(routes::ui::new_ticket))
+        .route("/ui/tickets/:id/edit", get(routes::ui::edit_ticket))
         .route(
             "/config",
             get(routes::config::get_config).patch(routes::config::patch_config),
@@ -59,6 +64,7 @@ pub fn router(state: AppState) -> Router {
             "/tickets/:id/attach",
             axum::routing::post(routes::tickets::attach),
         )
+        .route("/assets/*path", get(routes::assets::serve))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }

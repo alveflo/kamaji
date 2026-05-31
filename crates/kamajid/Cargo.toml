@@ -25,6 +25,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+maud = { version = "0.26", features = ["axum"] }
+rust-embed = "8"
+mime_guess = "2"
 
 # Integration tests in tests/ compile as a SEPARATE crate that does NOT inherit
 # this package's [dependencies] — it only sees `kamajid` plus these dev-deps.
