@@ -465,21 +465,36 @@ body > * { position: relative; z-index: 1; }
    -------------------------------------------------------------------------- */
 #modal:empty { display: none; }
 
+/* The dialog is morphed into #modal by Datastar, not opened via showModal(),
+   so it never enters the top layer: ::backdrop won't render and the default
+   `position: absolute` leaves it in normal flow below the board. Pin it as a
+   fixed, centered overlay and supply the backdrop via a pseudo-element on the
+   mount — mirroring .term-modal below. Auto-margin centering avoids fighting
+   the transform in the modal-in keyframes. */
+#modal:has(dialog.modal)::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  background: rgba(17, 17, 27, 0.62);
+  backdrop-filter: blur(3px);
+}
 dialog.modal {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  z-index: 50;
   color: var(--text);
   background: var(--bg-raise);
   border: 1px solid var(--hairline-2);
   border-radius: var(--radius);
   padding: 0;
   width: min(440px, calc(100vw - 32px));
+  height: fit-content;
   box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.85),
               0 0 0 1px rgba(137, 180, 250, 0.08);
   animation: modal-in 200ms var(--ease) both;
   overflow: hidden;
-}
-dialog.modal::backdrop {
-  background: rgba(17, 17, 27, 0.62);
-  backdrop-filter: blur(3px);
 }
 @keyframes modal-in {
   from { opacity: 0; transform: translateY(14px) scale(0.97); }
