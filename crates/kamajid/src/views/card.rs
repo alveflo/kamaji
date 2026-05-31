@@ -35,33 +35,55 @@ pub fn card(t: &Ticket) -> Markup {
     }
 }
 
-/// State-appropriate action buttons. Each fires the EXISTING JSON command API
-/// via a Datastar action attribute; the authoritative UI update arrives over
-/// `/ui/events` (3c), so the response body is ignored.
+/// State-appropriate action buttons. Each fires the EXISTING JSON command API;
+/// the authoritative UI update arrives over `/ui/events` (3c), so the response
+/// body is ignored. Commands use a plain `fetch()` (like Attach) rather than a
+/// Datastar `@post`/`@delete` action: in Datastar v1 RC.6 an action's second
+/// argument is request *options*, not a body, so `{target}`/`{cleanup}` would
+/// never reach the server. `@get` is kept only for modal-open, where Datastar's
+/// morph-into-`#modal` is exactly what we want. Note the colon in `data-on:click`
+/// — RC.6 parses parameterized attributes on `:`; the hyphen form is ignored.
 fn card_actions(t: &Ticket) -> Markup {
     let id = t.id;
+    // Single-quoted JS only (no `"`), so each expression is safe inside the
+    // double-quoted, unescaped (PreEscaped) attribute value.
+    let attach = PreEscaped(format!(
+        "fetch('/tickets/{id}/attach', {{method:'POST'}}).then(r=>r.json()).then(a=>window.open(a.web_url, '_blank'))"
+    ));
+    let edit = PreEscaped(format!("@get('/ui/tickets/{id}/edit')"));
+    let delete = PreEscaped(format!(
+        "confirm('Delete #{id}? This cannot be undone.') && fetch('/tickets/{id}', {{method:'DELETE'}})"
+    ));
+    let done = PreEscaped(format!(
+        "confirm('Mark #{id} done and tear down its session?') && fetch('/tickets/{id}/done', {{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{cleanup:true}})}})"
+    ));
+    let move_to = |target: &str| {
+        PreEscaped(format!(
+            "fetch('/tickets/{id}/move', {{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{target:'{target}'}})}})"
+        ))
+    };
     html! {
         footer class="card-actions" {
             @match t.status {
                 Status::Todo => {
-                    button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/start')"))) { "▸ Start" }
-                    button class="act" data-on-click=(PreEscaped(format!("@get('/ui/tickets/{id}/edit')"))) { "Edit" }
-                    button class="act danger" data-on-click=(PreEscaped(format!("confirm('Delete #{id}? This cannot be undone.') && @delete('/tickets/{id}')"))) { "Delete" }
+                    button class="act" data-on:click=(PreEscaped(format!("fetch('/tickets/{id}/start', {{method:'POST'}})"))) { "▸ Start" }
+                    button class="act" data-on:click=(&edit) { "Edit" }
+                    button class="act danger" data-on:click=(&delete) { "Delete" }
                 }
                 Status::InProgress => {
-                    button class="act" data-on-click=(PreEscaped(format!("fetch('/tickets/{id}/attach', {{method:'POST'}}).then(r=>r.json()).then(a=>window.open(a.web_url, '_blank'))"))) { "⤢ Attach" }
-                    button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/move', {{target:'review'}})"))) { "Move" }
-                    button class="act" data-on-click=(PreEscaped(format!("@get('/ui/tickets/{id}/edit')"))) { "Edit" }
-                    button class="act" data-on-click=(PreEscaped(format!("confirm('Mark #{id} done and tear down its session?') && @post('/tickets/{id}/done', {{cleanup:true}})"))) { "✓ Done" }
+                    button class="act" data-on:click=(&attach) { "⤢ Attach" }
+                    button class="act" data-on:click=(move_to("review")) { "Move" }
+                    button class="act" data-on:click=(&edit) { "Edit" }
+                    button class="act" data-on:click=(&done) { "✓ Done" }
                 }
                 Status::Review => {
-                    button class="act" data-on-click=(PreEscaped(format!("fetch('/tickets/{id}/attach', {{method:'POST'}}).then(r=>r.json()).then(a=>window.open(a.web_url, '_blank'))"))) { "⤢ Attach" }
-                    button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/move', {{target:'in_progress'}})"))) { "↩ In Progress" }
-                    button class="act" data-on-click=(PreEscaped(format!("confirm('Mark #{id} done and tear down its session?') && @post('/tickets/{id}/done', {{cleanup:true}})"))) { "✓ Done" }
-                    button class="act" data-on-click=(PreEscaped(format!("@get('/ui/tickets/{id}/edit')"))) { "Edit" }
+                    button class="act" data-on:click=(&attach) { "⤢ Attach" }
+                    button class="act" data-on:click=(move_to("in_progress")) { "↩ In Progress" }
+                    button class="act" data-on:click=(&done) { "✓ Done" }
+                    button class="act" data-on:click=(&edit) { "Edit" }
                 }
                 Status::Done => {
-                    button class="act danger" data-on-click=(PreEscaped(format!("confirm('Delete #{id}? This cannot be undone.') && @delete('/tickets/{id}')"))) { "Delete" }
+                    button class="act danger" data-on:click=(&delete) { "Delete" }
                 }
             }
         }
@@ -138,8 +160,45 @@ mod tests {
             "delete guarded by confirm:\n{html}"
         );
         assert!(
-            html.contains("@delete('/tickets/2')"),
-            "delete endpoint:\n{html}"
+            html.contains("fetch('/tickets/2', {method:'DELETE'})"),
+            "delete hits the JSON API via fetch:\n{html}"
+        );
+    }
+
+    #[test]
+    fn bindings_use_rc6_colon_syntax_not_hyphen() {
+        // RC.6 parses parameterized attributes on `:`; `data-on-click` is silently
+        // ignored. This guards the whole class of "buttons do nothing" regressions.
+        for s in [
+            Status::Todo,
+            Status::InProgress,
+            Status::Review,
+            Status::Done,
+        ] {
+            let html = card(&ticket(7, s)).into_string();
+            assert!(
+                html.contains("data-on:click="),
+                "colon event binding for {s:?}:\n{html}"
+            );
+            assert!(
+                !html.contains("data-on-click="),
+                "no hyphen event binding for {s:?}:\n{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn move_and_done_send_a_real_json_body() {
+        // `@post(url, {target})` would drop the body (2nd arg is options in RC.6),
+        // so commands carrying data go through an explicit fetch.
+        let html = card(&ticket(5, Status::InProgress)).into_string();
+        assert!(
+            html.contains("body:JSON.stringify({target:'review'})"),
+            "move sends target in the body:\n{html}"
+        );
+        assert!(
+            html.contains("body:JSON.stringify({cleanup:true})"),
+            "done sends cleanup in the body:\n{html}"
         );
     }
 
