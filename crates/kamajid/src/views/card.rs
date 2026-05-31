@@ -49,13 +49,13 @@ fn card_actions(t: &Ticket) -> Markup {
                     button class="act danger" data-on-click=(PreEscaped(format!("@delete('/tickets/{id}')"))) { "Delete" }
                 }
                 Status::InProgress => {
-                    button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/attach')"))) { "⤢ Attach" }
+                    button class="act" data-on-click=(PreEscaped(format!("fetch('/tickets/{id}/attach', {{method:'POST'}}).then(r=>r.json()).then(a=>window.open(a.web_url, '_blank'))"))) { "⤢ Attach" }
                     button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/move', {{target:'review'}})"))) { "Move" }
                     button class="act" data-on-click=(PreEscaped(format!("@get('/ui/tickets/{id}/edit')"))) { "Edit" }
                     button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/done', {{cleanup:false}})"))) { "✓ Done" }
                 }
                 Status::Review => {
-                    button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/attach')"))) { "⤢ Attach" }
+                    button class="act" data-on-click=(PreEscaped(format!("fetch('/tickets/{id}/attach', {{method:'POST'}}).then(r=>r.json()).then(a=>window.open(a.web_url, '_blank'))"))) { "⤢ Attach" }
                     button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/move', {{target:'in_progress'}})"))) { "↩ In Progress" }
                     button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/done', {{cleanup:false}})"))) { "✓ Done" }
                     button class="act" data-on-click=(PreEscaped(format!("@get('/ui/tickets/{id}/edit')"))) { "Edit" }
@@ -133,6 +133,13 @@ mod tests {
     #[test]
     fn in_progress_card_offers_attach() {
         let html = card(&ticket(5, Status::InProgress)).into_string();
-        assert!(html.contains("/tickets/5/attach"), "Attach action:\n{html}");
+        assert!(
+            html.contains("/tickets/5/attach"),
+            "Attach posts to attach endpoint:\n{html}"
+        );
+        assert!(
+            html.contains("window.open"),
+            "Attach opens a new tab:\n{html}"
+        );
     }
 }
