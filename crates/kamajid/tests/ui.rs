@@ -369,3 +369,55 @@ async fn creating_a_ticket_rerenders_its_column() {
         "whole-column re-render, not an append:\n{data}"
     );
 }
+
+/// The Cancel button targets `GET /ui/tickets/cancel`; the route returns the
+/// empty `#modal` mount, which morphs `#modal` back to empty and clears the
+/// dialog. The response must carry the `#modal` mount and no dialog.
+#[tokio::test]
+async fn cancel_route_returns_empty_modal() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::get(format!("{base}/ui/tickets/cancel"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains(r#"id="modal""#),
+        "carries #modal mount:\n{body}"
+    );
+    assert!(
+        !body.contains("<dialog"),
+        "clears the dialog (empty mount):\n{body}"
+    );
+}
+
+/// The new-ticket fragment morphs the `#modal` mount (so it actually appears)
+/// and carries the client-side close: a successful `@post` resolves and clears
+/// `#modal`. The full DOM clear happens in the browser; here we assert the
+/// served fragment carries the mechanism (the server-observable half).
+#[tokio::test]
+async fn new_ticket_fragment_mounts_and_self_closes() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+    let body = reqwest::get(format!("{base}/ui/tickets/new?project={pid}"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "morphs the #modal mount:\n{body}"
+    );
+    assert!(
+        body.contains(".then(function(){document.getElementById('modal').replaceChildren()})"),
+        "submit closes the modal on success:\n{body}"
+    );
+}
