@@ -690,10 +690,15 @@ async fn poll_respects_externally_cleared_auto_review_provenance() {
     );
 }
 
-/// Boot a daemon whose ZellijWeb is the fake (canned token, no subprocess).
+/// Boot a daemon whose ZellijWeb is the fake (canned token, no subprocess) and
+/// whose session driver reports every session as live — so attach is a plain
+/// attach with no resurrect attempt, regardless of any real `zellij` on PATH.
 async fn spawn_with_fake_attach(token: &str) -> (String, kamajid::state::AppState) {
     let mut state = kamajid::state::AppState::new(Db::open_in_memory().unwrap(), Config::default());
     state.set_zellij_web(kamajid::zellij_web::ZellijWeb::fake(token));
+    state.set_session_driver(std::sync::Arc::new(
+        kamajid::session_driver::FakeSessionDriver::new(true),
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = kamajid::router(state.clone());
@@ -762,6 +767,125 @@ async fn attach_missing_ticket_is_404() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
+}
+
+/// Boot a daemon with a fake `zellij web`, a custom config, and an injected
+/// fake session driver (so the resurrect path is exercised without a real
+/// zellij). Returns the base URL, the state, and the driver handle to inspect.
+async fn spawn_with_driver(
+    cfg: Config,
+    token: &str,
+    driver: std::sync::Arc<kamajid::session_driver::FakeSessionDriver>,
+    state_dir: std::path::PathBuf,
+) -> (String, kamajid::state::AppState) {
+    let mut state = kamajid::state::AppState::new(Db::open_in_memory().unwrap(), cfg);
+    state.set_state_dir(state_dir);
+    state.set_zellij_web(kamajid::zellij_web::ZellijWeb::fake(token));
+    state.set_session_driver(driver);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), state)
+}
+
+#[tokio::test]
+async fn attach_resurrects_dead_session_with_resume_argv() {
+    // A ticket whose zellij session is gone (daemon restarted / reboot) but whose
+    // worktree + persisted conversation still exist. Attaching must recreate the
+    // session in the ticket's worktree, launching the agent with its resume argv.
+    let repo = support::committed_repo();
+    let wt_base = tempfile::tempdir().unwrap();
+    let cfg = Config {
+        worktree_base: Some(wt_base.path().join("wt").to_string_lossy().to_string()),
+        ..Config::default()
+    };
+    let driver = std::sync::Arc::new(kamajid::session_driver::FakeSessionDriver::new(false));
+    let sd = tempfile::tempdir().unwrap();
+    let (base, state) =
+        spawn_with_driver(cfg, "tok-r", driver.clone(), sd.path().to_path_buf()).await;
+
+    // Codex's resume argv is `codex resume --last`.
+    let root = repo.path().to_path_buf();
+    let (tid, name) = state
+        .with_db(move |db| {
+            let p = db.create_project("p", &root, None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Codex)?;
+            let name = kamaji_core::slug::ticket_name(t.id, "t");
+            db.set_ticket_session(t.id, &name, "/unused", &name)?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            Ok((t.id, name))
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/attach"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let info: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(info["session_name"], name);
+    assert_eq!(info["token"], "tok-r");
+
+    // The dead session was recreated exactly once, under its recorded name, with
+    // a layout that launches the agent's resume command.
+    let created = driver.created();
+    assert_eq!(created.len(), 1, "expected exactly one recreate");
+    assert_eq!(created[0].name, name);
+    let layout = &created[0].layout;
+    assert!(
+        layout.contains("codex"),
+        "layout missing agent binary:\n{layout}"
+    );
+    assert!(
+        layout.contains("resume"),
+        "layout missing resume verb:\n{layout}"
+    );
+    assert!(
+        layout.contains("--last"),
+        "layout missing resume flag:\n{layout}"
+    );
+    // Any exited/resurrectable stub holding the name is cleared before recreate.
+    assert!(driver.terminated().contains(&name), "stub not terminated");
+}
+
+#[tokio::test]
+async fn attach_to_live_session_stays_a_plain_attach() {
+    // Idempotency: when the session is already live, attach must NOT recreate it.
+    let driver = std::sync::Arc::new(kamajid::session_driver::FakeSessionDriver::new(true));
+    let sd = tempfile::tempdir().unwrap();
+    let (base, state) = spawn_with_driver(
+        Config::default(),
+        "tok",
+        driver.clone(),
+        sd.path().to_path_buf(),
+    )
+    .await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            db.set_ticket_session(t.id, "kamaji-1-t", "/wt", "kamaji-1-t")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/attach"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(
+        driver.created().is_empty(),
+        "a live session must not be recreated"
+    );
 }
 
 #[tokio::test]

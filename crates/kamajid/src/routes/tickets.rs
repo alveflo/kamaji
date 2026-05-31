@@ -359,23 +359,83 @@ pub async fn done(
 /// (start it first via `/start`). Ensures `zellij web` is running (real mode)
 /// and returns `{ session_name, web_url, token }`. The blocking ensure-running
 /// work runs on the blocking pool.
+///
+/// If the recorded session is no longer live (daemon restart / reboot left it
+/// gone or exited-but-resurrectable), attach first *resurrects* it: recreates
+/// the session in the ticket's existing worktree, launching the agent with its
+/// resume command so the prior conversation continues. Attaching to a session
+/// that is already live stays a plain attach.
 pub async fn attach(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<AttachInfo>, ApiError> {
-    // Resolve the ticket's recorded session name (the authoritative value).
-    let session_name = state
-        .with_db(move |db| Ok(db.get_ticket(id)?.map(|t| t.session_name)))
-        .await?
-        .ok_or(ApiError::NotFound)?
+    // Fetch the ticket + its project: the ticket carries the authoritative
+    // session name; the project locates the worktree a resurrect recreates in.
+    let (ticket, project) = state
+        .with_db(move |db| {
+            let ticket = db.get_ticket(id)?;
+            let project = match &ticket {
+                Some(t) => db.get_project(t.project_id)?,
+                None => None,
+            };
+            Ok((ticket, project))
+        })
+        .await?;
+    let ticket = ticket.ok_or(ApiError::NotFound)?;
+    let session_name = ticket
+        .session_name
+        .clone()
         .ok_or_else(|| ApiError::BadRequest("ticket has no session; start it first".into()))?;
 
-    // Ensure zellij web + token. This can spawn a subprocess and probe a socket,
-    // so run it on the blocking pool (mirrors the daemon's other blocking work).
-    let state2 = state.clone();
-    let info = tokio::task::spawn_blocking(move || state2.zellij_web().attach_info(&session_name))
-        .await
-        .map_err(|e| ApiError::Internal(anyhow::anyhow!("attach task panicked: {e}")))?
-        .map_err(ApiError::Internal)?;
+    // The resurrect check + recreate and the `zellij web` ensure-running both
+    // shell out / probe sockets, so run them together on the blocking pool
+    // (mirrors the daemon's other blocking work).
+    let config = state.config_async().await;
+    let state_dir = state.state_dir().to_path_buf();
+    let st = state.clone();
+    let info = tokio::task::spawn_blocking(move || -> anyhow::Result<AttachInfo> {
+        if !st.sessions().is_session_live(&session_name) {
+            // A live project is required to locate the worktree; if the project
+            // is gone we can't recreate, so fall through to a plain attach.
+            if let Some(project) = &project {
+                resurrect_session(&st, project, &config, &state_dir, &ticket, &session_name)?;
+            }
+        }
+        st.zellij_web().attach_info(&session_name)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(anyhow::anyhow!("attach task panicked: {e}")))?
+    .map_err(ApiError::Internal)?;
     Ok(Json(info))
+}
+
+/// Recreate a dead/exited session for `ticket` in its existing worktree, running
+/// the agent's resume command so its persisted conversation continues. Falls
+/// back to a fresh start only when no resume command is known for the agent.
+///
+/// The recorded `session_name` is authoritative: the recreated zellij session
+/// reuses it (rather than a name freshly derived from the title, which may have
+/// drifted), so the subsequent attach lands on exactly this session.
+fn resurrect_session(
+    state: &AppState,
+    project: &kamaji_core::models::Project,
+    config: &kamaji_core::config::Config,
+    state_dir: &std::path::Path,
+    ticket: &Ticket,
+    session_name: &str,
+) -> anyhow::Result<()> {
+    let prepared = match config.resume_command_for(ticket.agent) {
+        Some(resume_argv) => {
+            session::prepare_resume_session(project, config, state_dir, ticket, resume_argv)?
+        }
+        // No resume command known for this agent → start it fresh instead.
+        None => session::prepare_session(project, config, state_dir, ticket)?,
+    };
+    // Clear any exited/resurrectable stub still holding the name (zellij keeps
+    // exited sessions around), then recreate the session detached under the
+    // recorded name, in the prepared worktree.
+    let driver = state.sessions();
+    driver.terminate(session_name);
+    driver.create_background(session_name, &prepared.layout_path, &prepared.worktree)?;
+    Ok(())
 }
