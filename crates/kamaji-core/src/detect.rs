@@ -1,9 +1,13 @@
 use crate::models::Status;
+use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-/// What a detector believes about an agent session right now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a detector believes about an agent session right now. Serializes as a
+/// lowercase string (`"idle"`/`"active"`/`"unknown"`) so it can ride the SSE
+/// `session.signal` event to clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SignalLevel {
     /// Agent is waiting for user input (finished, or needs permission).
     Idle,

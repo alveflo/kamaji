@@ -203,10 +203,10 @@ fn run_board(
             disconnects = 0;
         }
 
-        // Auto-review detection now runs in the daemon; its moves arrive via SSE.
-        // The "working" bullet that read these levels is a follow-up, so pass an
-        // empty map (the `ui/` signature is unchanged).
-        terminal.draw(|frame| ui::render(frame, &engine.app, &std::collections::HashMap::new()))?;
+        // Auto-review detection runs in the daemon; per-session activity levels
+        // arrive via SSE (`session.signal`) and are kept in `app.signal_levels`,
+        // which feeds the per-session "working" bullet.
+        terminal.draw(|frame| ui::render(frame, &engine.app, &engine.app.signal_levels))?;
 
         if !event::poll(Duration::from_millis(200))? {
             continue;

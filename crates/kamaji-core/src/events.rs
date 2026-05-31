@@ -3,6 +3,7 @@
 //! truth; the daemon frames each event as an SSE record using `sse_name()` for
 //! the `event:` line and the variant's payload for the `data:` line.
 
+use crate::detect::SignalLevel;
 use crate::models::{Status, Ticket};
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +35,13 @@ pub enum Event {
         ticket_id: i64,
         session_name: String,
     },
+    /// The current activity level of a live session, emitted each poll round so
+    /// clients can render a per-session "working" bullet. Purely informational:
+    /// column moves are still carried by `TicketMoved`.
+    SessionSignal {
+        ticket_id: i64,
+        level: SignalLevel,
+    },
 }
 
 impl Event {
@@ -48,6 +56,7 @@ impl Event {
             Event::SessionStarted { .. } => "session.started",
             Event::SessionIdle { .. } => "session.idle",
             Event::SessionExited { .. } => "session.exited",
+            Event::SessionSignal { .. } => "session.signal",
         }
     }
 
@@ -68,6 +77,7 @@ impl Event {
             "session.started" => "session_started",
             "session.idle" => "session_idle",
             "session.exited" => "session_exited",
+            "session.signal" => "session_signal",
             _ => return None,
         };
         let tagged = serde_json::json!({ "type": tag, "data": inner });
@@ -78,6 +88,7 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::SignalLevel;
     use crate::models::{Agent, Status};
 
     /// Mirror of kamajid's routes/events.rs::payload_json — the SSE `data:` payload.
@@ -123,6 +134,14 @@ mod tests {
             Event::SessionExited {
                 ticket_id: 3,
                 session_name: "kamaji-3-x".into(),
+            },
+            Event::SessionSignal {
+                ticket_id: 3,
+                level: SignalLevel::Active,
+            },
+            Event::SessionSignal {
+                ticket_id: 4,
+                level: SignalLevel::Idle,
             },
         ]
     }
@@ -175,6 +194,19 @@ mod tests {
             .sse_name(),
             "session.exited"
         );
+    }
+
+    #[test]
+    fn session_signal_serializes_with_tag_and_snake_case_level() {
+        let ev = Event::SessionSignal {
+            ticket_id: 8,
+            level: SignalLevel::Active,
+        };
+        let v: serde_json::Value = serde_json::to_value(&ev).unwrap();
+        assert_eq!(v["type"], "session_signal");
+        assert_eq!(v["data"]["ticket_id"], 8);
+        assert_eq!(v["data"]["level"], "active");
+        assert_eq!(ev.sse_name(), "session.signal");
     }
 
     #[test]

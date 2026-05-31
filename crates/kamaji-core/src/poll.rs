@@ -82,7 +82,19 @@ impl PollLoop {
         state_dir: &Path,
     ) -> Result<Vec<Event>> {
         let levels = self.gather_levels(tickets, config, state_dir);
-        self.apply(tickets, &levels, db)
+        let mut events = self.apply(tickets, &levels, db)?;
+        // Surface the current activity level for every live session so clients
+        // can render the per-session "working" bullet. Re-emitted each round so
+        // a client that connects mid-stream catches up within one interval.
+        // `Unknown` means "no info this poll" — skip it so a transient blank
+        // screen doesn't clear an established bullet (the client keeps the last
+        // known level until a real Active/Idle, a move, or session exit).
+        for (&ticket_id, &level) in &levels {
+            if level != SignalLevel::Unknown {
+                events.push(Event::SessionSignal { ticket_id, level });
+            }
+        }
+        Ok(events)
     }
 
     /// Apply move decisions given already-gathered levels. Split from the IO so
@@ -306,6 +318,34 @@ mod tests {
         assert_eq!(
             db.get_ticket(id).unwrap().unwrap().status,
             Status::InProgress
+        );
+    }
+
+    #[test]
+    fn tick_emits_session_signal_for_each_live_level() {
+        let (db, _tickets, id) = setup();
+        // Instrumented Claude with no idle marker present => detected Active.
+        db.set_ticket_instrumented(id, true).unwrap();
+        let project_id = db.get_ticket(id).unwrap().unwrap().project_id;
+        let tickets = db.list_tickets(project_id).unwrap();
+        let mut p = PollLoop::new();
+        let events = p
+            .tick(
+                &tickets,
+                &db,
+                &Config::default(),
+                Path::new("/nonexistent-state-dir"),
+            )
+            .unwrap();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::SessionSignal {
+                    ticket_id,
+                    level: SignalLevel::Active,
+                } if *ticket_id == id
+            )),
+            "tick should emit a SessionSignal carrying the live activity level, got {events:?}"
         );
     }
 
