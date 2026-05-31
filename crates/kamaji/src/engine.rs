@@ -121,11 +121,21 @@ impl Engine {
             }
             Event::TicketDeleted { id } => {
                 self.app.tickets.retain(|x| x.id != id);
+                self.app.signal_levels.remove(&id);
             }
-            Event::SessionStarted { ticket_id, .. } | Event::SessionExited { ticket_id, .. } => {
+            Event::SessionStarted { ticket_id, .. } => {
+                self.refetch_ticket(ticket_id);
+            }
+            Event::SessionExited { ticket_id, .. } => {
+                // The session is gone: drop its activity bullet so a stale
+                // "working" marker doesn't linger after the agent exits.
+                self.app.signal_levels.remove(&ticket_id);
                 self.refetch_ticket(ticket_id);
             }
             Event::SessionIdle { .. } => { /* informational; the ticket.moved carries the column */
+            }
+            Event::SessionSignal { ticket_id, level } => {
+                self.app.signal_levels.insert(ticket_id, level);
             }
         }
         self.app.reclamp();
@@ -869,6 +879,41 @@ mod tests {
         e.apply_sse_event(CoreEvent::TicketDeleted { id: 1 });
         assert!(e.app.tickets.is_empty());
         assert!(!e.app.selected_ids.contains(&1));
+    }
+
+    #[test]
+    fn sse_session_signal_records_level() {
+        use kamaji_core::detect::SignalLevel;
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.apply_sse_event(CoreEvent::SessionSignal {
+            ticket_id: 1,
+            level: SignalLevel::Active,
+        });
+        assert_eq!(e.app.signal_levels.get(&1), Some(&SignalLevel::Active));
+    }
+
+    #[test]
+    fn sse_session_exited_clears_signal_level() {
+        use kamaji_core::detect::SignalLevel;
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.app.signal_levels.insert(1, SignalLevel::Active);
+        e.apply_sse_event(CoreEvent::SessionExited {
+            ticket_id: 1,
+            session_name: "kamaji-1-t".into(),
+        });
+        assert!(
+            !e.app.signal_levels.contains_key(&1),
+            "an exited session's bullet must not linger"
+        );
+    }
+
+    #[test]
+    fn sse_ticket_deleted_clears_signal_level() {
+        use kamaji_core::detect::SignalLevel;
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.app.signal_levels.insert(1, SignalLevel::Active);
+        e.apply_sse_event(CoreEvent::TicketDeleted { id: 1 });
+        assert!(!e.app.signal_levels.contains_key(&1));
     }
 
     // ── Mutation handlers → client ───────────────────────────────────────────

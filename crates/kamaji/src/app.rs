@@ -1,7 +1,8 @@
 use crate::dir_select::DirField;
 use crate::theme::Theme;
+use kamaji_core::detect::SignalLevel;
 use kamaji_core::models::{Agent, Project, Status, Ticket};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Board search/filter state. An empty query means no filter is applied.
 #[derive(Debug, Clone, Default)]
@@ -234,6 +235,10 @@ pub struct App {
     /// Ticket ids in the multi-select set, for bulk actions (e.g. close
     /// several at once). Independent of the cursor and of the search filter.
     pub selected_ids: HashSet<i64>,
+    /// Latest per-ticket activity level streamed from the daemon over SSE
+    /// (`session.signal`), used to colour the per-session "working" bullet.
+    /// Empty until the first signal arrives; a missing entry renders neutral.
+    pub signal_levels: HashMap<i64, SignalLevel>,
 }
 
 impl App {
@@ -250,6 +255,7 @@ impl App {
             theme: Theme::default(),
             update: None,
             selected_ids: HashSet::new(),
+            signal_levels: HashMap::new(),
         }
     }
 

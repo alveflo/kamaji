@@ -135,6 +135,10 @@ async fn event_to_patches(state: &AppState, ev: Event) -> Vec<SseEvent> {
             Some(t) => vec![patch_elements(None, &[card(&t)])],
             None => Vec::new(),
         },
+        // The TUI's per-session activity bullet rides this event; the browser's
+        // card chip is derived from the ticket's column, so there is nothing to
+        // re-render here.
+        Event::SessionSignal { .. } => Vec::new(),
     }
 }
 
