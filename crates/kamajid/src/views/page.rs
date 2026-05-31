@@ -23,10 +23,7 @@ pub fn page(
                 link rel="stylesheet" href="/assets/app.css";
                 script type="module" src="/assets/datastar.js" {}
             }
-            // TEMPORARY (3b): reload after each command so the board reflects mutations
-            // before SSE exists. Removed in 3c when /ui/events streams live patches.
-            body data-on-load="@get('/ui/events')"
-                 data-on-datastar-fetch__window="if (evt.detail.type === 'finished') window.location.reload()" {
+            body data-on-load="@get('/ui/events')" {
                 header class="topbar" {
                     span class="wordmark" { "kamaji" }
                     div class="project-switcher" {
@@ -91,16 +88,6 @@ mod tests {
         assert!(
             html.contains(r#"data-on-load="@get('/ui/events')""#),
             "sse hook:\n{html}"
-        );
-    }
-
-    #[test]
-    fn page_reloads_after_command_until_sse() {
-        let p = project(1, "acme");
-        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
-        assert!(
-            html.contains("datastar-fetch"),
-            "temporary reload crutch present:\n{html}"
         );
     }
 

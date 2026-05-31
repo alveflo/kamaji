@@ -3,9 +3,62 @@
 
 mod support;
 
+use futures::StreamExt;
 use kamaji_core::config::Config;
 use kamaji_core::db::Db;
 use kamajid::state::AppState;
+
+/// Box-pinned (so it is `Unpin` for `StreamExt::next`) live SSE byte stream.
+type ByteStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>;
+
+/// Open `/ui/events` (the Datastar fragment SSE stream) and return its live byte
+/// stream. When this returns, the server-side broadcast subscription is active,
+/// so any command issued afterwards is delivered on this stream.
+async fn connect_ui_events(base: &str) -> ByteStream {
+    let resp = reqwest::Client::new()
+        .get(format!("{base}/ui/events"))
+        .send()
+        .await
+        .unwrap();
+    Box::pin(resp.bytes_stream())
+}
+
+/// Read SSE records until one whose `event:` is `datastar-patch-elements`,
+/// returning its joined `data:` payload. Times out after ~2s to avoid hanging CI.
+async fn read_patch<S>(stream: &mut S) -> String
+where
+    S: futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin,
+{
+    let mut buf = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let chunk = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .expect("timed out waiting for SSE patch")
+            .expect("SSE stream ended")
+            .expect("SSE chunk error");
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(idx) = buf.find("\n\n") {
+            let record: String = buf.drain(..idx + 2).collect();
+            let mut name = None;
+            let mut data = String::new();
+            for line in record.lines() {
+                if let Some(v) = line.strip_prefix("event:") {
+                    name = Some(v.trim().to_string());
+                } else if let Some(v) = line.strip_prefix("data:") {
+                    if !data.is_empty() {
+                        data.push('\n');
+                    }
+                    data.push_str(v.trim());
+                }
+            }
+            if name.as_deref() == Some("datastar-patch-elements") {
+                return data;
+            }
+        }
+    }
+}
 
 async fn spawn() -> (String, AppState) {
     let state = AppState::new(Db::open_in_memory().unwrap(), Config::default());
@@ -123,5 +176,106 @@ async fn move_command_relocates_card_on_next_render() {
     assert!(
         next_col.contains(&format!("card-{tid}")),
         "card now in in_progress:\n{body}"
+    );
+}
+
+#[tokio::test]
+async fn ui_events_emits_full_board_snapshot_on_connect() {
+    let (base, state) = spawn().await;
+    state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            db.create_ticket(p.id, "Seed", "", None, kamaji_core::models::Agent::Claude)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let mut stream = connect_ui_events(&base).await;
+    // Collect the four snapshot column patches; the seeded card must appear in todo.
+    let mut seen = String::new();
+    for _ in 0..4 {
+        seen.push_str(&read_patch(&mut stream).await);
+    }
+    assert!(
+        seen.contains("col-todo"),
+        "snapshot includes todo column:\n{seen}"
+    );
+    assert!(
+        seen.contains("Seed"),
+        "snapshot includes seeded card:\n{seen}"
+    );
+}
+
+#[tokio::test]
+async fn moving_a_ticket_patches_affected_columns() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let mut stream = connect_ui_events(&base).await;
+    for _ in 0..4 {
+        let _ = read_patch(&mut stream).await;
+    } // drain snapshot
+
+    reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/move"))
+        .json(&serde_json::json!({ "target": "in_progress" }))
+        .send()
+        .await
+        .unwrap();
+
+    // Two column patches arrive (from=todo, to=in_progress); read both.
+    let a = read_patch(&mut stream).await;
+    let b = read_patch(&mut stream).await;
+    let both = format!("{a}\n{b}");
+    assert!(
+        both.contains("col-todo"),
+        "from column re-rendered:\n{both}"
+    );
+    assert!(
+        both.contains("col-in_progress"),
+        "to column re-rendered:\n{both}"
+    );
+    assert!(
+        both.contains(&format!("card-{tid}")),
+        "card present in a patch:\n{both}"
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_ticket_patches_a_remove() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    let mut stream = connect_ui_events(&base).await;
+    for _ in 0..4 {
+        let _ = read_patch(&mut stream).await;
+    }
+
+    reqwest::Client::new()
+        .delete(format!("{base}/tickets/{tid}"))
+        .send()
+        .await
+        .unwrap();
+
+    let data = read_patch(&mut stream).await;
+    assert!(data.contains("mode remove"), "remove mode:\n{data}");
+    assert!(
+        data.contains(&format!("#card-{tid}")),
+        "targets the card:\n{data}"
     );
 }
