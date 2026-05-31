@@ -6,6 +6,7 @@
 pub mod error;
 pub mod poll_task;
 pub mod routes;
+pub mod session_driver;
 pub mod state;
 pub mod views;
 pub mod zellij_web;

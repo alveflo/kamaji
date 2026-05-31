@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 use tokio::sync::RwLock as TokioRwLock;
 
 use crate::error::ApiError;
+use crate::session_driver::{RealSessionDriver, SessionDriver};
 use crate::zellij_web::ZellijWeb;
 
 /// Capacity of the per-daemon event broadcast. A slow SSE client that lags past
@@ -24,6 +25,7 @@ pub struct AppState {
     pub tx: broadcast::Sender<Event>,
     state_dir: Arc<PathBuf>,
     zellij_web: Arc<ZellijWeb>,
+    sessions: Arc<dyn SessionDriver>,
 }
 
 impl AppState {
@@ -35,6 +37,7 @@ impl AppState {
             tx,
             state_dir: Arc::new(kamaji_core::detect::default_state_dir()),
             zellij_web: Arc::new(ZellijWeb::new()),
+            sessions: Arc::new(RealSessionDriver),
         }
     }
 
@@ -72,6 +75,17 @@ impl AppState {
     /// The `zellij web` manager (lazy server + token).
     pub fn zellij_web(&self) -> &ZellijWeb {
         &self.zellij_web
+    }
+
+    /// Override the session-lifecycle driver (tests inject a
+    /// [`crate::session_driver::FakeSessionDriver`]).
+    pub fn set_session_driver(&mut self, driver: Arc<dyn SessionDriver>) {
+        self.sessions = driver;
+    }
+
+    /// The session-lifecycle driver used by the resume-on-attach path.
+    pub fn sessions(&self) -> &dyn SessionDriver {
+        self.sessions.as_ref()
     }
 
     /// A clone of the shared DB handle, for code that locks it directly (the
