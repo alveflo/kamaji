@@ -80,6 +80,13 @@ pub async fn new_ticket(
     Ok(ticket_form(pid, None, default_agent, None))
 }
 
+/// `GET /ui/tickets/cancel` → the empty `#modal` mount. Wired to the modal's
+/// Cancel button; the morph clears the dialog without touching the JSON command
+/// API. (A successful submit closes the modal client-side; see `views::modal`.)
+pub async fn cancel_ticket() -> Markup {
+    views::modal::modal_closed()
+}
+
 /// `GET /ui/tickets/:id/edit` → the edit-ticket modal fragment, prefilled.
 pub async fn edit_ticket(
     State(state): State<AppState>,
