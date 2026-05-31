@@ -56,6 +56,23 @@ fn parse_args(config: &Config) -> Result<Args> {
     Ok(Args { bind })
 }
 
+/// Derive the reverse-proxy `(bind_addr, public_base_url)` from the board bind.
+/// The proxy listens on the board port + 1. The public base URL the browser
+/// loads the iframe from uses `127.0.0.1` when the board binds a wildcard host.
+fn derive_proxy_addr(bind: &str) -> Option<(String, String)> {
+    let (host, port) = bind.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    let proxy_port = port.checked_add(1)?;
+    let proxy_bind = format!("{host}:{proxy_port}");
+    let public_host = if host == "0.0.0.0" || host == "::" || host.is_empty() {
+        "127.0.0.1"
+    } else {
+        host
+    };
+    let public_base = format!("http://{public_host}:{proxy_port}");
+    Some((proxy_bind, public_base))
+}
+
 fn init_tracing(config: &Config) {
     let filter = EnvFilter::try_from_env("KAMAJID_LOG")
         .or_else(|_| EnvFilter::try_new(&config.daemon.log_level))
@@ -76,9 +93,34 @@ async fn main() -> Result<()> {
 
     let bind = args.bind.unwrap_or_else(|| config.daemon.bind.clone());
     let db = Db::open(&db_path()?)?;
-    let state = AppState::new(db, config);
+    let mut state = AppState::new(db, config);
+
+    // Reverse proxy for `zellij web` (board port + 1): lets the browser embed a
+    // session in a same-origin, pre-authenticated iframe. Best-effort — if the
+    // port can't be bound, the board still serves; only the inline terminal
+    // panel is unavailable.
+    let proxy = derive_proxy_addr(&bind);
+    if let Some((_, base)) = &proxy {
+        state.set_proxy_base(base.clone());
+    }
+
     let poll_interval = state.config_async().await.poll_interval();
     kamajid::poll_task::spawn_poll_task(state.clone(), poll_interval);
+
+    if let Some((proxy_bind, _)) = &proxy {
+        match tokio::net::TcpListener::bind(proxy_bind).await {
+            Ok(pl) => {
+                tracing::info!(bind = %proxy_bind, "zellij proxy listening");
+                let st = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = kamajid::serve_proxy(pl, st).await {
+                        tracing::error!(error = %e, "zellij proxy stopped");
+                    }
+                });
+            }
+            Err(e) => tracing::warn!(bind = %proxy_bind, error = %e, "zellij proxy not started"),
+        }
+    }
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await

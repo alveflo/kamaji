@@ -104,3 +104,21 @@ pub async fn edit_ticket(
         None,
     ))
 }
+
+/// `GET /ui/tickets/:id/terminal` → the inline terminal panel. Ensures the
+/// ticket's session is live (resurrecting if needed) and `zellij web` is up,
+/// pre-authenticates the reverse proxy, then morphs a near-fullscreen iframe of
+/// the session over `#modal`. Same ensure path as `POST /tickets/:id/attach`.
+pub async fn terminal(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Markup, ApiError> {
+    let (ticket, info) = crate::routes::tickets::ensure_attach(&state, id).await?;
+    // Seed the proxy's auth cookie so the iframe loads with no token prompt.
+    // Best-effort: if it fails the iframe falls back to zellij's own prompt.
+    if let Err(e) = state.zellij_proxy().ensure_authenticated(&info.token).await {
+        tracing::warn!(ticket = id, error = %e, "proxy pre-auth failed; iframe may prompt");
+    }
+    let src = format!("{}/{}", state.proxy_base(), info.session_name);
+    Ok(views::terminal::terminal_panel(&ticket.title, &src))
+}

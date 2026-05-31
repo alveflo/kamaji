@@ -369,6 +369,16 @@ pub async fn attach(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<AttachInfo>, ApiError> {
+    let (_ticket, info) = ensure_attach(&state, id).await?;
+    Ok(Json(info))
+}
+
+/// Resolve + ensure a ticket's browser-attachable session, returning the ticket
+/// (for its title) and the [`AttachInfo`]. Shared by `POST /tickets/:id/attach`
+/// and the inline terminal panel (`GET /ui/tickets/:id/terminal`). 404 if the
+/// ticket is missing; 400 if it has no session yet. Resurrects a dead/exited
+/// session before attaching; ensures `zellij web` is running.
+pub async fn ensure_attach(state: &AppState, id: i64) -> Result<(Ticket, AttachInfo), ApiError> {
     // Fetch the ticket + its project: the ticket carries the authoritative
     // session name; the project locates the worktree a resurrect recreates in.
     let (ticket, project) = state
@@ -393,12 +403,20 @@ pub async fn attach(
     let config = state.config_async().await;
     let state_dir = state.state_dir().to_path_buf();
     let st = state.clone();
+    let ticket_for_task = ticket.clone();
     let info = tokio::task::spawn_blocking(move || -> anyhow::Result<AttachInfo> {
         if !st.sessions().is_session_live(&session_name) {
             // A live project is required to locate the worktree; if the project
             // is gone we can't recreate, so fall through to a plain attach.
             if let Some(project) = &project {
-                resurrect_session(&st, project, &config, &state_dir, &ticket, &session_name)?;
+                resurrect_session(
+                    &st,
+                    project,
+                    &config,
+                    &state_dir,
+                    &ticket_for_task,
+                    &session_name,
+                )?;
             }
         }
         st.zellij_web().attach_info(&session_name)
@@ -406,7 +424,7 @@ pub async fn attach(
     .await
     .map_err(|e| ApiError::Internal(anyhow::anyhow!("attach task panicked: {e}")))?
     .map_err(ApiError::Internal)?;
-    Ok(Json(info))
+    Ok((ticket, info))
 }
 
 /// Recreate a dead/exited session for `ticket` in its existing worktree, running

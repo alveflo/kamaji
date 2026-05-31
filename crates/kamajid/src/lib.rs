@@ -9,6 +9,7 @@ pub mod routes;
 pub mod session_driver;
 pub mod state;
 pub mod views;
+pub mod zellij_proxy;
 pub mod zellij_web;
 
 use axum::routing::get;
@@ -26,6 +27,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ui/tickets/new", get(routes::ui::new_ticket))
         .route("/ui/tickets/cancel", get(routes::ui::cancel_ticket))
         .route("/ui/tickets/:id/edit", get(routes::ui::edit_ticket))
+        .route("/ui/tickets/:id/terminal", get(routes::ui::terminal))
         .route(
             "/config",
             get(routes::config::get_config).patch(routes::config::patch_config),
@@ -74,5 +76,17 @@ pub fn router(state: AppState) -> Router {
 /// Serve the router on an already-bound listener until shutdown.
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> anyhow::Result<()> {
     axum::serve(listener, router(state)).await?;
+    Ok(())
+}
+
+/// The authenticating `zellij web` reverse proxy router (served on its own
+/// listener — see [`crate::zellij_proxy`]).
+pub fn proxy_router(state: &AppState) -> Router {
+    zellij_proxy::router(state.zellij_proxy())
+}
+
+/// Serve the proxy router on its own bound listener until shutdown.
+pub async fn serve_proxy(listener: tokio::net::TcpListener, state: AppState) -> anyhow::Result<()> {
+    axum::serve(listener, proxy_router(&state)).await?;
     Ok(())
 }

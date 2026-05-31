@@ -47,9 +47,10 @@ fn card_actions(t: &Ticket) -> Markup {
     let id = t.id;
     // Single-quoted JS only (no `"`), so each expression is safe inside the
     // double-quoted, unescaped (PreEscaped) attribute value.
-    let attach = PreEscaped(format!(
-        "fetch('/tickets/{id}/attach', {{method:'POST'}}).then(r=>r.json()).then(a=>window.open(a.web_url, '_blank'))"
-    ));
+    // Attach morphs the inline terminal panel over `#modal`: the route ensures
+    // the session + `zellij web`, pre-authenticates the proxy, and returns a
+    // near-fullscreen iframe of the live session.
+    let attach = PreEscaped(format!("@get('/ui/tickets/{id}/terminal')"));
     let edit = PreEscaped(format!("@get('/ui/tickets/{id}/edit')"));
     let delete = PreEscaped(format!(
         "confirm('Delete #{id}? This cannot be undone.') && fetch('/tickets/{id}', {{method:'DELETE'}})"
@@ -206,12 +207,12 @@ mod tests {
     fn in_progress_card_offers_attach() {
         let html = card(&ticket(5, Status::InProgress)).into_string();
         assert!(
-            html.contains("/tickets/5/attach"),
-            "Attach posts to attach endpoint:\n{html}"
+            html.contains("@get('/ui/tickets/5/terminal')"),
+            "Attach opens the inline terminal panel:\n{html}"
         );
         assert!(
-            html.contains("window.open"),
-            "Attach opens a new tab:\n{html}"
+            !html.contains("window.open"),
+            "Attach no longer opens a new tab:\n{html}"
         );
     }
 }
