@@ -1,0 +1,103 @@
+/* kamaji board — dark-first, echoing the TUI's catppuccin-style palette.
+   Design tokens up top; column/card/topbar styles below. */
+:root {
+  --bg:        #1e1e2e;
+  --surface:   #313244;
+  --surface-2: #45475a;
+  --border:    #45475a;
+  --text:      #cdd6f4;
+  --muted:     #a6adc8;
+  --accent:    #89b4fa;
+  --danger:    #f38ba8;
+  /* per-column accents (echo TUI status_color) */
+  --col-todo:        #89b4fa;
+  --col-in_progress: #f9e2af;
+  --col-review:      #fab387;
+  --col-done:        #a6e3a1;
+  --radius: 10px;
+  --gap: 12px;
+  --pad: 14px;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: var(--font); font-size: 14px; line-height: 1.4;
+}
+.topbar {
+  display: flex; align-items: center; gap: 20px;
+  padding: 12px 20px; border-bottom: 1px solid var(--border);
+}
+.wordmark { font-weight: 700; letter-spacing: 0.5px; font-size: 18px; }
+.project-switcher { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.project-switcher select {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+}
+.new-ticket {
+  margin-left: auto; background: var(--accent); color: #11111b;
+  border: 0; border-radius: 6px; padding: 6px 12px; font-weight: 600; cursor: pointer;
+}
+.board {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: var(--gap); padding: var(--gap); align-items: start;
+}
+.column {
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: var(--pad); min-height: 120px;
+}
+.column[data-status="todo"]        { --col: var(--col-todo); }
+.column[data-status="in_progress"] { --col: var(--col-in_progress); }
+.column[data-status="review"]      { --col: var(--col-review); }
+.column[data-status="done"]        { --col: var(--col-done); }
+.col-head {
+  display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px dashed var(--border); padding-bottom: 8px; margin-bottom: 10px;
+}
+.col-title { color: var(--col); font-weight: 700; text-transform: uppercase;
+             letter-spacing: 0.6px; font-size: 12px; }
+.col-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+.col-body { display: flex; flex-direction: column; gap: 10px; }
+.col-empty { color: var(--muted); font-style: italic; opacity: 0.7; margin: 4px 0; }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--col, var(--border)); border-radius: 8px;
+  padding: 10px 12px; transition: transform 160ms ease, background 160ms ease;
+}
+.card:hover { background: var(--surface-2); }
+.card-head { display: flex; align-items: baseline; gap: 6px; }
+.bullet { color: var(--col, var(--muted)); }
+.card[data-status="review"] .bullet { color: var(--col-review); }
+.card-id { color: var(--col, var(--accent)); font-family: var(--mono); font-size: 12px; }
+.card-title { color: var(--text); font-weight: 600; }
+.card-meta { display: flex; gap: 8px; margin: 6px 0 8px; color: var(--muted); font-size: 12px; }
+.chip {
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 0 8px; font-size: 11px; color: var(--muted);
+}
+.card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.act {
+  background: transparent; color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer;
+}
+.act:hover { border-color: var(--accent); }
+.act.danger:hover { border-color: var(--danger); color: var(--danger); }
+dialog.modal {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 20px; min-width: 380px;
+}
+dialog.modal::backdrop { background: rgba(0,0,0,0.5); }
+.modal label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
+.modal input, .modal textarea, .modal select {
+  width: 100%; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+}
+.modal .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.form-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: none; }
+}

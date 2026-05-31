@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod config;
 pub mod events;
 pub mod healthz;
