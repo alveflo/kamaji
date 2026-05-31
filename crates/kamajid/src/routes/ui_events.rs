@@ -6,7 +6,8 @@
 //!
 //! Datastar wire format (pinned to the vendored v1.0.0-RC.6 runtime):
 //!   event: datastar-patch-elements
-//!   data: mode <append|remove>            (omitted → default outer morph by id)
+//!   data: mode remove                     (omitted → default outer morph by id)
+//!   data: selector <css>                  (mode remove only)
 //!   data: elements <html fragment>        (one line per fragment)
 
 use std::convert::Infallible;
@@ -30,27 +31,43 @@ fn patch_column(status: Status, tickets: &[Ticket]) -> SseEvent {
     patch_elements(None, &[column(status, tickets)])
 }
 
-/// Build a `datastar-patch-elements` SSE event. `mode` is `None` for the
-/// default (outer morph by id), `Some("append")` / `Some("remove")` otherwise.
-/// Each `Markup` becomes one `elements` data line (no embedded newlines: maud
-/// renders without them).
-fn patch_elements(mode: Option<&str>, fragments: &[Markup]) -> SseEvent {
+/// Build the `data:` payload for a `datastar-patch-elements` SSE event. PURE:
+/// no I/O, just string assembly, so it can be unit-tested on its wire output.
+///
+/// `mode` is `None` for the default (outer morph by id), `Some("remove")` etc.
+/// `selector` adds a `selector` line (used by `mode remove`). Each `Markup`
+/// becomes one `elements` data line (no embedded newlines: maud renders without
+/// them). The trailing newline is trimmed; axum's `.data()` writes each
+/// `\n`-split line as its own `data:` line.
+fn patch_data(mode: Option<&str>, selector: Option<&str>, elements: &[Markup]) -> String {
     let mut data = String::new();
     if let Some(m) = mode {
         data.push_str(&format!("mode {m}\n"));
     }
-    for f in fragments {
+    if let Some(s) = selector {
+        data.push_str(&format!("selector {s}\n"));
+    }
+    for f in elements {
         data.push_str(&format!("elements {}\n", f.clone().into_string()));
     }
-    // axum's `.data()` writes each `\n`-split line as its own `data:` line.
-    SseEvent::default().event(PATCH_EVENT).data(data.trim_end())
+    data.trim_end().to_string()
+}
+
+/// Build a `datastar-patch-elements` SSE event. `mode` is `None` for the
+/// default (outer morph by id), `Some("remove")` otherwise.
+fn patch_elements(mode: Option<&str>, fragments: &[Markup]) -> SseEvent {
+    SseEvent::default()
+        .event(PATCH_EVENT)
+        .data(patch_data(mode, None, fragments))
 }
 
 /// Remove `#card-<id>` from the DOM.
 fn patch_remove_card(id: i64) -> SseEvent {
-    SseEvent::default()
-        .event(PATCH_EVENT)
-        .data(format!("mode remove\nselector #card-{id}"))
+    SseEvent::default().event(PATCH_EVENT).data(patch_data(
+        Some("remove"),
+        Some(&format!("#card-{id}")),
+        &[],
+    ))
 }
 
 /// Load the current ticket by id (a cheap read on the single-user broadcast
@@ -68,13 +85,22 @@ async fn load_ticket(state: &AppState, id: i64) -> Option<Ticket> {
 async fn event_to_patches(state: &AppState, ev: Event) -> Vec<SseEvent> {
     match ev {
         Event::TicketCreated(t) => {
-            // Append the new card into its column body container.
-            let frag = card(&t).into_string();
-            vec![SseEvent::default().event(PATCH_EVENT).data(format!(
-                "mode append\nselector #col-{} .col-body\nelements {}",
-                t.status.as_str(),
-                frag
-            ))]
+            // Re-render the WHOLE destination column (default outer-morph by
+            // `#col-<status>`) instead of appending a single card. This keeps
+            // the column-count header correct and makes the patch idempotent
+            // (no duplicate `#card-N` under the subscribe/snapshot race),
+            // matching every other arm's convergence guarantee.
+            let status = t.status;
+            let cols = state
+                .with_db(move |db| {
+                    let all = db.list_tickets(t.project_id)?;
+                    let in_col: Vec<Ticket> =
+                        all.into_iter().filter(|x| x.status == status).collect();
+                    Ok(in_col)
+                })
+                .await
+                .unwrap_or_default();
+            vec![patch_column(status, &cols)]
         }
         Event::TicketUpdated(t) => vec![patch_elements(None, &[card(&t)])],
         Event::TicketMoved { id, from, to, .. } => {
@@ -188,24 +214,43 @@ mod tests {
         }
     }
 
-    /// Extract the SSE `data:` block an `SseEvent` would serialize. We rebuild
-    /// the patch via the same constructors to assert the wire content.
+    /// A column patch is a default outer-morph (no `mode` line) carrying the
+    /// rendered `#col-<status>` element. Asserts on the PURE `patch_data` wire
+    /// output that the real constructors share.
     #[test]
     fn column_patch_targets_col_id() {
-        let s = patch_column(Status::Review, &[ticket(1, Status::Review)]);
-        // Render the same column directly to confirm reuse of views::board::column.
-        let direct = column(Status::Review, &[ticket(1, Status::Review)]).into_string();
-        assert!(direct.contains(r#"id="col-review""#));
-        assert!(direct.contains("card-1"));
-        let _ = s; // SseEvent has no public getter; the reuse is the contract.
+        let data = patch_data(
+            None,
+            None,
+            &[column(Status::Review, &[ticket(1, Status::Review)])],
+        );
+        assert!(
+            data.starts_with("elements "),
+            "outer-morph patch must lead with `elements`: {data:?}"
+        );
+        assert!(
+            !data.contains("mode "),
+            "outer-morph patch must omit `mode`: {data:?}"
+        );
+        assert!(data.contains(r#"id="col-review""#), "{data:?}");
+        assert!(data.contains("card-1"), "{data:?}");
     }
 
+    /// A remove patch is exactly `mode remove\nselector #card-<id>` with no
+    /// `elements` line.
     #[test]
     fn remove_card_patch_uses_remove_mode_and_selector() {
-        // Reconstruct the data string the same way the constructor does.
-        let id = 7;
-        let data = format!("mode remove\nselector #card-{id}");
-        assert!(data.contains("mode remove"));
-        assert!(data.contains("#card-7"));
+        let data = patch_data(Some("remove"), Some("#card-7"), &[]);
+        assert_eq!(data, "mode remove\nselector #card-7");
+    }
+
+    /// An outer-morph card patch (TicketUpdated / session events) carries the
+    /// card markup with no `mode`/`selector` line.
+    #[test]
+    fn card_patch_is_outer_morph() {
+        let data = patch_data(None, None, &[card(&ticket(1, Status::Todo))]);
+        assert!(!data.contains("mode "), "{data:?}");
+        assert!(!data.contains("selector "), "{data:?}");
+        assert!(data.contains("card-1"), "{data:?}");
     }
 }
