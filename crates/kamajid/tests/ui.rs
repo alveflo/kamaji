@@ -297,8 +297,15 @@ async fn new_ticket_modal_renders_form() {
         .text()
         .await
         .unwrap();
-    assert!(body.contains("@post('/tickets')"), "create action:\n{body}");
+    assert!(
+        body.contains("fetch('/tickets',{method:'POST'"),
+        "create action:\n{body}"
+    );
     assert!(body.contains(r#"name="title""#), "title field:\n{body}");
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "fragment rooted at #modal for morph-by-id:\n{body}"
+    );
 }
 
 #[tokio::test]
@@ -325,7 +332,7 @@ async fn edit_ticket_modal_prefills() {
         .await
         .unwrap();
     assert!(
-        body.contains(&format!("@patch('/tickets/{tid}')")),
+        body.contains(&format!("fetch('/tickets/{tid}',{{method:'PATCH'")),
         "patch action:\n{body}"
     );
     assert!(body.contains("Add login"), "prefilled title:\n{body}");
@@ -370,9 +377,9 @@ async fn creating_a_ticket_rerenders_its_column() {
     );
 }
 
-/// The Cancel button targets `GET /ui/tickets/cancel`; the route returns the
-/// empty `#modal` mount, which morphs `#modal` back to empty and clears the
-/// dialog. The response must carry the `#modal` mount and no dialog.
+/// `GET /ui/tickets/cancel` returns the empty `#modal` mount, which `@get`
+/// morphs over `#modal` to clear the dialog. (The Cancel button itself clears
+/// `#modal` inline, but the route remains a valid server-side close path.)
 #[tokio::test]
 async fn cancel_route_returns_empty_modal() {
     let (base, _state) = spawn().await;
@@ -417,7 +424,7 @@ async fn new_ticket_fragment_mounts_and_self_closes() {
         "morphs the #modal mount:\n{body}"
     );
     assert!(
-        body.contains(".then(function(){document.getElementById('modal').replaceChildren()})"),
-        "submit closes the modal on success:\n{body}"
+        body.contains("if(r.ok){document.getElementById('modal').replaceChildren()}"),
+        "submit closes the modal on a 2xx:\n{body}"
     );
 }

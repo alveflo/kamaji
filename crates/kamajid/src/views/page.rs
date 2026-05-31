@@ -1,6 +1,8 @@
 //! The full HTML document shell: head (CSS link + vendored Datastar module +
 //! viewport), a top bar (wordmark, project switcher, "+ Ticket"), the board,
-//! and an empty modal mount. `data-on-load` opens the `/ui/events` SSE stream.
+//! and an empty modal mount. `data-init` opens the `/ui/events` SSE stream
+//! (RC.6 has no `on-load` event; `data-init` runs once when the element is
+//! first processed). Parameterized bindings use a colon (`data-on:click`).
 
 use kamaji_core::models::{Project, Status, Ticket};
 use maud::{html, Markup, DOCTYPE};
@@ -23,20 +25,20 @@ pub fn page(
                 link rel="stylesheet" href="/assets/app.css";
                 script type="module" src="/assets/datastar.js" {}
             }
-            body data-on-load="@get('/ui/events')" {
+            body data-init="@get('/ui/events')" {
                 header class="topbar" {
                     span class="wordmark" { "kamaji" }
                     div class="project-switcher" {
                         label for="project-select" { "project" }
                         select id="project-select"
-                               data-on-change="window.location = '/?project=' + evt.target.value" {
+                               data-on:change="window.location = '/?project=' + evt.target.value" {
                             @for p in projects {
                                 option value=(p.id) selected[p.id == project.id] { (p.name) }
                             }
                         }
                     }
                     button class="new-ticket"
-                           data-on-click=(maud::PreEscaped(format!("@get('/ui/tickets/new?project={}')", project.id))) {
+                           data-on:click=(maud::PreEscaped(format!("@get('/ui/tickets/new?project={}')", project.id))) {
                         "+ Ticket"
                     }
                 }
@@ -82,12 +84,17 @@ mod tests {
     }
 
     #[test]
-    fn page_opens_ui_events_on_load() {
+    fn page_opens_ui_events_on_init() {
         let p = project(1, "acme");
         let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        // RC.6: `data-init` (not `data-on-load`) fires once on element processing.
         assert!(
-            html.contains(r#"data-on-load="@get('/ui/events')""#),
+            html.contains(r#"data-init="@get('/ui/events')""#),
             "sse hook:\n{html}"
+        );
+        assert!(
+            !html.contains("data-on-load"),
+            "no inert hyphen on-load:\n{html}"
         );
     }
 

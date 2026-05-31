@@ -1,13 +1,17 @@
 //! The create/edit ticket modal fragment. Returned by `GET /ui/tickets/new` and
-//! `GET /ui/tickets/:id/edit`, it targets `#modal`. Fields map 1:1 to
-//! `CreateTicket`/`UpdateTicket`; submit fires the existing JSON API.
+//! `GET /ui/tickets/:id/edit`. The fragment's top-level element is `#modal` so
+//! Datastar's `@get` morph-by-id replaces the page's empty `<div id="modal">`
+//! mount. Submit fires the existing JSON API with an explicit `fetch()` (the
+//! response is ignored — the new/updated card arrives over `/ui/events`) and
+//! clears the mount on success. Cancel and Escape clear it directly. Bindings
+//! use the RC.6 colon form (`data-on:click`); the hyphen form is inert.
 
 use kamaji_core::models::{Agent, Ticket};
 use maud::{html, Markup, PreEscaped};
 
 /// JS that clears the `#modal` mount (removing the dialog). Reused by the
-/// success-`.then` submit close and the Escape-key handler. Single-quoted so it
-/// needs no HTML-attribute escaping; a `function` literal avoids an escaped `>`.
+/// success-close, the Cancel button, and the Escape-key handler. Single-quoted
+/// so it needs no HTML-attribute escaping.
 const CLEAR_MODAL_JS: &str = "document.getElementById('modal').replaceChildren()";
 
 /// Render the modal. `editing` carries an existing ticket (edit mode) or is
@@ -19,13 +23,12 @@ pub fn ticket_form(
     default_agent: Agent,
     error: Option<&str>,
 ) -> Markup {
-    let (title, desc, prompt, agent, submit_action, heading) = match editing {
+    let (title, desc, prompt, agent, heading) = match editing {
         Some(t) => (
             t.title.clone(),
             t.description.clone(),
             t.initial_prompt.clone().unwrap_or_default(),
             t.agent,
-            format!("@patch('/tickets/{}')", t.id),
             "Edit ticket",
         ),
         None => (
@@ -33,35 +36,46 @@ pub fn ticket_form(
             String::new(),
             String::new(),
             default_agent,
-            "@post('/tickets')".to_string(),
             "New ticket",
         ),
     };
-    // On a successful submit, close the modal client-side: the command action's
-    // promise resolves only on a 2xx (a 4xx rejects), so `.then` clears `#modal`
-    // on success and leaves it open on validation failure. Mutations still go
-    // through the existing JSON command API.
-    let submit_action = format!("{submit_action}.then(function(){{{CLEAR_MODAL_JS}}})");
-    // Nice-to-have: Escape dismisses the modal. The window keydown handler lives
-    // on the dialog, so it is bound only while the dialog is mounted.
+    // Build the JSON body from the form's named controls and POST/PATCH it via an
+    // explicit `fetch()` — a Datastar `@post`'s second argument is request
+    // *options*, not a body, so signal/typing pitfalls are avoided entirely. Read
+    // controls via `f.elements['title']` (not `f.title` — every element has a
+    // `.title` property that shadows the named control). project_id is baked in as
+    // a numeric literal so it deserializes into `i64` (a bound string would not).
+    // On a 2xx we clear `#modal`; a 4xx leaves it open so the inline error shows.
+    // Single-quoted JS only, so the expression is safe inside the double-quoted,
+    // unescaped (PreEscaped) attribute value.
+    let fields = "title:f.elements['title'].value,description:f.elements['description'].value,initial_prompt:f.elements['initial_prompt'].value,agent:f.elements['agent'].value";
+    let close_on_ok = format!("then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}}})");
+    let submit_action = match editing {
+        Some(t) => format!(
+            "evt.preventDefault();const f=evt.target;fetch('/tickets/{id}',{{method:'PATCH',headers:{{'content-type':'application/json'}},body:JSON.stringify({{{fields}}})}}).{close_on_ok}",
+            id = t.id,
+        ),
+        None => format!(
+            "evt.preventDefault();const f=evt.target;fetch('/tickets',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{project_id:{project_id},{fields}}})}}).{close_on_ok}",
+        ),
+    };
+    // Nice-to-have: Escape dismisses the modal. The window keydown handler is on
+    // the dialog, so it is bound only while the dialog is mounted.
     let escape_handler = format!("if(evt.key==='Escape'){{{CLEAR_MODAL_JS}}}");
     html! {
         div id="modal" {
             dialog open class="modal" id="ticket-dialog"
-                   data-on-keydown__window=(PreEscaped(escape_handler)) {
-                form data-on-submit=(PreEscaped(submit_action)) {
-                    @if editing.is_none() {
-                        input type="hidden" name="project_id" data-bind="project_id" value=(project_id);
-                    }
+                   data-on:keydown__window=(PreEscaped(escape_handler)) {
+                form data-on:submit=(PreEscaped(submit_action)) {
                     h2 { (heading) }
                     label for="f-title" { "Title" }
-                    input id="f-title" name="title" data-bind="title" value=(title) required;
+                    input id="f-title" name="title" value=(title) required;
                     label for="f-desc" { "Description" }
-                    textarea id="f-desc" name="description" data-bind="description" rows="3" { (desc) }
+                    textarea id="f-desc" name="description" rows="3" { (desc) }
                     label for="f-prompt" { "Initial prompt" }
-                    textarea id="f-prompt" name="initial_prompt" data-bind="initial_prompt" rows="3" { (prompt) }
+                    textarea id="f-prompt" name="initial_prompt" rows="3" { (prompt) }
                     label for="f-agent" { "Agent" }
-                    select id="f-agent" name="agent" data-bind="agent" {
+                    select id="f-agent" name="agent" {
                         @for a in Agent::all() {
                             option value=(a.as_str()) selected[a == agent] { (a.label()) }
                         }
@@ -71,7 +85,7 @@ pub fn ticket_form(
                     }
                     div class="form-actions" {
                         button type="button" class="act"
-                               data-on-click="@get('/ui/tickets/cancel')" { "Cancel" }
+                               data-on:click=(PreEscaped(CLEAR_MODAL_JS)) { "Cancel" }
                         button type="submit" class="act" { "Save" }
                     }
                 }
@@ -80,8 +94,8 @@ pub fn ticket_form(
     }
 }
 
-/// An empty `#modal` fragment that closes/clears the dialog (returned after a
-/// successful submit and on Cancel).
+/// An empty `#modal` fragment that closes/clears the dialog. Returned by
+/// `GET /ui/tickets/cancel`; `@get` morphs it over the mount to clear it.
 pub fn modal_closed() -> Markup {
     html! { div id="modal" {} }
 }
@@ -112,15 +126,18 @@ mod tests {
 
     #[test]
     fn create_form_posts_to_tickets_with_default_agent() {
-        let html = ticket_form(1, None, Agent::Claude, None).into_string();
-        assert!(html.contains("@post('/tickets')"), "create posts:\n{html}");
+        let html = ticket_form(7, None, Agent::Claude, None).into_string();
+        assert!(
+            html.contains("fetch('/tickets',{method:'POST'"),
+            "create posts via fetch:\n{html}"
+        );
         assert!(
             html.contains(r#"value="claude" selected"#),
             "default agent preselected:\n{html}"
         );
         assert!(
-            html.contains(r#"name="project_id""#),
-            "scopes to project:\n{html}"
+            html.contains("project_id:7"),
+            "scopes to project as a numeric literal:\n{html}"
         );
     }
 
@@ -129,8 +146,8 @@ mod tests {
         let t = ticket();
         let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
         assert!(
-            html.contains("@patch('/tickets/9')"),
-            "edit patches:\n{html}"
+            html.contains("fetch('/tickets/9',{method:'PATCH'"),
+            "edit patches via fetch:\n{html}"
         );
         assert!(html.contains("Add login"), "title prefilled:\n{html}");
         assert!(
@@ -139,26 +156,14 @@ mod tests {
         );
     }
 
+    /// Datastar `@get` morphs the response's top-level element by id, so the
+    /// fragment must be rooted at `#modal` to replace the page's mount.
     #[test]
-    fn validation_error_renders_inline() {
-        let html =
-            ticket_form(1, None, Agent::Claude, Some("title must not be empty")).into_string();
-        assert!(
-            html.contains("title must not be empty"),
-            "error shown:\n{html}"
-        );
-    }
-
-    /// Datastar's default `outer` patch morphs the element whose `id` matches an
-    /// existing node. The form is rendered inside the `#modal` mount so the
-    /// fragment morphs `#modal` (the only persistent target on the page) and the
-    /// dialog actually appears — and is symmetric with `modal_closed()`.
-    #[test]
-    fn form_is_mounted_in_modal() {
+    fn fragment_is_rooted_at_modal_for_morph_by_id() {
         let html = ticket_form(1, None, Agent::Claude, None).into_string();
         assert!(
             html.starts_with(r#"<div id="modal">"#),
-            "wrapped in #modal mount:\n{html}"
+            "fragment rooted at #modal:\n{html}"
         );
         assert!(
             html.contains("<dialog"),
@@ -171,51 +176,54 @@ mod tests {
         assert_eq!(modal_closed().into_string(), r#"<div id="modal"></div>"#);
     }
 
-    /// On a successful submit the modal closes client-side: the command action's
-    /// promise `.then` clears the `#modal` mount. A 4xx rejects the promise, so
-    /// the modal stays open on validation failure. Mutations still go through the
-    /// existing JSON command API — no duplicate command logic.
+    /// On a 2xx the submit `.then` clears the `#modal` mount; a 4xx leaves it
+    /// open so the inline validation error is visible.
     #[test]
-    fn create_submit_closes_modal_on_success() {
+    fn submit_closes_modal_only_on_success() {
         let html = ticket_form(1, None, Agent::Claude, None).into_string();
-        assert!(html.contains("@post('/tickets')"), "posts to API:\n{html}");
         assert!(
-            html.contains(".then(function()"),
-            "closes on the resolved promise:\n{html}"
-        );
-        assert!(
-            html.contains("getElementById('modal')"),
-            "clears the #modal mount:\n{html}"
+            html.contains("if(r.ok)") && html.contains("getElementById('modal')"),
+            "closes the mount only on a 2xx:\n{html}"
         );
     }
 
-    #[test]
-    fn edit_submit_closes_modal_on_success() {
-        let t = ticket();
-        let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
-        assert!(
-            html.contains("@patch('/tickets/9')"),
-            "patches API:\n{html}"
-        );
-        assert!(
-            html.contains(".then(function()") && html.contains("getElementById('modal')"),
-            "closes on success:\n{html}"
-        );
-    }
-
-    /// Pressing Escape anywhere while the modal is open clears it. The window
-    /// keydown handler lives on the dialog, so it is bound only while the dialog
-    /// is mounted.
+    /// Pressing Escape anywhere while the modal is open clears it.
     #[test]
     fn escape_dismisses_modal() {
         let html = ticket_form(1, None, Agent::Claude, None).into_string();
         assert!(
-            html.contains("data-on-keydown__window"),
-            "binds a window keydown handler:\n{html}"
+            html.contains("data-on:keydown__window"),
+            "binds a window keydown handler (colon syntax):\n{html}"
         );
         assert!(
             html.contains("Escape"),
             "filters on the Escape key:\n{html}"
+        );
+    }
+
+    #[test]
+    fn bindings_use_rc6_colon_syntax_not_hyphen() {
+        let html = ticket_form(1, None, Agent::Claude, None).into_string();
+        assert!(html.contains("data-on:submit="), "colon submit:\n{html}");
+        assert!(
+            html.contains("data-on:click="),
+            "colon cancel click:\n{html}"
+        );
+        assert!(
+            !html.contains("data-on-submit")
+                && !html.contains("data-on-click")
+                && !html.contains("data-on-keydown"),
+            "no inert hyphen bindings:\n{html}"
+        );
+    }
+
+    #[test]
+    fn validation_error_renders_inline() {
+        let html =
+            ticket_form(1, None, Agent::Claude, Some("title must not be empty")).into_string();
+        assert!(
+            html.contains("title must not be empty"),
+            "error shown:\n{html}"
         );
     }
 }
