@@ -18,6 +18,7 @@ use state::AppState;
 /// Build the full router with all routes mounted and the shared state attached.
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(routes::ui::board))
         .route("/healthz", get(routes::healthz::healthz))
         .route("/events", get(routes::events::events))
         .route(
