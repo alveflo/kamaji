@@ -128,6 +128,10 @@ fn run(
         .get_config()
         .map_err(picker::client_err)
         .unwrap_or(config);
+    // Warn-only version-skew check: if the running daemon was built from a
+    // different version than this TUI, the wire contract can silently mismatch.
+    // Surface it once, on the first board shown, then let the user keep working.
+    let mut skew_warning = client.version_skew();
     loop {
         let theme = crate::theme::Theme::by_name(&config.theme);
         let Some(project) = picker::run(terminal, &client, theme)? else {
@@ -139,6 +143,9 @@ fn run(
             .map_err(picker::client_err)?;
         let mut app = App::new(project, tickets);
         app.theme = theme;
+        if let Some(msg) = skew_warning.take() {
+            app.set_error(msg);
+        }
         let mut engine = Engine::new(client, config, app);
 
         let switch_project = run_board(terminal, &mut engine, &opts, &update_status, &mut sse)?;

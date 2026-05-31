@@ -423,6 +423,24 @@ mod tests {
     }
 
     #[test]
+    fn version_skew_surfaces_as_a_warning_toast() {
+        // Mirror the startup glue in `run()`: a detected skew is surfaced as a
+        // non-blocking toast (Error kind = the prominent color, but the app is
+        // fully usable — warn-only, never blocking).
+        let mut app = App::new(project(), vec![]);
+        let warning = crate::client::version_skew_warning("0.4.0", "0.3.0")
+            .expect("a version mismatch should produce a warning");
+        app.set_error(warning);
+
+        let toast = app
+            .status_message
+            .expect("the skew warning should be visible as a toast");
+        assert_eq!(toast.kind, StatusKind::Error);
+        assert!(toast.text.contains("0.3.0") && toast.text.contains("0.4.0"));
+        assert!(toast.text.contains("restart the daemon"));
+    }
+
+    #[test]
     fn navigation_selects_within_columns() {
         let tickets = vec![
             ticket(1, Status::Todo),

@@ -31,10 +31,29 @@ pub fn is_connection_lost(e: &ClientError) -> bool {
 pub struct DaemonClient {
     http: reqwest::blocking::Client,
     base: String,
-    // Captured from /healthz; consumed by the deferred version-skew warning
-    // toast (a tracked follow-up). Exercised by the client tests today.
-    #[allow(dead_code)]
+    // The daemon version reported by /healthz, used for the version-skew check
+    // (see `version_skew`).
     version: String,
+}
+
+/// Warn-only version-skew check. Returns a human-readable warning when the
+/// daemon's reported version differs from this TUI binary's version, otherwise
+/// `None`.
+///
+/// Policy: **warn, never block.** A skew can silently break the wire contract
+/// (the TUI and daemon were built from different sources), so we surface it as a
+/// non-blocking toast and let the user keep working / restart the daemon when
+/// convenient. The compatibility rule is the simplest defensible one — exact
+/// string equality; any difference warns. An empty daemon version means
+/// /healthz reported none, which we can't distinguish from a real skew, so we
+/// stay silent rather than emit a misleading "daemon v ≠ tui vX" message.
+pub fn version_skew_warning(tui_version: &str, daemon_version: &str) -> Option<String> {
+    if daemon_version.is_empty() || daemon_version == tui_version {
+        return None;
+    }
+    Some(format!(
+        "daemon v{daemon_version} ≠ tui v{tui_version} — restart the daemon"
+    ))
 }
 
 impl DaemonClient {
@@ -68,9 +87,15 @@ impl DaemonClient {
         &self.base
     }
 
-    #[allow(dead_code)]
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// Warn-only version-skew check against this binary's version, evaluated
+    /// against the version the daemon reported at connect time. See
+    /// [`version_skew_warning`] for the policy.
+    pub fn version_skew(&self) -> Option<String> {
+        version_skew_warning(env!("CARGO_PKG_VERSION"), self.version())
     }
 
     /// Map a finished response into a deserialized `T` or a `ClientError`. 2xx →
@@ -302,6 +327,30 @@ mod tests {
         assert!(!is_connection_lost(&ClientError::NotFound));
         assert!(!is_connection_lost(&ClientError::Server("x".into())));
         assert!(!is_connection_lost(&ClientError::Decode("x".into())));
+    }
+
+    #[test]
+    fn version_skew_warns_only_on_a_mismatch() {
+        // Warn-only policy: any difference between the daemon's reported version
+        // and this binary's version is surfaced; an exact match is silent.
+        let warning = version_skew_warning("0.4.0", "0.3.0").expect("mismatch should warn");
+        assert!(
+            warning.contains("0.3.0"),
+            "warning names the daemon version"
+        );
+        assert!(warning.contains("0.4.0"), "warning names the tui version");
+        assert!(
+            version_skew_warning("0.4.0", "0.4.0").is_none(),
+            "equal versions are silent"
+        );
+    }
+
+    #[test]
+    fn version_skew_is_silent_when_daemon_version_unknown() {
+        // An empty version means /healthz reported none (older/odd daemon); we
+        // can't tell that apart from a real skew, so we stay silent rather than
+        // emit a misleading "daemon v ≠ tui vX" toast.
+        assert!(version_skew_warning("0.4.0", "").is_none());
     }
 
     #[test]
