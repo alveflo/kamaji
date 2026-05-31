@@ -769,6 +769,66 @@ async fn attach_missing_ticket_is_404() {
     assert_eq!(resp.status(), 404);
 }
 
+#[tokio::test]
+async fn terminal_route_renders_panel_rooted_at_modal_with_proxy_iframe() {
+    let (base, state) = spawn_with_fake_attach("tok").await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(
+                p.id,
+                "Hack auth",
+                "",
+                None,
+                kamaji_core::models::Agent::Claude,
+            )?;
+            db.set_ticket_session(t.id, "kamaji-1-hack-auth", "/wt", "kamaji-1-hack-auth")?;
+            db.set_ticket_status(t.id, kamaji_core::models::Status::InProgress)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    // Pre-auth is best-effort (no real zellij web here), so the panel still
+    // renders. It must be rooted at #modal and embed the proxy iframe.
+    let body = reqwest::get(format!("{base}/ui/tickets/{tid}/terminal"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "rooted at #modal:\n{body}"
+    );
+    assert!(body.contains("Hack auth"), "shows the task title:\n{body}");
+    assert!(
+        body.contains(r#"src="http://127.0.0.1:8756/kamaji-1-hack-auth""#),
+        "embeds the proxy iframe (proxy_base/session):\n{body}"
+    );
+    assert!(
+        body.contains("term-modal"),
+        "terminal-window panel:\n{body}"
+    );
+}
+
+#[tokio::test]
+async fn terminal_route_on_ticket_without_session_is_400() {
+    let (base, state) = spawn_with_fake_attach("tok").await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+    let resp = reqwest::get(format!("{base}/ui/tickets/{tid}/terminal"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
 /// Boot a daemon with a fake `zellij web`, a custom config, and an injected
 /// fake session driver (so the resurrect path is exercised without a real
 /// zellij). Returns the base URL, the state, and the driver handle to inspect.

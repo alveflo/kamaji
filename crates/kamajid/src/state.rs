@@ -12,7 +12,11 @@ use tokio::sync::RwLock as TokioRwLock;
 
 use crate::error::ApiError;
 use crate::session_driver::{RealSessionDriver, SessionDriver};
+use crate::zellij_proxy::ZellijProxy;
 use crate::zellij_web::ZellijWeb;
+
+/// Default public base URL of the `zellij web` reverse proxy (board port + 1).
+const DEFAULT_PROXY_BASE: &str = "http://127.0.0.1:8756";
 
 /// Capacity of the per-daemon event broadcast. A slow SSE client that lags past
 /// this drops events and reconnects (lossy by design — see the spec §5).
@@ -25,6 +29,9 @@ pub struct AppState {
     pub tx: broadcast::Sender<Event>,
     state_dir: Arc<PathBuf>,
     zellij_web: Arc<ZellijWeb>,
+    zellij_proxy: Arc<ZellijProxy>,
+    /// Public base URL of the reverse proxy, used to build iframe `src`s.
+    proxy_base: Arc<String>,
     sessions: Arc<dyn SessionDriver>,
 }
 
@@ -37,6 +44,8 @@ impl AppState {
             tx,
             state_dir: Arc::new(kamaji_core::detect::default_state_dir()),
             zellij_web: Arc::new(ZellijWeb::new()),
+            zellij_proxy: Arc::new(ZellijProxy::new()),
+            proxy_base: Arc::new(DEFAULT_PROXY_BASE.to_string()),
             sessions: Arc::new(RealSessionDriver),
         }
     }
@@ -75,6 +84,22 @@ impl AppState {
     /// The `zellij web` manager (lazy server + token).
     pub fn zellij_web(&self) -> &ZellijWeb {
         &self.zellij_web
+    }
+
+    /// The reverse proxy in front of `zellij web` (served on its own listener).
+    pub fn zellij_proxy(&self) -> Arc<ZellijProxy> {
+        self.zellij_proxy.clone()
+    }
+
+    /// Override the proxy's public base URL (set at startup from the bind addr).
+    pub fn set_proxy_base(&mut self, base: String) {
+        self.proxy_base = Arc::new(base);
+    }
+
+    /// Public base URL of the reverse proxy, e.g. `http://127.0.0.1:8756`.
+    /// Iframe `src`s are `<proxy_base>/<session>`.
+    pub fn proxy_base(&self) -> &str {
+        &self.proxy_base
     }
 
     /// Override the session-lifecycle driver (tests inject a

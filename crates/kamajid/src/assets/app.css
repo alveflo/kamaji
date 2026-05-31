@@ -557,6 +557,76 @@ dialog.modal form { padding: 22px 24px 24px; }
 }
 
 /* ----------------------------------------------------------------------------
+   Inline terminal panel — a near-fullscreen "terminal window" that embeds a
+   ticket's zellij session in an iframe (served via the auth proxy).
+   -------------------------------------------------------------------------- */
+/* Dim + blur the board behind the window when one is mounted. */
+#modal:has(.term-modal)::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  background: rgba(17, 17, 27, 0.62);
+  backdrop-filter: blur(3px);
+}
+.term-modal {
+  position: fixed;
+  inset: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--hairline-2);
+  border-radius: 10px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+  animation: modal-in 160ms var(--ease);
+}
+.term-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  background: var(--bg-raise);
+  border-bottom: 1px solid var(--hairline);
+}
+.term-title {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.term-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 120ms var(--ease), background 120ms var(--ease);
+}
+.term-close:hover { color: #11111b; background: var(--danger); }
+.term-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: #000;
+}
+
+/* ----------------------------------------------------------------------------
    Scrollbar polish (WebKit) + selection
    -------------------------------------------------------------------------- */
 ::selection { background: rgba(137, 180, 250, 0.28); }
