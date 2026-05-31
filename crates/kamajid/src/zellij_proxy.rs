@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::ws::{Message as AxMsg, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame as AxClose, Message as AxMsg, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{header, HeaderName, Uri};
 use axum::response::{IntoResponse, Response};
@@ -25,6 +25,8 @@ use axum::Router;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame as TgClose;
 use tokio_tungstenite::tungstenite::Message as TgMsg;
 
 /// The default base `zellij web` serves on (matches [`crate::zellij_web`]).
@@ -197,9 +199,36 @@ async fn ws_handler(
     ws.on_upgrade(move |client| proxy_ws(proxy, pq, client))
 }
 
+/// Translate axum's close frame (raw `u16` code) into tungstenite's typed one.
+/// Only the code type differs — the reason `Cow` carries over unchanged.
+fn ax_close_to_tg(cf: AxClose<'static>) -> TgClose<'static> {
+    TgClose {
+        code: CloseCode::from(cf.code),
+        reason: cf.reason,
+    }
+}
+
+/// Translate tungstenite's close frame back into axum's, preserving the code
+/// and reason so a clean `1000` close reads differently from an error close.
+fn tg_close_to_ax(cf: TgClose<'static>) -> AxClose<'static> {
+    AxClose {
+        code: cf.code.into(),
+        reason: cf.reason,
+    }
+}
+
 /// Pipe a browser WebSocket to the upstream `zellij web` socket, injecting the
 /// auth cookie on the upstream handshake and translating between axum's and
 /// tungstenite's message types.
+///
+/// Both directions are pumped from a single task that `select!`s over the two
+/// reads. That lets us (a) answer a `Ping` with a `Pong` on the *same* socket so
+/// keepalive survives even a silent peer, and (b) treat a `Close` as a half-close
+/// — we forward it, then keep draining the still-open direction until it ends
+/// too, instead of dropping a healthy connection the moment either side stops.
+/// (Issue #97: a coupled `select!` that ended both directions on either's
+/// completion, plus `Close(None)` that discarded the close code, made the inline
+/// terminal loop "Reconnecting…".)
 async fn proxy_ws(proxy: Arc<ZellijProxy>, pq: String, client: WebSocket) {
     let url = format!("{}{}", proxy.upstream_ws, pq);
     let mut req = match url.into_client_request() {
@@ -224,50 +253,83 @@ async fn proxy_ws(proxy: Arc<ZellijProxy>, pq: String, client: WebSocket) {
     let (mut up_tx, mut up_rx) = upstream.split();
     let (mut cl_tx, mut cl_rx) = client.split();
 
-    let client_to_upstream = async {
-        while let Some(Ok(msg)) = cl_rx.next().await {
-            let out = match msg {
-                AxMsg::Text(t) => TgMsg::Text(t),
-                AxMsg::Binary(b) => TgMsg::Binary(b),
-                AxMsg::Ping(b) => TgMsg::Ping(b),
-                AxMsg::Pong(b) => TgMsg::Pong(b),
-                AxMsg::Close(_) => {
+    // Each direction stops once its *reader* ends (Close, stream end, or error).
+    // We finish only when BOTH have, so one side's half-close can't strand the
+    // other. `next()` on these split streams is cancel-safe, so dropping the
+    // unselected read each loop and re-issuing it next time loses no data.
+    let mut client_done = false;
+    let mut upstream_done = false;
+    while !(client_done && upstream_done) {
+        tokio::select! {
+            cm = cl_rx.next(), if !client_done => match cm {
+                Some(Ok(AxMsg::Text(t))) => {
+                    if up_tx.send(TgMsg::Text(t)).await.is_err() {
+                        upstream_done = true;
+                    }
+                }
+                Some(Ok(AxMsg::Binary(b))) => {
+                    if up_tx.send(TgMsg::Binary(b)).await.is_err() {
+                        upstream_done = true;
+                    }
+                }
+                Some(Ok(AxMsg::Ping(b))) => {
+                    // Answer the client directly, then forward the ping upstream.
+                    let _ = cl_tx.send(AxMsg::Pong(b.clone())).await;
+                    let _ = up_tx.send(TgMsg::Ping(b)).await;
+                }
+                Some(Ok(AxMsg::Pong(b))) => {
+                    let _ = up_tx.send(TgMsg::Pong(b)).await;
+                }
+                Some(Ok(AxMsg::Close(cf))) => {
+                    let _ = up_tx.send(TgMsg::Close(cf.map(ax_close_to_tg))).await;
+                    client_done = true;
+                }
+                Some(Err(_)) | None => {
                     let _ = up_tx.send(TgMsg::Close(None)).await;
-                    break;
+                    client_done = true;
                 }
-            };
-            if up_tx.send(out).await.is_err() {
-                break;
-            }
-        }
-    };
-    let upstream_to_client = async {
-        while let Some(Ok(msg)) = up_rx.next().await {
-            let out = match msg {
-                TgMsg::Text(t) => AxMsg::Text(t),
-                TgMsg::Binary(b) => AxMsg::Binary(b),
-                TgMsg::Ping(b) => AxMsg::Ping(b),
-                TgMsg::Pong(b) => AxMsg::Pong(b),
-                TgMsg::Close(_) => {
+            },
+            um = up_rx.next(), if !upstream_done => match um {
+                Some(Ok(TgMsg::Text(t))) => {
+                    if cl_tx.send(AxMsg::Text(t)).await.is_err() {
+                        client_done = true;
+                    }
+                }
+                Some(Ok(TgMsg::Binary(b))) => {
+                    if cl_tx.send(AxMsg::Binary(b)).await.is_err() {
+                        client_done = true;
+                    }
+                }
+                Some(Ok(TgMsg::Ping(b))) => {
+                    // Answer the upstream directly, then forward the ping on.
+                    let _ = up_tx.send(TgMsg::Pong(b.clone())).await;
+                    let _ = cl_tx.send(AxMsg::Ping(b)).await;
+                }
+                Some(Ok(TgMsg::Pong(b))) => {
+                    let _ = cl_tx.send(AxMsg::Pong(b)).await;
+                }
+                Some(Ok(TgMsg::Close(cf))) => {
+                    let _ = cl_tx.send(AxMsg::Close(cf.map(tg_close_to_ax))).await;
+                    upstream_done = true;
+                }
+                Some(Ok(TgMsg::Frame(_))) => {}
+                Some(Err(_)) | None => {
                     let _ = cl_tx.send(AxMsg::Close(None)).await;
-                    break;
+                    upstream_done = true;
                 }
-                TgMsg::Frame(_) => continue,
-            };
-            if cl_tx.send(out).await.is_err() {
-                break;
-            }
+            },
+            else => break,
         }
-    };
-    tokio::select! {
-        _ = client_to_upstream => {}
-        _ = upstream_to_client => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::Message as TgMsg;
 
     #[test]
     fn upstream_ws_scheme_is_derived_from_http() {
@@ -280,5 +342,163 @@ mod tests {
     async fn cookie_is_empty_until_authenticated() {
         let p = ZellijProxy::new();
         assert!(p.cookie().await.is_none());
+    }
+
+    // ---- proxy_ws end-to-end tests (issue #97) ----------------------------
+    //
+    // Topology: a mock `zellij web` upstream (raw tokio-tungstenite server) <->
+    // the real proxy router <-> a tokio-tungstenite client. No cookie/login is
+    // needed — the proxy injects a cookie only if it holds one, and the mock
+    // doesn't check.
+
+    type Up = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
+
+    /// Spawn a mock upstream that runs `handler` on the first accepted socket.
+    /// Returns its `http://addr` base (the proxy derives `ws://addr` from it).
+    async fn mock_upstream<F, Fut>(handler: F) -> String
+    where
+        F: FnOnce(Up) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                handler(ws).await;
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// Boot the proxy router in front of `upstream_http`; return its `ws://addr`.
+    async fn proxy_base(upstream_http: &str) -> String {
+        let proxy = Arc::new(ZellijProxy::with_upstream(upstream_http));
+        let app = router(proxy);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("ws://{addr}")
+    }
+
+    /// A Close frame from the upstream must reach the client with its code and
+    /// reason intact — not flattened to a code-less close. (A clean 1000 vs a
+    /// 1011 error must be distinguishable downstream.)
+    #[tokio::test]
+    async fn close_frame_preserves_code_and_reason() {
+        let up = mock_upstream(|ws| async move {
+            let (mut tx, _rx) = ws.split();
+            tx.send(TgMsg::Close(Some(CloseFrame {
+                code: CloseCode::Away, // 1001
+                reason: "bye".into(),
+            })))
+            .await
+            .unwrap();
+        })
+        .await;
+        let base = proxy_base(&up).await;
+
+        let (client, _) = tokio_tungstenite::connect_async(format!("{base}/ws/terminal/x"))
+            .await
+            .unwrap();
+        let (_ctx, mut crx) = client.split();
+
+        let mut frame = None;
+        while let Some(Ok(msg)) = crx.next().await {
+            if let TgMsg::Close(cf) = msg {
+                frame = Some(cf);
+                break;
+            }
+        }
+        let cf = frame
+            .expect("client should receive a Close")
+            .expect("Close should carry a frame (code + reason)");
+        assert_eq!(u16::from(cf.code), 1001, "close code preserved");
+        assert_eq!(&*cf.reason, "bye", "close reason preserved");
+    }
+
+    /// A Ping from the upstream must be answered with a Pong even if the browser
+    /// client never responds — the proxy must not depend on the far peer to keep
+    /// the near connection alive. (zellij sends no pings today, but a future
+    /// keepaliving upstream must not be allowed to time us out.)
+    #[tokio::test]
+    async fn upstream_ping_is_answered_even_if_client_is_silent() {
+        let (tx_pong, rx_pong) = tokio::sync::oneshot::channel::<Vec<u8>>();
+        let up = mock_upstream(|ws| async move {
+            let (mut tx, mut rx) = ws.split();
+            tx.send(TgMsg::Ping(vec![7, 8, 9])).await.unwrap();
+            while let Some(Ok(msg)) = rx.next().await {
+                if let TgMsg::Pong(b) = msg {
+                    let _ = tx_pong.send(b.to_vec());
+                    break;
+                }
+            }
+        })
+        .await;
+        let base = proxy_base(&up).await;
+
+        // Connect but NEVER poll the client: it can't auto-pong, so the only way
+        // the upstream gets a Pong is if the proxy answers it directly.
+        let _client = tokio_tungstenite::connect_async(format!("{base}/ws/terminal/x"))
+            .await
+            .unwrap();
+
+        let pong = tokio::time::timeout(Duration::from_secs(3), rx_pong)
+            .await
+            .expect("upstream should receive a Pong within 3s")
+            .expect("pong channel");
+        assert_eq!(pong, vec![7, 8, 9], "pong echoes the ping payload");
+    }
+
+    /// The rewritten single-task pump must still relay data frames both ways —
+    /// upstream→client and client→upstream — without dropping or reordering them.
+    /// Guards the core loop against a regression in the message translation.
+    #[tokio::test]
+    async fn relays_data_in_both_directions() {
+        let up = mock_upstream(|ws| async move {
+            let (mut tx, mut rx) = ws.split();
+            // Greet downstream, then echo the first client message back prefixed.
+            tx.send(TgMsg::Text("from-upstream".into())).await.unwrap();
+            if let Some(Ok(TgMsg::Text(t))) = rx.next().await {
+                let _ = tx.send(TgMsg::Text(format!("echo:{t}"))).await;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        })
+        .await;
+        let base = proxy_base(&up).await;
+
+        let (client, _) = tokio_tungstenite::connect_async(format!("{base}/ws/terminal/x"))
+            .await
+            .unwrap();
+        let (mut ctx, mut crx) = client.split();
+
+        // upstream -> client
+        let greeting = next_text(&mut crx).await;
+        assert_eq!(greeting, "from-upstream", "upstream->client relay");
+
+        // client -> upstream -> client (round trip)
+        ctx.send(TgMsg::Text("ping123".into())).await.unwrap();
+        let echoed = next_text(&mut crx).await;
+        assert_eq!(echoed, "echo:ping123", "client->upstream relay");
+    }
+
+    /// Read messages off a client stream until the next Text frame, or panic on
+    /// a timeout / early close.
+    async fn next_text<S>(crx: &mut S) -> String
+    where
+        S: futures::Stream<Item = Result<TgMsg, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while let Some(Ok(msg)) = crx.next().await {
+                if let TgMsg::Text(t) = msg {
+                    return t;
+                }
+            }
+            panic!("stream ended before a Text frame arrived");
+        })
+        .await
+        .expect("a Text frame within 3s")
     }
 }
