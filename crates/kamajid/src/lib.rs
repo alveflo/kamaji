@@ -22,6 +22,8 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(routes::healthz::healthz))
         .route("/events", get(routes::events::events))
         .route("/ui/events", get(routes::ui_events::events))
+        .route("/ui/tickets/new", get(routes::ui::new_ticket))
+        .route("/ui/tickets/:id/edit", get(routes::ui::edit_ticket))
         .route(
             "/config",
             get(routes::config::get_config).patch(routes::config::patch_config),

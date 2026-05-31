@@ -279,3 +279,93 @@ async fn deleting_a_ticket_patches_a_remove() {
         "targets the card:\n{data}"
     );
 }
+
+#[tokio::test]
+async fn new_ticket_modal_renders_form() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+    let body = reqwest::get(format!("{base}/ui/tickets/new?project={pid}"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("@post('/tickets')"), "create action:\n{body}");
+    assert!(body.contains(r#"name="title""#), "title field:\n{body}");
+}
+
+#[tokio::test]
+async fn edit_ticket_modal_prefills() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(
+                p.id,
+                "Add login",
+                "",
+                None,
+                kamaji_core::models::Agent::Claude,
+            )?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+    let body = reqwest::get(format!("{base}/ui/tickets/{tid}/edit"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.contains(&format!("@patch('/tickets/{tid}')")),
+        "patch action:\n{body}"
+    );
+    assert!(body.contains("Add login"), "prefilled title:\n{body}");
+}
+
+/// Creating a ticket re-renders its whole column (idempotent whole-column
+/// re-render landed in 84027f3): the next patch carries `id="col-todo"` and the
+/// new card, and is NOT an append.
+#[tokio::test]
+async fn creating_a_ticket_rerenders_its_column() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+
+    let mut stream = connect_ui_events(&base).await;
+    for _ in 0..4 {
+        let _ = read_patch(&mut stream).await;
+    } // drain snapshot
+
+    reqwest::Client::new()
+        .post(format!("{base}/tickets"))
+        .json(&serde_json::json!({ "project_id": pid, "title": "Fresh", "agent": "claude" }))
+        .send()
+        .await
+        .unwrap();
+
+    let data = read_patch(&mut stream).await;
+    assert!(
+        data.contains(r#"id="col-todo""#),
+        "re-renders the todo column:\n{data}"
+    );
+    assert!(data.contains("Fresh"), "new card content:\n{data}");
+    assert!(
+        !data.contains("mode append"),
+        "whole-column re-render, not an append:\n{data}"
+    );
+}

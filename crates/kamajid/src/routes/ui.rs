@@ -2,7 +2,7 @@
 //! fragments (`GET /ui/tickets/new`, `GET /ui/tickets/:id/edit`, added in 3e).
 //! Read/render only — all mutations reuse the existing JSON command API.
 
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use maud::Markup;
 use serde::Deserialize;
 
@@ -11,6 +11,7 @@ use kamaji_core::models::{Status, Ticket};
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::views;
+use crate::views::modal::ticket_form;
 
 #[derive(Deserialize)]
 pub struct BoardQuery {
@@ -57,3 +58,42 @@ pub fn group_by_status(tickets: Vec<Ticket>) -> Vec<(Status, Vec<Ticket>)> {
 }
 
 // modal fragment handlers added in 3e
+
+#[derive(Deserialize)]
+pub struct NewTicketQuery {
+    pub project: i64,
+}
+
+/// `GET /ui/tickets/new?project=<id>` → the create-ticket modal fragment.
+pub async fn new_ticket(
+    State(state): State<AppState>,
+    Query(q): Query<NewTicketQuery>,
+) -> Result<Markup, ApiError> {
+    let pid = q.project;
+    let project_default = state
+        .with_db(move |db| Ok(db.get_project(pid)?.and_then(|p| p.default_agent)))
+        .await?;
+    let default_agent = match project_default {
+        Some(a) => a,
+        None => state.config_async().await.default_agent(),
+    };
+    Ok(ticket_form(pid, None, default_agent, None))
+}
+
+/// `GET /ui/tickets/:id/edit` → the edit-ticket modal fragment, prefilled.
+pub async fn edit_ticket(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Markup, ApiError> {
+    let ticket = state
+        .with_db(move |db| db.get_ticket(id))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let default_agent = ticket.agent;
+    Ok(ticket_form(
+        ticket.project_id,
+        Some(&ticket),
+        default_agent,
+        None,
+    ))
+}
