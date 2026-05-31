@@ -46,22 +46,22 @@ fn card_actions(t: &Ticket) -> Markup {
                 Status::Todo => {
                     button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/start')"))) { "▸ Start" }
                     button class="act" data-on-click=(PreEscaped(format!("@get('/ui/tickets/{id}/edit')"))) { "Edit" }
-                    button class="act danger" data-on-click=(PreEscaped(format!("@delete('/tickets/{id}')"))) { "Delete" }
+                    button class="act danger" data-on-click=(PreEscaped(format!("confirm('Delete #{id}? This cannot be undone.') && @delete('/tickets/{id}')"))) { "Delete" }
                 }
                 Status::InProgress => {
                     button class="act" data-on-click=(PreEscaped(format!("fetch('/tickets/{id}/attach', {{method:'POST'}}).then(r=>r.json()).then(a=>window.open(a.web_url, '_blank'))"))) { "⤢ Attach" }
                     button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/move', {{target:'review'}})"))) { "Move" }
                     button class="act" data-on-click=(PreEscaped(format!("@get('/ui/tickets/{id}/edit')"))) { "Edit" }
-                    button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/done', {{cleanup:false}})"))) { "✓ Done" }
+                    button class="act" data-on-click=(PreEscaped(format!("confirm('Mark #{id} done and tear down its session?') && @post('/tickets/{id}/done', {{cleanup:true}})"))) { "✓ Done" }
                 }
                 Status::Review => {
                     button class="act" data-on-click=(PreEscaped(format!("fetch('/tickets/{id}/attach', {{method:'POST'}}).then(r=>r.json()).then(a=>window.open(a.web_url, '_blank'))"))) { "⤢ Attach" }
                     button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/move', {{target:'in_progress'}})"))) { "↩ In Progress" }
-                    button class="act" data-on-click=(PreEscaped(format!("@post('/tickets/{id}/done', {{cleanup:false}})"))) { "✓ Done" }
+                    button class="act" data-on-click=(PreEscaped(format!("confirm('Mark #{id} done and tear down its session?') && @post('/tickets/{id}/done', {{cleanup:true}})"))) { "✓ Done" }
                     button class="act" data-on-click=(PreEscaped(format!("@get('/ui/tickets/{id}/edit')"))) { "Edit" }
                 }
                 Status::Done => {
-                    button class="act danger" data-on-click=(PreEscaped(format!("@delete('/tickets/{id}')"))) { "Delete" }
+                    button class="act danger" data-on-click=(PreEscaped(format!("confirm('Delete #{id}? This cannot be undone.') && @delete('/tickets/{id}')"))) { "Delete" }
                 }
             }
         }
@@ -127,6 +127,19 @@ mod tests {
         assert!(
             !html.contains("/tickets/1/attach"),
             "no attach in todo:\n{html}"
+        );
+    }
+
+    #[test]
+    fn delete_action_is_confirm_guarded() {
+        let html = card(&ticket(2, Status::Done)).into_string();
+        assert!(
+            html.contains("confirm("),
+            "delete guarded by confirm:\n{html}"
+        );
+        assert!(
+            html.contains("@delete('/tickets/2')"),
+            "delete endpoint:\n{html}"
         );
     }
 
