@@ -62,3 +62,38 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run shellcheck
         run: shellcheck install.sh
+
+  smoke:
+    name: Browser smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build kamajid
+        run: cargo build -p kamajid
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install smoke deps
+        working-directory: crates/kamajid/smoke
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: crates/kamajid/smoke
+        run: npx playwright install --with-deps chromium
+
+      - name: Run board smoke
+        working-directory: crates/kamajid/smoke
+        env:
+          KAMAJID_BIN: ${{ github.workspace }}/target/debug/kamajid
+        run: npm test

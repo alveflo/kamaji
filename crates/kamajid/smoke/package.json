@@ -1,0 +1,13 @@
+{
+  "name": "kamajid-board-smoke",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless-browser smoke test for the kamajid board (issue #91).",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}
