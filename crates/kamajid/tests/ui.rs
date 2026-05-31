@@ -91,3 +91,37 @@ async fn board_page_renders_columns_and_seeded_card() {
         "review header label present"
     );
 }
+
+#[tokio::test]
+async fn move_command_relocates_card_on_next_render() {
+    let (base, state) = spawn().await;
+    let tid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(p.id, "t", "", None, kamaji_core::models::Agent::Claude)?;
+            Ok(t.id)
+        })
+        .await
+        .unwrap();
+
+    reqwest::Client::new()
+        .post(format!("{base}/tickets/{tid}/move"))
+        .json(&serde_json::json!({ "target": "in_progress" }))
+        .send()
+        .await
+        .unwrap();
+
+    let body = reqwest::get(format!("{base}/"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    // After the move, the in_progress column contains the card.
+    let in_prog = body.split(r#"id="col-in_progress""#).nth(1).unwrap();
+    let next_col = in_prog.split(r#"id="col-review""#).next().unwrap();
+    assert!(
+        next_col.contains(&format!("card-{tid}")),
+        "card now in in_progress:\n{body}"
+    );
+}
