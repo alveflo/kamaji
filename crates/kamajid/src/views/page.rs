@@ -8,7 +8,11 @@ use maud::{html, Markup, DOCTYPE};
 use super::board::board;
 
 /// Render the board page for `project`, with `projects` populating the switcher.
-pub fn page(project: &Project, projects: &[Project], by_status: &[(Status, Vec<Ticket>)]) -> Markup {
+pub fn page(
+    project: &Project,
+    projects: &[Project],
+    by_status: &[(Status, Vec<Ticket>)],
+) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" data-theme="dark" {
@@ -50,8 +54,13 @@ mod tests {
     use std::path::PathBuf;
 
     fn project(id: i64, name: &str) -> Project {
-        Project { id, name: name.into(), root_dir: PathBuf::from("/tmp/p"),
-                  default_agent: Some(Agent::Claude), created_at: String::new() }
+        Project {
+            id,
+            name: name.into(),
+            root_dir: PathBuf::from("/tmp/p"),
+            default_agent: Some(Agent::Claude),
+            created_at: String::new(),
+        }
     }
 
     fn empty_board() -> Vec<(Status, Vec<Ticket>)> {
@@ -61,22 +70,31 @@ mod tests {
     #[test]
     fn page_links_css_and_vendored_datastar() {
         let p = project(1, "acme");
-        let html = page(&p, &[p.clone()], &empty_board()).into_string();
-        assert!(html.contains(r#"href="/assets/app.css""#), "css link:\n{html}");
-        assert!(html.contains(r#"src="/assets/datastar.js""#), "datastar module:\n{html}");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"href="/assets/app.css""#),
+            "css link:\n{html}"
+        );
+        assert!(
+            html.contains(r#"src="/assets/datastar.js""#),
+            "datastar module:\n{html}"
+        );
     }
 
     #[test]
     fn page_opens_ui_events_on_load() {
         let p = project(1, "acme");
-        let html = page(&p, &[p.clone()], &empty_board()).into_string();
-        assert!(html.contains(r#"data-on-load="@get('/ui/events')""#), "sse hook:\n{html}");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"data-on-load="@get('/ui/events')""#),
+            "sse hook:\n{html}"
+        );
     }
 
     #[test]
     fn page_has_modal_mount_and_switcher() {
         let p = project(1, "acme");
-        let html = page(&p, &[p.clone()], &empty_board()).into_string();
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
         assert!(html.contains(r#"id="modal""#), "modal mount:\n{html}");
         assert!(html.contains("acme"), "switcher option:\n{html}");
     }

@@ -8,7 +8,11 @@ use maud::{html, Markup, PreEscaped};
 /// Render one ticket as a card element. The id is `card-<id>` so SSE patches
 /// can target it; the per-column accent comes from `data-status`.
 pub fn card(t: &Ticket) -> Markup {
-    let bullet = if t.session_name.is_some() { "●" } else { "○" };
+    let bullet = if t.session_name.is_some() {
+        "●"
+    } else {
+        "○"
+    };
     html! {
         article id=(format!("card-{}", t.id))
                 class="card"
@@ -71,11 +75,21 @@ mod tests {
 
     fn ticket(id: i64, status: Status) -> Ticket {
         Ticket {
-            id, project_id: 1, title: format!("title{id}"), description: String::new(),
-            initial_prompt: None, agent: Agent::Claude, status, position: 0,
-            session_name: None, worktree_path: None, branch: None,
-            auto_reviewed: false, instrumented: false,
-            created_at: String::new(), updated_at: String::new(),
+            id,
+            project_id: 1,
+            title: format!("title{id}"),
+            description: String::new(),
+            initial_prompt: None,
+            agent: Agent::Claude,
+            status,
+            position: 0,
+            session_name: None,
+            worktree_path: None,
+            branch: None,
+            auto_reviewed: false,
+            instrumented: false,
+            created_at: String::new(),
+            updated_at: String::new(),
         }
     }
 
@@ -100,14 +114,20 @@ mod tests {
         let mut t = ticket(1, Status::InProgress);
         t.session_name = Some("sess1".into());
         let html = card(&t).into_string();
-        assert!(html.contains("●"), "filled bullet when session present:\n{html}");
+        assert!(
+            html.contains("●"),
+            "filled bullet when session present:\n{html}"
+        );
     }
 
     #[test]
     fn todo_card_offers_start_not_attach() {
         let html = card(&ticket(1, Status::Todo)).into_string();
         assert!(html.contains("/tickets/1/start"), "Start action:\n{html}");
-        assert!(!html.contains("/tickets/1/attach"), "no attach in todo:\n{html}");
+        assert!(
+            !html.contains("/tickets/1/attach"),
+            "no attach in todo:\n{html}"
+        );
     }
 
     #[test]

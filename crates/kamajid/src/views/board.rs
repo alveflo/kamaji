@@ -49,24 +49,40 @@ mod tests {
 
     fn ticket(id: i64, status: Status) -> Ticket {
         Ticket {
-            id, project_id: 1, title: format!("title{id}"), description: String::new(),
-            initial_prompt: None, agent: Agent::Claude, status, position: 0,
-            session_name: None, worktree_path: None, branch: None,
-            auto_reviewed: false, instrumented: false,
-            created_at: String::new(), updated_at: String::new(),
+            id,
+            project_id: 1,
+            title: format!("title{id}"),
+            description: String::new(),
+            initial_prompt: None,
+            agent: Agent::Claude,
+            status,
+            position: 0,
+            session_name: None,
+            worktree_path: None,
+            branch: None,
+            auto_reviewed: false,
+            instrumented: false,
+            created_at: String::new(),
+            updated_at: String::new(),
         }
     }
 
     #[test]
     fn column_has_stable_id_keyed_off_status() {
         let html = column(Status::Review, &[]).into_string();
-        assert!(html.contains(r#"id="col-review""#), "stable review id:\n{html}");
+        assert!(
+            html.contains(r#"id="col-review""#),
+            "stable review id:\n{html}"
+        );
     }
 
     #[test]
     fn review_column_titled_needs_attention() {
         let html = column(Status::Review, &[]).into_string();
-        assert!(html.contains("Needs attention"), "review header label:\n{html}");
+        assert!(
+            html.contains("Needs attention"),
+            "review header label:\n{html}"
+        );
     }
 
     #[test]
@@ -80,7 +96,10 @@ mod tests {
         let ts = vec![ticket(1, Status::Todo), ticket(2, Status::Todo)];
         let html = column(Status::Todo, &ts).into_string();
         assert!(html.contains(r#"class="col-count">2"#), "count 2:\n{html}");
-        assert!(html.contains("card-1") && html.contains("card-2"), "both cards:\n{html}");
+        assert!(
+            html.contains("card-1") && html.contains("card-2"),
+            "both cards:\n{html}"
+        );
     }
 
     #[test]
