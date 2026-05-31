@@ -57,15 +57,19 @@ export async function startDaemon() {
   child.stdout.on('data', (b) => logs.push(b.toString()));
   child.stderr.on('data', (b) => logs.push(b.toString()));
 
+  const cleanup = () => fs.rm(dir, { recursive: true, force: true });
   const stop = async () => {
-    child.kill('SIGTERM');
-    await fs.rm(dir, { recursive: true, force: true });
+    if (child.exitCode === null) {
+      child.kill('SIGTERM');
+      await new Promise((resolve) => child.once('exit', resolve));
+    }
+    await cleanup();
   };
 
   // Wait for readiness, surfacing the daemon's own logs on failure.
   for (let i = 0; i < 100; i++) {
     if (child.exitCode !== null) {
-      await stop();
+      await cleanup();
       throw new Error(`kamajid exited early (code ${child.exitCode}):\n${logs.join('')}`);
     }
     try {

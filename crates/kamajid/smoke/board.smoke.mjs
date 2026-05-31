@@ -11,6 +11,7 @@ const pageErrors = [];
 
 test.beforeAll(async () => {
   daemon = await startDaemon();
+  // root_dir = the daemon's temp dir; it is removed by daemon.stop() in afterAll.
   seeded = await seed(daemon.base, daemon.dir);
 });
 
