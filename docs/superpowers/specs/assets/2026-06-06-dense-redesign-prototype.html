@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kamaji — Dense + workspace sidebar</title>
+<style>
+:root{
+  --bg:#16161f; --bg-2:#1b1b27; --surface:#1f2030; --surface-2:#26273a;
+  --hair:#2a2b3c; --hair-2:#34354a;
+  --text:#cdd6f4; --dim:#a6adc8; --muted:#6c7086; --faint:#45475a;
+  --todo:#9399b2; --prog:#89b4fa; --review:#fab387; --done:#a6e3a1; --active:#a6e3a1;
+  --accent:#89b4fa; --danger:#f38ba8;
+  --rail:#0e0e16; --rail-hair:#22222e;
+  --mono:"SF Mono",ui-monospace,"JetBrains Mono","Cascadia Code",monospace;
+  --font:ui-sans-serif,system-ui,"Inter","SF Pro Text","Segoe UI",roboto,sans-serif;
+  --r:7px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg); color:var(--text); font-family:var(--font);
+  font-size:13px; line-height:1.45; letter-spacing:-0.005em; -webkit-font-smoothing:antialiased;
+  display:flex; height:100vh; overflow:hidden;}
+
+/* ============ workspace rail (Slack-style) ============ */
+.rail{
+  flex:0 0 64px; width:64px; background:var(--rail);
+  border-right:1px solid var(--rail-hair);
+  display:flex; flex-direction:column; align-items:stretch;
+  padding:10px 0; gap:4px; transition:width .18s ease, flex-basis .18s ease;
+}
+body.rail-open .rail{ flex-basis:212px; width:212px; }
+.rail-head{display:flex; align-items:center; height:44px; padding:0 12px; margin-bottom:6px; justify-content:center;}
+body.rail-open .rail-head{justify-content:flex-start; padding:0 14px 0 16px;}
+.rail-mark{display:none; width:9px; height:9px; border-radius:3px; flex:0 0 auto;
+  background:linear-gradient(135deg,var(--prog),var(--done)); box-shadow:0 0 8px rgba(137,180,250,.5);}
+body.rail-open .rail-mark{display:inline-block}
+.rail-word{display:none; font-family:var(--mono); font-weight:600; font-size:13px; letter-spacing:0.02em;
+  margin-left:9px; white-space:nowrap;}
+body.rail-open .rail-word{display:inline-block}
+.rail-toggle{flex:0 0 auto; width:26px; height:26px; border-radius:7px; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; color:var(--muted);
+  background:transparent; border:1px solid transparent; font-size:15px; line-height:1;}
+body.rail-open .rail-toggle{margin-left:auto; font-size:13px;}
+.rail-toggle:hover{color:var(--text); background:rgba(255,255,255,.06)}
+.rail-toggle .ic-open{display:none}
+body.rail-open .rail-toggle .ic-open{display:inline}
+body.rail-open .rail-toggle .ic-collapsed{display:none}
+
+.rail-list{display:flex; flex-direction:column; gap:4px; padding:4px 0; overflow-y:auto;}
+/* each project = indicator + tile (+ label when open) */
+.ws{position:relative; display:flex; align-items:center; height:52px; padding:0 12px; cursor:pointer;}
+.ws-ind{position:absolute; left:0; top:50%; transform:translateY(-50%) scaleY(0);
+  width:3px; height:30px; border-radius:0 3px 3px 0; background:var(--text); transition:transform .15s ease;}
+.ws:hover .ws-ind{transform:translateY(-50%) scaleY(.4)}
+.ws.active .ws-ind{transform:translateY(-50%) scaleY(1)}
+.ws-tile{position:relative; flex:0 0 auto; width:40px; height:40px; border-radius:13px;
+  display:flex; align-items:center; justify-content:center;
+  font-weight:700; font-size:14px; color:#0b0b14; letter-spacing:-0.02em;
+  transition:border-radius .15s ease, box-shadow .15s ease, transform .12s ease;}
+.ws:hover .ws-tile{border-radius:11px; transform:translateY(-1px)}
+.ws.active .ws-tile{border-radius:11px; box-shadow:0 0 0 2px var(--rail), 0 0 0 3px rgba(255,255,255,.15)}
+.ws-tile.c1{background:linear-gradient(135deg,#89b4fa,#5b7fd6)}
+.ws-tile.c2{background:linear-gradient(135deg,#cba6f7,#f38ba8)}
+.ws-tile.c3{background:linear-gradient(135deg,#fab387,#f9a03f)}
+.ws-tile.c4{background:linear-gradient(135deg,#a6e3a1,#5fb37a)}
+.ws-badge{position:absolute; top:-3px; right:-3px; min-width:16px; height:16px; padding:0 4px;
+  border-radius:9px; background:var(--review); color:#1a1208; font-family:var(--mono);
+  font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center;
+  border:2px solid var(--rail);}
+.ws-label{margin-left:11px; white-space:nowrap; font-size:13px; color:var(--dim);
+  opacity:0; transition:opacity .12s ease; overflow:hidden;}
+body.rail-open .ws-label{opacity:1}
+.ws.active .ws-label{color:var(--text); font-weight:500}
+
+.rail-add{display:flex; align-items:center; height:52px; padding:0 12px; cursor:pointer; color:var(--muted);}
+.rail-add .ws-tile{background:transparent; border:1.5px dashed var(--hair-2); color:var(--muted); font-weight:400; font-size:18px;}
+.rail-add:hover .ws-tile{border-color:var(--accent); color:var(--accent)}
+.rail-add .ws-label{color:var(--muted)}
+.rail-spacer{flex:1}
+
+/* ============ main area ============ */
+.main{flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden;}
+.topbar{display:flex; align-items:center; gap:14px; height:46px; padding:0 16px; flex:0 0 auto;
+  background:linear-gradient(180deg,var(--bg-2),var(--bg)); border-bottom:1px solid var(--hair);}
+.crumb{display:flex; align-items:center; gap:9px;}
+.crumb-dot{width:18px; height:18px; border-radius:6px; background:linear-gradient(135deg,#89b4fa,#5b7fd6);}
+.crumb-name{font-weight:600; font-size:14px; letter-spacing:-0.01em;}
+.search-wrap{position:relative; flex:1; max-width:340px; display:flex; align-items:center;}
+.search-ico{position:absolute; left:9px; color:var(--muted); pointer-events:none; display:flex;}
+.search{width:100%; height:28px; padding:0 54px 0 28px; font-size:12px; color:var(--text);
+  background:var(--surface); border:1px solid var(--hair); border-radius:6px; font-family:var(--font);
+  outline:none; transition:border-color .12s ease, box-shadow .12s ease;}
+.search::placeholder{color:var(--faint);}
+.search:focus{border-color:var(--accent); box-shadow:0 0 0 3px rgba(137,180,250,.14);}
+.search-wrap.has-q .search{border-color:var(--accent);}
+.search-clear{position:absolute; right:7px; display:none; width:18px; height:18px; border:none; border-radius:4px;
+  background:var(--surface-2); color:var(--muted); cursor:pointer; font-size:10px; align-items:center; justify-content:center;}
+.search-wrap.has-q .search-clear{display:flex;}
+.search-clear:hover{color:var(--text);}
+.search-kbd{position:absolute; right:8px;}
+.search-wrap.has-q .search-kbd{display:none;}
+.search-count{font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; white-space:nowrap;}
+mark{background:rgba(137,180,250,.28); color:var(--text); border-radius:2px; padding:0 1px;}
+.col-nomatch{font-size:12px; color:var(--faint); padding:6px 2px; margin:0;}
+.spacer{flex:1}
+.btn-primary{height:28px; padding:0 12px; font-size:12px; font-weight:600; color:#0b0b14;
+  background:var(--accent); border:1px solid var(--accent); border-radius:6px; cursor:pointer;
+  font-family:var(--font); display:inline-flex; align-items:center; gap:6px;}
+.kbd{font-family:var(--mono); font-size:10px; padding:1px 4px; border-radius:3px;
+  background:rgba(0,0,0,.25); color:var(--muted); border:1px solid var(--hair-2);}
+
+.board{flex:1; overflow-y:auto; display:grid; grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:14px; padding:18px 16px; align-content:start;}
+.column{display:flex; flex-direction:column; min-height:0;}
+.col-head{display:flex; align-items:center; gap:8px; padding:0 2px 10px;}
+.col-dot{width:7px; height:7px; border-radius:50%;}
+.col-title{font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; color:var(--dim);}
+.col-count{font-family:var(--mono); font-size:11px; color:var(--muted); background:var(--surface);
+  border:1px solid var(--hair); border-radius:20px; min-width:20px; text-align:center; padding:1px 6px;}
+[data-status=todo] .col-dot{background:var(--todo)}
+[data-status=in_progress] .col-dot{background:var(--prog)}
+[data-status=review] .col-dot{background:var(--review)}
+[data-status=done] .col-dot{background:var(--done)}
+.col-body{display:flex; flex-direction:column; gap:8px;}
+
+.card{position:relative; background:var(--surface); border:1px solid var(--hair); border-radius:var(--r);
+  padding:9px 11px 9px 13px; transition:border-color .12s ease, background .12s ease, transform .12s ease;}
+.card::before{content:""; position:absolute; left:0; top:7px; bottom:7px; width:2px; border-radius:2px;}
+[data-status=todo] .card::before{background:var(--todo)}
+[data-status=in_progress] .card::before{background:var(--prog)}
+[data-status=review] .card::before{background:var(--review)}
+[data-status=done] .card::before{background:var(--done); opacity:.5}
+.card:hover{border-color:var(--hair-2); background:var(--surface-2); transform:translateY(-1px);}
+.card-head{display:flex; align-items:baseline; gap:7px;}
+.card-id{font-family:var(--mono); font-size:11px; color:var(--muted);}
+.card-title{font-size:13px; font-weight:500; color:var(--text); line-height:1.35;}
+.card[data-status=done] .card-title{color:var(--dim)}
+.card-meta{display:flex; align-items:center; gap:8px; margin-top:7px;}
+.dot{width:6px; height:6px; border-radius:50%; flex:0 0 auto;}
+.dot.live{background:var(--active); box-shadow:0 0 7px rgba(166,227,161,.6)}
+.dot.idle{background:var(--faint); border:1px solid var(--muted)}
+.agent{font-size:11px; color:var(--dim);}
+.chip{font-family:var(--mono); font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em;
+  padding:1.5px 6px; border-radius:4px;}
+.chip.active{color:var(--prog); background:rgba(137,180,250,.12); border:1px solid rgba(137,180,250,.25)}
+.chip.idle{color:var(--review); background:rgba(250,179,135,.12); border:1px solid rgba(250,179,135,.25)}
+.actions{display:flex; gap:5px; margin-top:9px; opacity:0; max-height:0; overflow:hidden; transition:opacity .12s ease;}
+.card:hover .actions{opacity:1; max-height:40px;}
+.act{font-size:11px; padding:3px 8px; color:var(--dim); background:transparent; border:1px solid var(--hair-2);
+  border-radius:5px; cursor:pointer; font-family:var(--font);}
+.act:hover{color:var(--text); background:var(--surface)}
+.act.primary{color:var(--accent); border-color:rgba(137,180,250,.3)}
+.act.danger:hover{color:var(--danger); border-color:rgba(243,139,168,.4)}
+
+/* ============ modals ============ */
+.modal-overlay{position:fixed; inset:0; z-index:100; display:none; align-items:center; justify-content:center;
+  background:rgba(10,10,16,.62); backdrop-filter:blur(3px);}
+.modal-overlay.open{display:flex;}
+.modal{width:min(440px,calc(100vw - 32px)); background:var(--bg-2); border:1px solid var(--hair-2);
+  border-radius:11px; box-shadow:0 30px 80px -24px rgba(0,0,0,.85); overflow:hidden; animation:modal-in .16s ease;}
+@keyframes modal-in{from{opacity:0; transform:translateY(10px) scale(.985)} to{opacity:1; transform:none}}
+.modal-head{display:flex; align-items:center; gap:9px; padding:13px 16px; border-bottom:1px solid var(--hair);}
+.modal-title{font-size:14px; font-weight:600; letter-spacing:-.01em; color:var(--text);}
+.modal-idpill{font-family:var(--mono); font-size:11px; color:var(--muted); background:var(--surface);
+  border:1px solid var(--hair); border-radius:5px; padding:1px 6px;}
+.modal-close{margin-left:auto; width:24px; height:24px; border-radius:6px; border:1px solid transparent;
+  background:transparent; color:var(--muted); cursor:pointer; font-size:13px; display:flex; align-items:center; justify-content:center;}
+.modal-close:hover{color:var(--text); background:var(--surface);}
+.modal-body{padding:16px;}
+.field{margin-bottom:13px;}
+.field:last-child{margin-bottom:0;}
+.field > label{display:block; font-family:var(--mono); font-size:10px; text-transform:uppercase;
+  letter-spacing:.08em; color:var(--muted); margin-bottom:6px;}
+.field input, .field textarea{width:100%; box-sizing:border-box; font-family:var(--font);
+  font-size:13px; color:var(--text); background:var(--surface); border:1px solid var(--hair-2);
+  border-radius:6px; padding:8px 10px; outline:none; transition:border-color .12s ease, box-shadow .12s ease;}
+.field input::placeholder, .field textarea::placeholder{color:var(--faint);}
+.field input:focus, .field textarea:focus{border-color:var(--accent); box-shadow:0 0 0 3px rgba(137,180,250,.16);}
+.field textarea{resize:vertical; min-height:62px; line-height:1.5;}
+.field input.mono{font-family:var(--mono); font-size:12px;}
+.field .hint{font-size:11px; color:var(--muted); margin-top:5px;}
+.req{color:var(--accent); margin-left:2px;}
+.seg{display:inline-flex; background:var(--surface); border:1px solid var(--hair-2); border-radius:7px; padding:2px; gap:2px;}
+.seg button{font-size:12px; padding:5px 12px; border:none; background:transparent; color:var(--dim);
+  border-radius:5px; cursor:pointer; font-family:var(--font);}
+.seg button.on{background:var(--surface-2); color:var(--text); box-shadow:inset 0 0 0 1px var(--hair-2);}
+.modal-foot{display:flex; align-items:center; gap:8px; justify-content:flex-end; padding:12px 16px;
+  border-top:1px solid var(--hair); background:rgba(0,0,0,.14);}
+.btn{font-size:12px; padding:7px 14px; border-radius:6px; border:1px solid var(--hair-2);
+  background:transparent; color:var(--dim); cursor:pointer; font-family:var(--font);}
+.btn:hover{color:var(--text); background:var(--surface);}
+.btn-primary{color:#0b0b14; background:var(--accent); border-color:var(--accent); font-weight:600;}
+.btn-primary:hover{filter:brightness(1.06);}
+.btn-danger{color:var(--danger); border-color:rgba(243,139,168,.3);}
+.btn-danger:hover{background:rgba(243,139,168,.1);}
+.foot-spacer{flex:1;}
+
+/* checkbox row */
+.check{display:flex; align-items:flex-start; gap:10px; margin-top:15px; cursor:pointer;}
+.check input{appearance:none; -webkit-appearance:none; flex:0 0 auto; width:17px; height:17px; margin:1px 0 0;
+  border:1px solid var(--hair-2); border-radius:5px; background:var(--surface); cursor:pointer; position:relative;
+  transition:background .12s ease, border-color .12s ease;}
+.check input:checked{background:var(--accent); border-color:var(--accent);}
+.check input:checked::after{content:"✓"; position:absolute; inset:0; display:flex; align-items:center;
+  justify-content:center; font-size:11px; font-weight:800; color:#0b0b14;}
+.check-text{font-size:12px; color:var(--muted); line-height:1.45;}
+.check-text b{display:block; font-weight:500; font-size:12.5px; color:var(--text); margin-bottom:1px;}
+
+/* read-only / locked field */
+.field textarea[readonly], .field input[readonly]{color:var(--dim); background:var(--bg); border-color:var(--hair); cursor:default;}
+.field textarea[readonly]:focus, .field input[readonly]:focus{border-color:var(--hair); box-shadow:none;}
+.lock-tag{float:right; font-family:var(--font); font-size:10px; text-transform:none; letter-spacing:0; color:var(--muted); font-weight:400;}
+.modal-livedot{width:7px; height:7px; border-radius:50%; background:var(--active); box-shadow:0 0 7px rgba(166,227,161,.7); flex:0 0 auto;}
+
+/* drag & drop */
+.card{cursor:grab;}
+.card.dragging{opacity:.4; cursor:grabbing;}
+.col-body{min-height:120px;}
+.col-body.drop{outline:2px dashed var(--hair-2); outline-offset:3px; border-radius:8px; background:rgba(137,180,250,.05);}
+
+/* terminal window (attach) */
+.term-modal{position:fixed; inset:18px; z-index:101; display:flex; flex-direction:column; overflow:hidden;
+  background:#000; border:1px solid var(--hair-2); border-radius:10px; box-shadow:0 30px 90px -20px rgba(0,0,0,.85);}
+.term-bar{flex:0 0 auto; display:flex; align-items:center; gap:9px; padding:9px 14px; background:var(--bg-2); border-bottom:1px solid var(--hair);}
+.term-title{font-family:var(--mono); font-size:12.5px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.term-id{color:var(--muted);}
+.term-livedot{width:7px; height:7px; border-radius:50%; background:var(--active); box-shadow:0 0 7px rgba(166,227,161,.7); flex:0 0 auto;}
+.term-close{margin-left:auto; flex:0 0 auto; width:27px; height:27px; border-radius:6px; border:1px solid transparent;
+  background:transparent; color:var(--dim); cursor:pointer; font-size:14px; display:flex; align-items:center; justify-content:center;}
+.term-close:hover{color:#0b0b14; background:var(--danger);}
+.term-body{flex:1; overflow:auto; background:#08080d; padding:14px 16px; margin:0; white-space:pre-wrap;
+  font-family:var(--mono); font-size:12.5px; line-height:1.65; color:#c8cdda;}
+.term-body .c-dim{color:var(--muted);} .term-body .c-grn{color:#a6e3a1;}
+.term-body .c-blu{color:#89b4fa;} .term-body .c-prompt{color:#f9e2af;}
+.term-cursor{display:inline-block; width:8px; height:15px; background:#a6e3a1; vertical-align:text-bottom; animation:blink 1.05s steps(1) infinite;}
+@keyframes blink{50%{opacity:0;}}
+.term-status{flex:0 0 auto; display:flex; align-items:center; gap:16px; padding:6px 14px; background:var(--bg-2);
+  border-top:1px solid var(--hair); font-family:var(--mono); font-size:11px; color:var(--dim);}
+</style>
+</head>
+<body class="rail-open">
+  <!-- ============ workspace rail ============ -->
+  <aside class="rail">
+    <div class="rail-head">
+      <span class="rail-mark"></span><span class="rail-word">kamaji</span>
+      <button class="rail-toggle" onclick="document.body.classList.toggle('rail-open')" aria-label="Toggle sidebar">
+        <span class="ic-collapsed">☰</span><span class="ic-open">‹</span>
+      </button>
+    </div>
+    <div class="rail-list">
+      <div class="ws active">
+        <span class="ws-ind"></span>
+        <span class="ws-tile c1">MP<span class="ws-badge">1</span></span>
+        <span class="ws-label">My Project</span>
+      </div>
+      <div class="ws">
+        <span class="ws-ind"></span>
+        <span class="ws-tile c2">SK</span>
+        <span class="ws-label">Sidekit</span>
+      </div>
+      <div class="ws">
+        <span class="ws-ind"></span>
+        <span class="ws-tile c3">FB</span>
+        <span class="ws-label">foobar</span>
+      </div>
+      <div class="ws">
+        <span class="ws-ind"></span>
+        <span class="ws-tile c4">TE</span>
+        <span class="ws-label">test</span>
+      </div>
+    </div>
+    <div class="rail-spacer"></div>
+    <div class="rail-add" onclick="openModal('modal-new-project')">
+      <span class="ws-tile">+</span>
+      <span class="ws-label">Add project</span>
+    </div>
+  </aside>
+
+  <!-- ============ main ============ -->
+  <div class="main">
+    <header class="topbar">
+      <span class="crumb"><span class="crumb-dot"></span><span class="crumb-name">My Project</span></span>
+      <div class="search-wrap">
+        <svg class="search-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><line x1="20.5" y1="20.5" x2="16.5" y2="16.5"></line></svg>
+        <input id="search" class="search" placeholder="Search tickets…" autocomplete="off" oninput="runSearch(this.value)">
+        <button class="search-clear" onclick="clearSearch()" aria-label="Clear search">✕</button>
+        <span class="search-kbd kbd">/</span>
+      </div>
+      <span class="search-count"></span>
+      <span class="spacer"></span>
+      <button class="btn-primary" onclick="openModal('modal-new-ticket')">+ New <span class="kbd">n</span></button>
+    </header>
+
+    <main class="board">
+      <section class="column" data-status="todo">
+        <div class="col-head"><span class="col-dot"></span><span class="col-title">Todo</span><span class="col-count">3</span></div>
+        <div class="col-body">
+          <article draggable="true" class="card" data-status="todo">
+            <div class="card-head"><span class="card-id">#102</span><span class="card-title">Search / filter tickets in the board</span></div>
+            <div class="card-meta"><span class="dot idle"></span><span class="agent">Claude Code</span></div>
+            <div class="actions"><button class="act primary">▸ Start</button><button class="act" onclick="openModal('modal-edit-ticket')">Edit</button><button class="act danger">Delete</button></div>
+          </article>
+          <article draggable="true" class="card" data-status="todo">
+            <div class="card-head"><span class="card-id">#27</span><span class="card-title">Run agents in a Docker sandbox by default</span></div>
+            <div class="card-meta"><span class="dot idle"></span><span class="agent">Codex</span></div>
+            <div class="actions"><button class="act primary">▸ Start</button><button class="act" onclick="openModal('modal-edit-ticket')">Edit</button><button class="act danger">Delete</button></div>
+          </article>
+          <article draggable="true" class="card" data-status="todo">
+            <div class="card-head"><span class="card-id">#103</span><span class="card-title">Keyboard shortcuts for the board</span></div>
+            <div class="card-meta"><span class="dot idle"></span><span class="agent">Claude Code</span></div>
+            <div class="actions"><button class="act primary">▸ Start</button><button class="act" onclick="openModal('modal-edit-ticket')">Edit</button><button class="act danger">Delete</button></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="column" data-status="in_progress">
+        <div class="col-head"><span class="col-dot"></span><span class="col-title">In Progress</span><span class="col-count">2</span></div>
+        <div class="col-body">
+          <article draggable="true" class="card" data-status="in_progress">
+            <div class="card-head"><span class="card-id">#100</span><span class="card-title">Inline terminal reconnect under session contention</span></div>
+            <div class="card-meta"><span class="dot live"></span><span class="agent">Claude Code</span><span class="chip active">active</span></div>
+            <div class="actions"><button class="act primary" onclick="openModal('modal-attach')">⤢ Attach</button><button class="act" onclick="openModal('modal-edit-ticket')">Edit</button><button class="act">✓ Done</button></div>
+          </article>
+          <article draggable="true" class="card" data-status="in_progress">
+            <div class="card-head"><span class="card-id">#96</span><span class="card-title">Revalidate browser assets on restart</span></div>
+            <div class="card-meta"><span class="dot live"></span><span class="agent">Copilot</span><span class="chip active">active</span></div>
+            <div class="actions"><button class="act primary" onclick="openModal('modal-attach')">⤢ Attach</button><button class="act" onclick="openModal('modal-edit-ticket')">Edit</button><button class="act">✓ Done</button></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="column" data-status="review">
+        <div class="col-head"><span class="col-dot"></span><span class="col-title">Needs attention</span><span class="col-count">1</span></div>
+        <div class="col-body">
+          <article draggable="true" class="card" data-status="review">
+            <div class="card-head"><span class="card-id">#93</span><span class="card-title">Embed the zellij session in a terminal modal</span></div>
+            <div class="card-meta"><span class="dot idle"></span><span class="agent">Claude Code</span><span class="chip idle">idle</span></div>
+            <div class="actions"><button class="act primary" onclick="openModal('modal-attach')">⤢ Attach</button><button class="act">✓ Done</button><button class="act" onclick="openModal('modal-edit-ticket')">Edit</button></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="column" data-status="done">
+        <div class="col-head"><span class="col-dot"></span><span class="col-title">Done</span><span class="col-count">3</span></div>
+        <div class="col-body">
+          <article draggable="true" class="card" data-status="done">
+            <div class="card-head"><span class="card-id">#95</span><span class="card-title">Render the ticket modal as a centered overlay</span></div>
+            <div class="card-meta"><span class="dot idle"></span><span class="agent">Claude Code</span></div>
+            <div class="actions"><button class="act danger">Delete</button></div>
+          </article>
+          <article draggable="true" class="card" data-status="done">
+            <div class="card-head"><span class="card-id">#90</span><span class="card-title">Fix the RC.6 Datastar binding syntax</span></div>
+            <div class="card-meta"><span class="dot idle"></span><span class="agent">Codex</span></div>
+            <div class="actions"><button class="act danger">Delete</button></div>
+          </article>
+          <article draggable="true" class="card" data-status="done">
+            <div class="card-head"><span class="card-id">#94</span><span class="card-title">Makefile for daemon control</span></div>
+            <div class="card-meta"><span class="dot idle"></span><span class="agent">Copilot</span></div>
+            <div class="actions"><button class="act danger">Delete</button></div>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============ NEW TICKET ============ -->
+  <div class="modal-overlay" id="modal-new-ticket" onclick="overlayClose(event)">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="modal-title">New ticket</span>
+        <button class="modal-close" onclick="closeModals()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field"><label>Title<span class="req">*</span></label>
+          <input placeholder="What needs doing?"></div>
+        <div class="field"><label>Description</label>
+          <textarea placeholder="Optional context…"></textarea></div>
+        <div class="field"><label>Initial prompt</label>
+          <textarea placeholder="e.g. Start working on GitHub issue #102."></textarea>
+          <div class="hint">The first message handed to the agent when its session starts.</div></div>
+        <div class="field"><label>Agent</label>
+          <div class="seg"><button class="on">Claude Code</button><button>Codex</button><button>Copilot</button></div></div>
+        <label class="check">
+          <input type="checkbox" checked>
+          <span class="check-text"><b>Start the agent now, in the background</b>
+            Spawns the session immediately and sends the initial prompt. Leave off to create it in Todo and start later.</span>
+        </label>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" onclick="closeModals()">Cancel</button>
+        <button class="btn btn-primary">Create ticket</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ NEW PROJECT ============ -->
+  <div class="modal-overlay" id="modal-new-project" onclick="overlayClose(event)">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="modal-title">New project</span>
+        <button class="modal-close" onclick="closeModals()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field"><label>Name<span class="req">*</span></label>
+          <input placeholder="My Project"></div>
+        <div class="field"><label>Root directory<span class="req">*</span></label>
+          <input class="mono" placeholder="~/dev/kamaji">
+          <div class="hint">Absolute path to the project's git repository.</div></div>
+        <div class="field"><label>Default agent</label>
+          <div class="seg"><button class="on">Claude Code</button><button>Codex</button><button>Copilot</button></div>
+          <div class="hint">Used for new tickets unless overridden.</div></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" onclick="closeModals()">Cancel</button>
+        <button class="btn btn-primary">Create project</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ EDIT TICKET ============ -->
+  <div class="modal-overlay" id="modal-edit-ticket" onclick="overlayClose(event)">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="modal-title">Edit ticket</span>
+        <span class="modal-idpill">#100</span>
+        <span class="modal-livedot" title="session running"></span>
+        <button class="modal-close" onclick="closeModals()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field"><label>Title<span class="req">*</span></label>
+          <input value="Inline terminal reconnect under session contention"></div>
+        <div class="field"><label>Description</label>
+          <textarea>The terminal loops “Reconnecting…” when the session is already attached elsewhere.</textarea></div>
+        <div class="field"><label>Initial prompt<span class="lock-tag">🔒 locked</span></label>
+          <textarea readonly>Start working on GitHub issue #100.</textarea>
+          <div class="hint">Only used when the session is first created — read-only once the agent has started.</div></div>
+        <div class="field"><label>Agent</label>
+          <div class="seg"><button class="on">Claude Code</button><button>Codex</button><button>Copilot</button></div></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-danger">Delete</button>
+        <span class="foot-spacer"></span>
+        <button class="btn" onclick="closeModals()">Cancel</button>
+        <button class="btn btn-primary">Save changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ ATTACH (terminal window) ============ -->
+  <div class="modal-overlay" id="modal-attach" onclick="overlayClose(event)">
+    <div class="term-modal">
+      <div class="term-bar">
+        <span class="term-livedot"></span>
+        <span class="term-title"><span class="term-id">#100</span>&nbsp; Inline terminal reconnect under session contention</span>
+        <button class="term-close" onclick="closeModals()" aria-label="Close terminal">✕</button>
+      </div>
+      <div class="term-body"><span class="c-dim"># zellij · kamaji-100-inline-terminal-reconnect · Claude Code</span>
+
+<span class="c-grn">❯</span> claude --resume
+<span class="c-dim">Resuming session… 14 messages restored.</span>
+
+<span class="c-blu">●</span> I traced the reconnect loop with frame-level logging on the proxy. The
+  upstream <span class="c-prompt">zellij web</span> is closing the terminal socket with a clean
+  <span class="c-prompt">Normal</span> close ~100ms after open — it's session contention, not us.
+
+<span class="c-dim">  → reading crates/kamajid/src/zellij_proxy.rs</span>
+<span class="c-dim">  → reading crates/kamajid/src/assets/websockets.js</span>
+
+<span class="c-blu">●</span> The client reconnects on any onclose and reuses its web_client_id,
+  which the server rejects with an instant EOF → the forever-loop.
+  Fix: mint a fresh web_client_id on reconnect. Patching now.
+
+<span class="c-grn">❯</span> <span class="term-cursor"></span></div>
+      <div class="term-status">
+        <span><span class="c-grn">●</span> running</span>
+        <span class="c-dim">kamaji-100-inline-terminal-reconnect</span>
+        <span class="c-dim">Claude Code</span>
+        <span class="c-dim" style="margin-left:auto">⤢ drag tab · Ctrl-q detach</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function openModal(id){ closeModals(); document.getElementById(id).classList.add('open'); }
+    function closeModals(){ document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open')); }
+    function overlayClose(e){ if(e.target===e.currentTarget) e.currentTarget.classList.remove('open'); }
+
+    /* live search / filter */
+    document.querySelectorAll('.card-title').forEach(t=>{ t.dataset.title = t.textContent; });
+    document.querySelectorAll('.col-body').forEach(b=>{
+      const p=document.createElement('p'); p.className='col-nomatch'; p.textContent='No matches'; p.style.display='none'; b.appendChild(p);
+    });
+    function esc(s){ return s.replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+    function runSearch(raw){
+      const q = raw.trim().toLowerCase();
+      const wrap = document.querySelector('.search-wrap');
+      wrap.classList.toggle('has-q', raw.length>0);
+      let total=0;
+      document.querySelectorAll('.column').forEach(col=>{
+        let n=0;
+        col.querySelectorAll('.card').forEach(card=>{
+          const title = card.querySelector('.card-title');
+          const orig = title.dataset.title;
+          const agent = card.querySelector('.agent') ? card.querySelector('.agent').textContent : '';
+          const hay = (card.querySelector('.card-id').textContent + ' ' + orig + ' ' + agent).toLowerCase();
+          const match = q==='' || hay.includes(q);
+          card.style.display = match ? '' : 'none';
+          if(match && q){ const i=orig.toLowerCase().indexOf(q);
+            title.innerHTML = i<0 ? esc(orig) : esc(orig.slice(0,i))+'<mark>'+esc(orig.slice(i,i+q.length))+'</mark>'+esc(orig.slice(i+q.length)); }
+          else { title.textContent = orig; }
+          if(match) n++;
+        });
+        total += n;
+        col.querySelector('.col-count').textContent = (q==='') ? col.querySelectorAll('.card').length : n;
+        col.querySelector('.col-nomatch').style.display = (q!=='' && n===0) ? 'block' : 'none';
+      });
+      document.querySelector('.search-count').textContent = q==='' ? '' : (total + ' result' + (total===1?'':'s'));
+    }
+    function clearSearch(){ const s=document.getElementById('search'); s.value=''; runSearch(''); s.focus(); }
+
+    document.addEventListener('keydown', e=>{
+      const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+      if(e.key==='/' && !typing){ e.preventDefault(); document.getElementById('search').focus(); }
+      if(e.key==='Escape'){ const s=document.getElementById('search'); if(s.value){ clearSearch(); } else { closeModals(); } }
+    });
+
+    /* drag & drop between columns */
+    let dragged=null;
+    document.querySelectorAll('.card').forEach(c=>{
+      c.addEventListener('dragstart', e=>{ dragged=c; c.classList.add('dragging'); e.dataTransfer.effectAllowed='move'; });
+      c.addEventListener('dragend', ()=>{ c.classList.remove('dragging'); document.querySelectorAll('.col-body').forEach(b=>b.classList.remove('drop')); updateCounts(); });
+    });
+    document.querySelectorAll('.col-body').forEach(body=>{
+      body.addEventListener('dragover', e=>{ e.preventDefault(); body.classList.add('drop'); });
+      body.addEventListener('dragleave', e=>{ if(!body.contains(e.relatedTarget)) body.classList.remove('drop'); });
+      body.addEventListener('drop', e=>{ e.preventDefault(); if(dragged){ body.appendChild(dragged); dragged.dataset.status = body.closest('.column').dataset.status; } body.classList.remove('drop'); });
+    });
+    function updateCounts(){ document.querySelectorAll('.column').forEach(col=>{ col.querySelector('.col-count').textContent = col.querySelectorAll('.card').length; }); }
+  </script>
+</body>
+</html>
