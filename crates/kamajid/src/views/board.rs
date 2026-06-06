@@ -7,14 +7,17 @@ use maud::{html, Markup};
 use super::card::card;
 
 /// One Kanban column. Stable id `col-<status.as_str()>` is the SSE patch
-/// target. Header shows the title (`Status::title()` → "Needs attention" for
-/// Review) and the live count. Empty columns show a quiet placeholder.
+/// target. Header shows a status dot, the UPPERCASE title (`Status::title()` →
+/// "Needs attention" for Review) and the live count pill. The `.col-body` is a
+/// drag-and-drop drop zone (see `board-dnd.js`). Empty columns show a quiet
+/// placeholder.
 pub fn column(status: Status, tickets: &[Ticket]) -> Markup {
     html! {
         section class="column"
                 id=(format!("col-{}", status.as_str()))
                 data-status=(status.as_str()) {
             header class="col-head" {
+                span class="col-dot" {}
                 span class="col-title" { (status.title()) }
                 span class="col-count" { (tickets.len()) }
             }
@@ -73,6 +76,15 @@ mod tests {
         assert!(
             html.contains(r#"id="col-review""#),
             "stable review id:\n{html}"
+        );
+    }
+
+    #[test]
+    fn column_header_has_status_dot() {
+        let html = column(Status::Todo, &[]).into_string();
+        assert!(
+            html.contains(r#"class="col-dot""#),
+            "status dot in header:\n{html}"
         );
     }
 

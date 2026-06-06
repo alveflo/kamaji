@@ -90,14 +90,29 @@ test('board is interactive end-to-end', async ({ page }) => {
   await test.step('Delete removes a card live', async () => {
     page.once('dialog', (d) => d.accept()); // window.confirm in the Delete handler
     const card = page.locator(`#card-${seeded.ids.todo}`);
+    await card.hover(); // actions reveal on hover (dense card)
     await card.getByRole('button', { name: 'Delete' }).click();
     await expect(card).toHaveCount(0);
   });
 
-  await test.step('Move relocates a card across columns live', async () => {
-    const card = page.locator(`#card-${seeded.ids.in_progress}`);
-    await card.getByRole('button', { name: 'Move' }).click();
-    await expect(page.locator(`#col-review #card-${seeded.ids.in_progress}`)).toBeVisible();
+  await test.step('Drag-and-drop relocates a card across columns live', async () => {
+    // The Move button is gone — column moves happen by dragging the card onto
+    // another column's body. Native HTML5 DnD isn't driven by Playwright's mouse
+    // events, so dispatch the drag sequence with a shared DataTransfer. The drop
+    // fires POST /tickets/:id/move and the authoritative move arrives over SSE.
+    const id = seeded.ids.in_progress;
+    await page.evaluate((cardId) => {
+      const card = document.getElementById(`card-${cardId}`);
+      const body = document.querySelector('#col-review .col-body');
+      const dt = new DataTransfer();
+      const fire = (el, type) =>
+        el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+      fire(card, 'dragstart');
+      fire(body, 'dragover');
+      fire(body, 'drop');
+      fire(card, 'dragend');
+    }, id);
+    await expect(page.locator(`#col-review #card-${id}`)).toBeVisible();
   });
 
   await test.step('+ Ticket opens the modal as a centered overlay over a dimmed board', async () => {

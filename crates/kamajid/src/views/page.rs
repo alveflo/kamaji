@@ -1,9 +1,9 @@
 //! The full HTML document shell: head (the design-system stylesheets +
-//! vendored Datastar module + the search-slice module + viewport), a flex shell
-//! of the Slack-style workspace rail (project selection lives here now) beside a
-//! `.main` column holding the topbar (breadcrumb + live-search box + "+ New"),
-//! the board, and an empty modal mount. `data-init` opens the `/ui/events` SSE
-//! stream (RC.6 has
+//! vendored Datastar module + the board drag-and-drop script + the search-slice
+//! module + viewport), a flex shell of the Slack-style workspace rail (project
+//! selection lives here now) beside a `.main` column holding the topbar
+//! (breadcrumb + live-search box + "+ New"), the board, and an empty modal
+//! mount. `data-init` opens the `/ui/events` SSE stream (RC.6 has
 //! no `on-load` event; `data-init` runs once when the element is first
 //! processed). Parameterized bindings use a colon (`data-on:click`).
 
@@ -46,6 +46,7 @@ pub fn page(
                 link rel="stylesheet" href="/assets/search.css";
                 link rel="stylesheet" href="/assets/terminal.css";
                 script type="module" src="/assets/datastar.js" {}
+                script defer src="/assets/board-dnd.js" {}
                 script type="module" src="/assets/search.js" {}
             }
             body class="rail-open" data-init="@get('/ui/events')" {
@@ -127,6 +128,10 @@ mod tests {
         assert!(
             html.contains(r#"src="/assets/datastar.js""#),
             "datastar module:\n{html}"
+        );
+        assert!(
+            html.contains(r#"src="/assets/board-dnd.js""#),
+            "board drag-and-drop script:\n{html}"
         );
         assert!(
             !html.contains(r#"href="/assets/app.css""#),
