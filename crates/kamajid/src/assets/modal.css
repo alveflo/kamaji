@@ -272,3 +272,36 @@ dialog.modal {
   color: var(--text);
   margin-bottom: 1px;
 }
+
+/* ----------------------------------------------------------------------------
+   Locked (read-only) prompt + running-session live-dot (edit modal)
+   -------------------------------------------------------------------------- */
+.field textarea[readonly],
+.field input[readonly] {
+  color: var(--dim);
+  background: var(--bg);
+  border-color: var(--hair);
+  cursor: default;
+}
+.field textarea[readonly]:focus,
+.field input[readonly]:focus {
+  border-color: var(--hair);
+  box-shadow: none;
+}
+.lock-tag {
+  float: right;
+  font-family: var(--font);
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+  font-weight: 400;
+}
+.modal-livedot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--active);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--active) 70%, transparent);
+  flex: 0 0 auto;
+}

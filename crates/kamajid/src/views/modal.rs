@@ -43,6 +43,9 @@ pub fn ticket_form(
             "Create ticket",
         ),
     };
+    // A started ticket (it has a session) locks the initial prompt — that text is
+    // only consumed at session creation — and flags the session as running.
+    let session_running = editing.map(|t| t.session_name.is_some()).unwrap_or(false);
     // Build the JSON body from the form's named controls and POST/PATCH it via an
     // explicit `fetch()` — a Datastar `@post`'s second argument is request
     // *options*, not a body, so signal/typing pitfalls are avoided entirely. Read
@@ -78,6 +81,9 @@ pub fn ticket_form(
                         span class="modal-title" { (heading) }
                         @if let Some(t) = editing {
                             span class="modal-idpill" { "#" (t.id) }
+                            @if session_running {
+                                span class="modal-livedot" title="session running" {}
+                            }
                         }
                         button type="button" class="modal-close"
                                data-on:click=(PreEscaped(CLEAR_MODAL_JS)) { "✕" }
@@ -92,10 +98,17 @@ pub fn ticket_form(
                             textarea id="f-desc" name="description" rows="3" { (desc) }
                         }
                         div class="field" {
-                            label for="f-prompt" { "Initial prompt" }
-                            textarea id="f-prompt" name="initial_prompt" rows="3" { (prompt) }
+                            label for="f-prompt" {
+                                "Initial prompt"
+                                @if session_running { span class="lock-tag" { "🔒 locked" } }
+                            }
+                            textarea id="f-prompt" name="initial_prompt" rows="3" readonly[session_running] { (prompt) }
                             div class="hint" {
-                                "The first message handed to the agent when it starts."
+                                @if session_running {
+                                    "Only used when the session is first created — read-only once the agent has started."
+                                } @else {
+                                    "The first message handed to the agent when it starts."
+                                }
                             }
                         }
                         div class="field" {
@@ -129,6 +142,14 @@ pub fn ticket_form(
                         }
                     }
                     div class="modal-foot" {
+                        @if let Some(t) = editing {
+                            button type="button" class="btn btn-danger"
+                                   data-on:click=(PreEscaped(format!(
+                                       "confirm('Delete #{id}? This cannot be undone.')&&fetch('/tickets/{id}',{{method:'DELETE'}}).then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}}})",
+                                       id = t.id
+                                   ))) { "Delete" }
+                            span class="foot-spacer" {}
+                        }
                         button type="button" class="btn"
                                data-on:click=(PreEscaped(CLEAR_MODAL_JS)) { "Cancel" }
                         button type="submit" class="btn btn-primary" { (submit_label) }
@@ -368,6 +389,77 @@ mod tests {
         assert!(
             !html.contains("start_now"),
             "edit mode never starts on save:\n{html}"
+        );
+    }
+
+    fn started_ticket() -> Ticket {
+        let mut t = ticket();
+        t.session_name = Some("kamaji-9".into());
+        t
+    }
+
+    #[test]
+    fn edit_started_ticket_locks_prompt_and_shows_livedot() {
+        let t = started_ticket();
+        let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
+        assert!(
+            html.contains(r#"name="initial_prompt" rows="3" readonly"#),
+            "started ticket: prompt is read-only:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="lock-tag""#),
+            "shows the locked tag:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="modal-livedot""#),
+            "header live-dot:\n{html}"
+        );
+        assert!(
+            html.contains("read-only once the agent has started"),
+            "explains why the prompt is locked:\n{html}"
+        );
+    }
+
+    #[test]
+    fn edit_unstarted_ticket_keeps_prompt_editable() {
+        let t = ticket(); // session_name: None
+        let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
+        assert!(
+            !html.contains("readonly"),
+            "unstarted ticket: prompt stays editable:\n{html}"
+        );
+        assert!(!html.contains("lock-tag"), "no locked tag:\n{html}");
+        assert!(!html.contains("modal-livedot"), "no live-dot:\n{html}");
+    }
+
+    #[test]
+    fn edit_footer_has_left_pinned_delete() {
+        let t = ticket();
+        let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
+        assert!(
+            html.contains(r#"class="btn btn-danger""#) && html.contains("Delete"),
+            "edit footer has a danger Delete:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="foot-spacer""#),
+            "Delete is pinned left:\n{html}"
+        );
+        assert!(
+            html.contains("confirm(") && html.contains("fetch('/tickets/9',{method:'DELETE'})"),
+            "Delete is confirm-guarded and hits the JSON API:\n{html}"
+        );
+    }
+
+    #[test]
+    fn create_footer_has_no_delete() {
+        let html = ticket_form(1, None, Agent::Claude, None).into_string();
+        assert!(
+            !html.contains("btn-danger"),
+            "create has no Delete:\n{html}"
+        );
+        assert!(
+            !html.contains("foot-spacer"),
+            "create footer is right-aligned only:\n{html}"
         );
     }
 
