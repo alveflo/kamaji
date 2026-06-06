@@ -7,6 +7,7 @@
 mod app;
 mod cli;
 mod client;
+mod container;
 mod daemon;
 mod dir_select;
 mod engine;
