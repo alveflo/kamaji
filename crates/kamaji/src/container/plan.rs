@@ -6,8 +6,27 @@
 // "never used" lint while the scaffolding is being built incrementally.
 #![allow(dead_code)]
 
+use kamaji_core::config::Config;
 use kamaji_core::models::Project;
 use std::path::{Component, Path, PathBuf};
+
+/// The default container worktree base when the user has not set one. A sibling
+/// of each project root; the launcher mounts it explicitly (see
+/// `derive_project_mounts`).
+pub const DEFAULT_WORKTREE_BASE: &str = "{root}/../kamaji-worktrees";
+
+/// Produce the config the *containerized* daemon should load: the user's config
+/// with a `worktree_base` guaranteed to be set (the headless container has no TUI
+/// to prompt for one). `daemon.bind` is deliberately left untouched — the
+/// container binds the wildcard host via its image CMD, so native runs keep their
+/// own (loopback) bind. All other settings carry through unchanged.
+pub fn render_container_config(base: &Config) -> Config {
+    let mut cfg = base.clone();
+    if cfg.worktree_base.is_none() {
+        cfg.worktree_base = Some(DEFAULT_WORKTREE_BASE.to_string());
+    }
+    cfg
+}
 
 /// A bind mount. `source` and `target` are identical for container mode so paths
 /// resolve the same inside the container as on the host (see plan refinement #2).
@@ -187,5 +206,34 @@ mod tests {
             .filter(|m| m.source == *Path::new("/home/u/dev/kamaji-worktrees"))
             .count();
         assert_eq!(wt, 1, "shared worktree base mounted once");
+    }
+
+    use kamaji_core::config::Config;
+
+    #[test]
+    fn container_config_leaves_bind_untouched() {
+        // Native must keep binding loopback; the container overrides via its CMD.
+        let cfg = render_container_config(&Config::default());
+        assert_eq!(cfg.daemon.bind, "127.0.0.1:8755");
+    }
+
+    #[test]
+    fn container_config_sets_worktree_base_when_unset() {
+        // Default config leaves worktree_base None; container mode must pick one.
+        let cfg = render_container_config(&Config::default());
+        assert_eq!(
+            cfg.worktree_base.as_deref(),
+            Some("{root}/../kamaji-worktrees")
+        );
+    }
+
+    #[test]
+    fn container_config_keeps_existing_worktree_base() {
+        let base = Config {
+            worktree_base: Some("/custom/wt".into()),
+            ..Config::default()
+        };
+        let cfg = render_container_config(&base);
+        assert_eq!(cfg.worktree_base.as_deref(), Some("/custom/wt"));
     }
 }
