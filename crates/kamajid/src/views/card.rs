@@ -64,12 +64,11 @@ fn card_actions(t: &Ticket) -> Markup {
     // near-fullscreen iframe of the live session.
     let attach = PreEscaped(format!("@get('/ui/tickets/{id}/terminal')"));
     let edit = PreEscaped(format!("@get('/ui/tickets/{id}/edit')"));
-    let delete = PreEscaped(format!(
-        "confirm('Delete #{id}? This cannot be undone.') && fetch('/tickets/{id}', {{method:'DELETE'}})"
-    ));
-    let done = PreEscaped(format!(
-        "confirm('Mark #{id} done and tear down its session?') && fetch('/tickets/{id}/done', {{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{cleanup:true}})}})"
-    ));
+    // Delete and Done open an in-page confirmation modal (morphed over `#modal`)
+    // instead of the browser's native `confirm()`. The modal fragment carries the
+    // actual command fetch (DELETE / the `/done` teardown POST with `{cleanup}`).
+    let delete = PreEscaped(format!("@get('/ui/tickets/{id}/confirm?action=delete')"));
+    let done = PreEscaped(format!("@get('/ui/tickets/{id}/confirm?action=done')"));
     html! {
         div class="actions" {
             @match t.status {
@@ -208,15 +207,17 @@ mod tests {
     }
 
     #[test]
-    fn delete_action_is_confirm_guarded() {
+    fn delete_action_opens_confirm_modal() {
+        // Delete no longer uses the browser's native confirm(); it morphs an
+        // in-page confirmation modal over #modal, which then fires the DELETE.
         let html = card(&ticket(2, Status::Done)).into_string();
         assert!(
-            html.contains("confirm("),
-            "delete guarded by confirm:\n{html}"
+            html.contains("@get('/ui/tickets/2/confirm?action=delete')"),
+            "delete opens the confirm modal:\n{html}"
         );
         assert!(
-            html.contains("fetch('/tickets/2', {method:'DELETE'})"),
-            "delete hits the JSON API via fetch:\n{html}"
+            !html.contains("confirm("),
+            "no native confirm() left on the card:\n{html}"
         );
     }
 
@@ -243,13 +244,18 @@ mod tests {
     }
 
     #[test]
-    fn done_sends_a_real_json_body() {
-        // `@post(url, {cleanup})` would drop the body (2nd arg is options in RC.6),
-        // so commands carrying data go through an explicit fetch.
+    fn done_action_opens_confirm_modal() {
+        // Done no longer uses the browser's native confirm(); it morphs an
+        // in-page confirmation modal over #modal. The teardown POST (with the
+        // cleanup body) lives in the confirm fragment, not on the card.
         let html = card(&ticket(5, Status::InProgress)).into_string();
         assert!(
-            html.contains("body:JSON.stringify({cleanup:true})"),
-            "done sends cleanup in the body:\n{html}"
+            html.contains("@get('/ui/tickets/5/confirm?action=done')"),
+            "done opens the confirm modal:\n{html}"
+        );
+        assert!(
+            !html.contains("confirm(") && !html.contains("cleanup"),
+            "no native confirm()/inline cleanup body left on the card:\n{html}"
         );
     }
 
