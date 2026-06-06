@@ -14,7 +14,10 @@ use crate::routes::assets::Assets;
 pub async fn manifest() -> Response {
     match Assets::get("manifest.webmanifest") {
         Some(file) => (
-            [(header::CONTENT_TYPE, "application/manifest+json")],
+            [
+                (header::CONTENT_TYPE, "application/manifest+json"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
             file.data,
         )
             .into_response(),
@@ -29,6 +32,7 @@ pub async fn service_worker() -> Response {
             [
                 (header::CONTENT_TYPE, "text/javascript"),
                 (HeaderName::from_static("service-worker-allowed"), "/"),
+                (header::CACHE_CONTROL, "no-cache"),
             ],
             file.data,
         )
@@ -62,6 +66,12 @@ mod tests {
         let resp = manifest().await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(content_type(&resp), "application/manifest+json");
+        assert_eq!(
+            resp.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache"),
+        );
 
         let body = body_bytes(resp).await;
         let v: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON");
@@ -92,6 +102,12 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("/"),
             "root scope so the SW controls the board at /"
+        );
+        assert_eq!(
+            resp.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache"),
         );
         let body = String::from_utf8(body_bytes(resp).await).unwrap();
         assert!(
