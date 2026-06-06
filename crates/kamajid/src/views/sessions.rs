@@ -21,7 +21,7 @@ pub fn sessions_modal(entries: &[SessionEntry], zellij_reachable: bool) -> Marku
     let show_confirm = "const d=el.closest('dialog');const n=d.querySelectorAll('input[name=session]:checked').length;if(n===0)return;d.querySelector('#sess-confirm-text').textContent='Delete '+n+' session(s)? Ticket sessions also remove their git worktree and branch.';d.querySelector('#sess-foot-main').hidden=true;d.querySelector('#sess-foot-confirm').hidden=false";
     let hide_confirm = "const d=el.closest('dialog');d.querySelector('#sess-foot-confirm').hidden=true;d.querySelector('#sess-foot-main').hidden=false";
     let do_delete = format!(
-        "const d=el.closest('dialog');const names=[...d.querySelectorAll('input[name=session]:checked')].map(c=>c.value);fetch('/sessions/delete',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{names}})}}).then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}}})"
+        "const d=el.closest('dialog');const t=d.querySelector('#sess-confirm-text');const names=[...d.querySelectorAll('input[name=session]:checked')].map(c=>c.value);fetch('/sessions/delete',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{names}})}}).then(r=>r.ok?r.json():Promise.reject('HTTP '+r.status)).then(res=>{{if(res.failed&&res.failed.length){{t.textContent='Deleted '+res.deleted+', '+res.failed.length+' failed: '+res.failed.map(f=>f.name).join(', ')}}else{{{CLEAR_MODAL_JS}}}}}).catch(e=>{{t.textContent='Delete failed: '+e}})"
     );
 
     html! {
@@ -165,6 +165,11 @@ mod tests {
         );
         assert!(html.contains("data-on:click="), "colon bindings:\n{html}");
         assert!(!html.contains("data-on-click"), "no inert hyphen:\n{html}");
+        assert!(html.contains("res.failed"), "surfaces failures:\n{html}");
+        assert!(
+            html.contains("Deleted "),
+            "shows deleted/failed summary:\n{html}"
+        );
     }
 
     #[test]
