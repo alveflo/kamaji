@@ -97,7 +97,10 @@ pub fn ticket_form(
                         }
                         div class="field" {
                             label { "Agent" }
-                            div class="seg" {
+                            // The agent value spliced into the click JS is `Agent::as_str()` —
+                            // a closed match of static ASCII identifiers (claude/codex/copilot),
+                            // so it needs no escaping inside the single-quoted JS literal.
+                            div class="seg" role="group" aria-label="Agent" {
                                 @for a in Agent::all() {
                                     button type="button"
                                            class=[(a == agent).then_some("on")]
@@ -340,6 +343,11 @@ mod tests {
         assert!(
             !html.contains("<select"),
             "the old dropdown is gone:\n{html}"
+        );
+        assert_eq!(
+            html.matches(r#"class="on""#).count(),
+            1,
+            "exactly one seg button is highlighted:\n{html}"
         );
     }
 }
