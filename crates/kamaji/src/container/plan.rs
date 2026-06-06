@@ -125,37 +125,37 @@ pub struct RunSpec {
 /// mounts, HOME + env, and resource limits. The image is always the final arg;
 /// the image's own CMD (`kamajid serve --bind 0.0.0.0:8755`) needs no override.
 pub fn build_run_argv(spec: &RunSpec) -> Vec<String> {
-    let mut a: Vec<String> = Vec::new();
-    let push2 = |flag: &str, val: String, a: &mut Vec<String>| {
-        a.push(flag.to_string());
-        a.push(val);
+    let mut args: Vec<String> = Vec::new();
+    let push2 = |flag: &str, val: String, args: &mut Vec<String>| {
+        args.push(flag.to_string());
+        args.push(val);
     };
 
-    a.push("run".into());
-    a.push("-d".into());
-    push2("--name", spec.container_name.clone(), &mut a);
+    args.push("run".into());
+    args.push("-d".into());
+    push2("--name", spec.container_name.clone(), &mut args);
 
     // No --userns flag: rootless Podman already maps container-root to the
     // unprivileged host user (agents are root in the box, files come back owned
     // by you). Docker's host-root mapping is documented in deploy/.
-    push2("-p", "127.0.0.1:8755:8755".into(), &mut a);
-    push2("-p", "127.0.0.1:8756:8756".into(), &mut a);
+    push2("-p", "127.0.0.1:8755:8755".into(), &mut args);
+    push2("-p", "127.0.0.1:8756:8756".into(), &mut args);
 
-    push2("-e", format!("HOME={}", spec.home.display()), &mut a);
+    push2("-e", format!("HOME={}", spec.home.display()), &mut args);
     for (k, v) in &spec.env {
-        push2("-e", format!("{k}={v}"), &mut a);
+        push2("-e", format!("{k}={v}"), &mut args);
     }
 
     // State + persistence.
     push2(
         "-v",
         Mount::bind(spec.data_dir.clone(), false).arg(),
-        &mut a,
+        &mut args,
     );
     push2(
         "-v",
         Mount::bind(spec.config_dir.clone(), false).arg(),
-        &mut a,
+        &mut args,
     );
     push2(
         "-v",
@@ -164,19 +164,19 @@ pub fn build_run_argv(spec: &RunSpec) -> Vec<String> {
             spec.zellij_volume,
             spec.home.display()
         ),
-        &mut a,
+        &mut args,
     );
 
     for m in spec.code_mounts.iter().chain(spec.cred_mounts.iter()) {
-        push2("-v", m.arg(), &mut a);
+        push2("-v", m.arg(), &mut args);
     }
 
-    push2("--memory", spec.memory.clone(), &mut a);
-    push2("--cpus", spec.cpus.clone(), &mut a);
-    push2("--pids-limit", spec.pids_limit.to_string(), &mut a);
+    push2("--memory", spec.memory.clone(), &mut args);
+    push2("--cpus", spec.cpus.clone(), &mut args);
+    push2("--pids-limit", spec.pids_limit.to_string(), &mut args);
 
-    a.push(spec.image.clone());
-    a
+    args.push(spec.image.clone());
+    args
 }
 
 /// A supported container runtime. Podman is preferred (rootless maps
@@ -382,7 +382,10 @@ mod tests {
             "ghcr.io/alveflo/kamaji:v0.1.0",
             "image is the final arg"
         );
-        assert!(argv.contains(&"--name".to_string()) && argv.contains(&"kamaji".to_string()));
+        assert!(
+            argv.windows(2).any(|w| w == ["--name", "kamaji"]),
+            "{argv:?}"
+        );
         assert!(argv.contains(&"-d".to_string()), "runs detached");
     }
 }
