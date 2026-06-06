@@ -145,6 +145,31 @@ mod tests {
     }
 
     #[test]
+    fn pwa_icon_assets_are_embedded() {
+        // PNGs embed and start with the PNG magic number.
+        for png in [
+            "icon-192.png",
+            "icon-512.png",
+            "icon-maskable-512.png",
+            "apple-touch-icon.png",
+        ] {
+            let file = Assets::get(png).unwrap_or_else(|| panic!("{png} not embedded"));
+            assert!(
+                file.data.starts_with(b"\x89PNG\r\n\x1a\n"),
+                "{png} is not a valid PNG"
+            );
+        }
+        // SVG sources embed and look like SVG.
+        for svg in ["icon.svg", "icon-maskable.svg", "favicon.svg"] {
+            let file = Assets::get(svg).unwrap_or_else(|| panic!("{svg} not embedded"));
+            assert!(
+                std::str::from_utf8(&file.data).unwrap().contains("<svg"),
+                "{svg} is not SVG"
+            );
+        }
+    }
+
+    #[test]
     fn etag_matches_handles_list_wildcard_and_weak_prefix() {
         assert!(etag_matches("\"abc\"", "\"abc\""));
         assert!(etag_matches("\"x\", \"abc\"", "\"abc\""));

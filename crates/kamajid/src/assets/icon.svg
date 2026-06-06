@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- kamaji app icon (master). Source of truth for the "any" PNGs.
+       Regenerate rasters with the resvg CLI (cargo install resvg):
+         resvg [width 192] icon.svg          icon-192.png
+         resvg [width 512] icon.svg          icon-512.png
+         resvg [width 512] icon-maskable.svg icon-maskable-512.png
+         resvg [width 180] icon-maskable.svg apple-touch-icon.png
+       (Flag names can vary by resvg version; run resvg help if needed.) -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#89b4fa"/>
+      <stop offset="1" stop-color="#16161f"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" ry="112" fill="url(#g)"/>
+  <g fill="none" stroke="#ffffff" stroke-width="48" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M188 120 V 392"/>
+    <path d="M340 168 L 208 282 L 350 392"/>
+  </g>
+</svg>
