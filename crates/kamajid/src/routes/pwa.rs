@@ -5,7 +5,7 @@
 //! (`mime_guess` does not map `.webmanifest`). The service worker MUST be served
 //! at the site root (`/sw.js`) so its default scope (`/`) covers the board page.
 
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::routes::assets::Assets;
@@ -23,12 +23,16 @@ pub async fn manifest() -> Response {
 }
 
 /// `GET /sw.js` → the embedded service worker. Served at root for `/` scope.
-///
-/// NOTE: throwaway stub — Task 3 replaces this with the real headers and wires
-/// the `/sw.js` route. Not wired yet; only here so the module compiles.
 pub async fn service_worker() -> Response {
     match Assets::get("sw.js") {
-        Some(file) => ([(header::CONTENT_TYPE, "text/javascript")], file.data).into_response(),
+        Some(file) => (
+            [
+                (header::CONTENT_TYPE, "text/javascript"),
+                (HeaderName::from_static("service-worker-allowed"), "/"),
+            ],
+            file.data,
+        )
+            .into_response(),
         None => (StatusCode::INTERNAL_SERVER_ERROR, "sw missing").into_response(),
     }
 }
@@ -75,5 +79,24 @@ mod tests {
             .collect();
         assert!(sizes.contains(&"192x192"), "192 icon present");
         assert!(sizes.contains(&"512x512"), "512 icon present");
+    }
+
+    #[tokio::test]
+    async fn service_worker_route_is_typed_and_root_scoped() {
+        let resp = service_worker().await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(content_type(&resp), "text/javascript");
+        assert_eq!(
+            resp.headers()
+                .get("service-worker-allowed")
+                .and_then(|v| v.to_str().ok()),
+            Some("/"),
+            "root scope so the SW controls the board at /"
+        );
+        let body = String::from_utf8(body_bytes(resp).await).unwrap();
+        assert!(
+            body.contains("addEventListener(\"fetch\""),
+            "has fetch handler"
+        );
     }
 }
