@@ -433,6 +433,68 @@ async fn new_ticket_fragment_mounts_and_self_closes() {
     );
 }
 
+/// `GET /ui/tickets/:id/confirm?action=done` serves the Done confirmation modal:
+/// rooted at `#modal` (so `@get` morphs the mount), naming the teardown and
+/// carrying the `/done` command (with the cleanup body) on its Confirm button.
+#[tokio::test]
+async fn confirm_done_modal_renders() {
+    let (base, _state) = spawn().await;
+    let body = reqwest::get(format!("{base}/ui/tickets/42/confirm?action=done"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "morphs the #modal mount:\n{body}"
+    );
+    assert!(
+        body.contains("Mark #42 done and tear down its session?"),
+        "names the teardown:\n{body}"
+    );
+    assert!(
+        body.contains("fetch('/tickets/42/done',{method:'POST'")
+            && body.contains("body:JSON.stringify({cleanup:true})"),
+        "Confirm fires the teardown POST with the cleanup body:\n{body}"
+    );
+}
+
+/// `GET /ui/tickets/:id/confirm?action=delete` serves the Delete confirmation
+/// modal, warning it is irreversible and carrying the DELETE on Confirm.
+#[tokio::test]
+async fn confirm_delete_modal_renders() {
+    let (base, _state) = spawn().await;
+    let body = reqwest::get(format!("{base}/ui/tickets/9/confirm?action=delete"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "morphs the #modal mount:\n{body}"
+    );
+    assert!(
+        body.contains("Delete #9? This cannot be undone."),
+        "warns it is irreversible:\n{body}"
+    );
+    assert!(
+        body.contains("fetch('/tickets/9',{method:'DELETE'})"),
+        "Confirm fires the DELETE:\n{body}"
+    );
+}
+
+/// An unknown `?action=` is rejected (the query enum only accepts done|delete).
+#[tokio::test]
+async fn confirm_modal_rejects_unknown_action() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::get(format!("{base}/ui/tickets/1/confirm?action=bogus"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "unknown action is a 400");
+}
+
 /// `GET /ui/projects/new` serves the create-project modal fragment: rooted at
 /// `#modal` (so `@get` morphs the mount), composing the shared chrome, and
 /// submitting via `POST /projects`. On success it navigates to the new project

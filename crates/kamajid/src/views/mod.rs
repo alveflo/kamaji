@@ -3,6 +3,7 @@
 
 pub mod board;
 pub mod card;
+pub mod confirm;
 pub mod modal;
 pub mod page;
 pub mod project_form;

@@ -19,7 +19,7 @@ use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
 #[folder = "src/assets/"]
-struct Assets;
+pub(crate) struct Assets;
 
 /// `GET /assets/*path` → the embedded file (200 or 304), or 404.
 pub async fn serve(Path(path): Path<String>, headers: HeaderMap) -> Response {
@@ -142,6 +142,31 @@ mod tests {
     async fn missing_asset_is_404() {
         let resp = serve(Path("nope.txt".to_string()), HeaderMap::new()).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn pwa_icon_assets_are_embedded() {
+        // PNGs embed and start with the PNG magic number.
+        for png in [
+            "icon-192.png",
+            "icon-512.png",
+            "icon-maskable-512.png",
+            "apple-touch-icon.png",
+        ] {
+            let file = Assets::get(png).unwrap_or_else(|| panic!("{png} not embedded"));
+            assert!(
+                file.data.starts_with(b"\x89PNG\r\n\x1a\n"),
+                "{png} is not a valid PNG"
+            );
+        }
+        // SVG sources embed and look like SVG.
+        for svg in ["icon.svg", "icon-maskable.svg", "favicon.svg"] {
+            let file = Assets::get(svg).unwrap_or_else(|| panic!("{svg} not embedded"));
+            assert!(
+                std::str::from_utf8(&file.data).unwrap().contains("<svg"),
+                "{svg} is not SVG"
+            );
+        }
     }
 
     #[test]

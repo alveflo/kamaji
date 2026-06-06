@@ -211,6 +211,14 @@ dialog.modal {
   overflow: hidden;
 }
 
+/* Confirmation-modal message body (Done / Delete). */
+.confirm-message {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  color: var(--dim);
+}
+
 .form-error {
   margin-top: 12px;
   padding: 8px 11px;

@@ -38,6 +38,13 @@ pub fn page(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "kamaji — " (project.name) }
+                link rel="manifest" href="/manifest.webmanifest";
+                meta name="theme-color" content="#16161f";
+                link rel="icon" href="/assets/favicon.svg";
+                link rel="apple-touch-icon" href="/assets/apple-touch-icon.png";
+                meta name="apple-mobile-web-app-capable" content="yes";
+                meta name="apple-mobile-web-app-status-bar-style" content="black-translucent";
+                meta name="apple-mobile-web-app-title" content="kamaji";
                 link rel="stylesheet" href="/assets/tokens.css";
                 link rel="stylesheet" href="/assets/layout.css";
                 link rel="stylesheet" href="/assets/sidebar.css";
@@ -50,6 +57,9 @@ pub fn page(
                 script defer src="/assets/board-dnd.js" {}
                 script type="module" src="/assets/search.js" {}
                 script type="module" src="/assets/keybindings.js" {}
+                script {
+                    (PreEscaped("if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); }); }"))
+                }
             }
             body class="rail-open" data-init="@get('/ui/events')" {
                 (super::sidebar::rail(projects, project.id, attention))
@@ -146,6 +156,32 @@ mod tests {
         assert!(
             !html.contains(r#"href="/assets/app.css""#),
             "old monolithic app.css must be gone:\n{html}"
+        );
+    }
+
+    #[test]
+    fn page_head_has_pwa_wiring() {
+        let p = project(1, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"rel="manifest" href="/manifest.webmanifest""#),
+            "manifest link:\n{html}"
+        );
+        assert!(
+            html.contains(r##"name="theme-color" content="#16161f""##),
+            "theme-color meta:\n{html}"
+        );
+        assert!(
+            html.contains(r#"rel="icon" href="/assets/favicon.svg""#),
+            "favicon link:\n{html}"
+        );
+        assert!(
+            html.contains(r#"rel="apple-touch-icon" href="/assets/apple-touch-icon.png""#),
+            "apple-touch-icon link:\n{html}"
+        );
+        assert!(
+            html.contains("serviceWorker.register('/sw.js')"),
+            "sw registration:\n{html}"
         );
     }
 
