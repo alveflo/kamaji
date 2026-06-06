@@ -129,6 +129,131 @@ fn is_hop(name: &HeaderName) -> bool {
     )
 }
 
+/// Replacement for zellij web's served `connection.js`.
+///
+/// Why: a session created with `zellij … attach --create-background` (how kamaji
+/// makes them) is *transiently* contended in `zellij web` — it cleanly closes
+/// the first few fresh web viewers (`Close(Normal, "Connection closed")` ~150 ms
+/// after the terminal socket opens), then a viewer sticks. zellij's own client
+/// already heals this: every `handleReconnection()` does a full `location.reload`
+/// and `auth.js` re-`POST`s `/session` for a *fresh* `web_client_id`, which is
+/// exactly what clears the bump. But it heals *slowly and loudly* — a
+/// "Reconnecting…" modal plus a `[1,2,4,8,16]s` backoff, repeated per bump — so
+/// it reads as an endless loop. This shim keeps the identical heal path (a reload
+/// → fresh id) but makes it **instant and silent**, and **bounds** it via
+/// `sessionStorage` so a genuinely dead session can't fast-reload forever.
+///
+/// It preserves the original module's full export surface so it's a true drop-in
+/// swap; of those, the bundle currently imports only `handleReconnection` +
+/// `markConnectionEstablished` (`websockets.js`) and `initConnectionHandlers`
+/// (`index.js`) — the rest are kept verbatim in case a future zellij imports them.
+///
+/// The marker gate in [`reconnect_shim`] fails *safe*: a future zellij that ships
+/// a different `connection.js` is forwarded unchanged (the loop's slow/loud heal
+/// returns, but the page is not broken). Re-verify this shim after a zellij bump.
+const RECONNECT_SHIM: &str = r#"// Injected by the kamaji reverse proxy — replaces zellij web's connection.js.
+// See crates/kamajid/src/zellij_proxy.rs (RECONNECT_SHIM) for the rationale.
+const ATTEMPTS_KEY = 'kamaji_reconnect_attempts';
+const MAX_RECONNECT_ATTEMPTS = 12; // fast silent reloads before we surface a failure
+const STABLE_MS = 3000;            // alive this long => bump is past, reset the budget
+
+let hasConnectedBefore = false;
+let isPageUnloading = false;
+let reloading = false;
+
+export function getReconnectionDelay() {
+    return 0;
+}
+
+export async function checkConnection() {
+    try {
+        const prefix = window.location.protocol === 'https:' ? 'https' : 'http';
+        const r = await fetch(`${prefix}://${window.location.host}/info/version`, { method: 'GET' });
+        return r.ok;
+    } catch (e) {
+        return false;
+    }
+}
+
+function readAttempts() {
+    try { return parseInt(window.sessionStorage.getItem(ATTEMPTS_KEY) || '0', 10) || 0; }
+    catch (e) { return 0; }
+}
+function writeAttempts(n) {
+    try { window.sessionStorage.setItem(ATTEMPTS_KEY, String(n)); } catch (e) {}
+}
+function clearAttempts() {
+    try { window.sessionStorage.removeItem(ATTEMPTS_KEY); } catch (e) {}
+}
+
+export async function handleReconnection() {
+    // Only reconnect once per page load, only if we actually connected, and never
+    // while the page is being torn down (closing the panel must not trigger a reload).
+    if (reloading || isPageUnloading || !hasConnectedBefore) {
+        return;
+    }
+    reloading = true;
+
+    const attempts = readAttempts();
+    if (attempts >= MAX_RECONNECT_ATTEMPTS) {
+        clearAttempts();
+        document.title = 'Terminal disconnected';
+        // Overlay rather than replace the DOM: zellij's still-live control
+        // handlers reference #terminal/body, so tearing those out throws.
+        try {
+            const overlay = document.createElement('div');
+            overlay.setAttribute(
+                'style',
+                'position:fixed;inset:0;z-index:9999;background:#111;color:#ddd;' +
+                'font-family:monospace;padding:1rem;box-sizing:border-box'
+            );
+            overlay.innerHTML =
+                'Terminal disconnected. <a href="" style="color:#6cf">Reload</a> to retry.';
+            document.body.appendChild(overlay);
+        } catch (e) {}
+        return;
+    }
+    writeAttempts(attempts + 1);
+    // Heal by reloading: the page re-auths and POSTs /session for a FRESH
+    // web_client_id, which is what clears zellij web's transient contention bump.
+    window.location.reload();
+}
+
+export function initConnectionHandlers() {
+    window.addEventListener('beforeunload', () => { isPageUnloading = true; });
+    window.addEventListener('pagehide', () => { isPageUnloading = true; });
+}
+
+export function markConnectionEstablished() {
+    hasConnectedBefore = true;
+    // Survive STABLE_MS without a drop => the transient bump is behind us; reset
+    // the budget so a later, unrelated disconnect gets its own fresh allowance.
+    window.setTimeout(clearAttempts, STABLE_MS);
+}
+
+export function resetConnectionState() {
+    hasConnectedBefore = false;
+    isPageUnloading = false;
+    reloading = false;
+    clearAttempts();
+}
+"#;
+
+/// If `path` is zellij web's reconnect module *and* `body` matches the version
+/// this shim was written against (so we don't silently break a future zellij),
+/// return the replacement JS; otherwise `None` and the asset is forwarded as-is.
+fn reconnect_shim(path: &str, body: &[u8]) -> Option<&'static str> {
+    if path != "/assets/connection.js" {
+        return None;
+    }
+    let body = std::str::from_utf8(body).ok()?;
+    if body.contains("handleReconnection") && body.contains("location.reload") {
+        Some(RECONNECT_SHIM)
+    } else {
+        None
+    }
+}
+
 async fn http_proxy(
     State(proxy): State<Arc<ZellijProxy>>,
     req: axum::extract::Request,
@@ -139,6 +264,7 @@ async fn http_proxy(
         .path_and_query()
         .map(|p| p.as_str())
         .unwrap_or("/");
+    let path = parts.uri.path().to_string();
     let url = format!("{}{}", proxy.upstream_http, pq);
     let bytes = match axum::body::to_bytes(body, usize::MAX).await {
         Ok(b) => b,
@@ -167,8 +293,31 @@ async fn http_proxy(
         }
     };
 
-    let mut builder = Response::builder().status(upstream.status());
-    for (k, v) in upstream.headers().iter() {
+    let status = upstream.status();
+    let headers = upstream.headers().clone();
+    let body_bytes = match upstream.bytes().await {
+        Ok(b) => b,
+        Err(_) => {
+            return (axum::http::StatusCode::BAD_GATEWAY, "upstream body error").into_response()
+        }
+    };
+
+    // Swap zellij web's reconnect module for our instant/bounded one, if this is
+    // it. We re-derive the content headers (the body changed), so this also drops
+    // any upstream content-encoding/length that would no longer match.
+    if let Some(shim) = reconnect_shim(&path, &body_bytes) {
+        return (
+            [(
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            )],
+            shim,
+        )
+            .into_response();
+    }
+
+    let mut builder = Response::builder().status(status);
+    for (k, v) in headers.iter() {
         // Drop framing headers (axum re-derives them) and upstream Set-Cookie —
         // the proxy owns auth, so the browser never needs the cookie.
         if is_hop(k) || k == header::SET_COOKIE {
@@ -176,12 +325,9 @@ async fn http_proxy(
         }
         builder = builder.header(k, v);
     }
-    match upstream.bytes().await {
-        Ok(b) => builder.body(Body::from(b)).unwrap_or_else(|_| {
-            (axum::http::StatusCode::BAD_GATEWAY, "bad upstream response").into_response()
-        }),
-        Err(_) => (axum::http::StatusCode::BAD_GATEWAY, "upstream body error").into_response(),
-    }
+    builder.body(Body::from(body_bytes)).unwrap_or_else(|_| {
+        (axum::http::StatusCode::BAD_GATEWAY, "bad upstream response").into_response()
+    })
 }
 
 async fn ws_handler(
@@ -280,5 +426,112 @@ mod tests {
     async fn cookie_is_empty_until_authenticated() {
         let p = ZellijProxy::new();
         assert!(p.cookie().await.is_none());
+    }
+
+    /// A trimmed stand-in for zellij web's served `connection.js` carrying the
+    /// markers the shim keys off (the reconnect entry point + the page reload it
+    /// performs to heal).
+    const STUB_CONNECTION_JS: &str = "export async function handleReconnection() { \
+        window.location.reload(); } \
+        export function markConnectionEstablished() {} \
+        export function initConnectionHandlers() {}";
+
+    #[test]
+    fn rewrites_connection_js_into_the_reconnect_shim() {
+        let shim = reconnect_shim("/assets/connection.js", STUB_CONNECTION_JS.as_bytes())
+            .expect("connection.js with reconnect markers is rewritten");
+        // Keeps the exact import surface websockets.js / index.js depend on.
+        assert!(shim.contains("export async function handleReconnection"));
+        assert!(shim.contains("export function markConnectionEstablished"));
+        assert!(shim.contains("export function initConnectionHandlers"));
+        // The behavior change: heal via an instant, bounded fresh-id reload.
+        assert!(shim.contains("location.reload"), "still heals by reloading");
+        assert!(
+            shim.contains("sessionStorage"),
+            "bounds attempts across reloads"
+        );
+        assert!(
+            shim.contains("MAX_RECONNECT_ATTEMPTS"),
+            "caps the silent fast-reload loop"
+        );
+    }
+
+    #[test]
+    fn leaves_other_assets_untouched() {
+        assert!(reconnect_shim("/assets/websockets.js", STUB_CONNECTION_JS.as_bytes()).is_none());
+        assert!(reconnect_shim("/assets/index.js", b"whatever").is_none());
+    }
+
+    /// If a future zellij web ships a connection.js the shim wasn't written
+    /// against, fall back to forwarding it unchanged rather than break the page.
+    #[test]
+    fn passes_through_connection_js_without_known_markers() {
+        assert!(reconnect_shim("/assets/connection.js", b"export const x = 1;").is_none());
+    }
+
+    /// End-to-end through the proxy router against a mock `zellij web`: the
+    /// reconnect module is swapped for the shim (with a JS content-type), while a
+    /// sibling asset is forwarded byte-for-byte.
+    #[tokio::test]
+    async fn http_proxy_rewrites_connection_js_and_forwards_others() {
+        use axum::routing::get;
+
+        // Mock upstream serving the two assets.
+        let upstream = Router::new()
+            .route(
+                "/assets/connection.js",
+                get(|| async { STUB_CONNECTION_JS }),
+            )
+            .route(
+                "/assets/terminal.js",
+                get(|| async { "export const TERMINAL = 1;" }),
+            );
+        let up_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = up_listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(up_listener, upstream).await.unwrap() });
+
+        // Proxy pointed at the mock upstream.
+        let proxy = Arc::new(ZellijProxy::with_upstream(&format!("http://{up_addr}")));
+        let px_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let px_addr = px_listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(px_listener, router(proxy)).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let base = format!("http://{px_addr}");
+
+        let conn = client
+            .get(format!("{base}/assets/connection.js"))
+            .send()
+            .await
+            .unwrap();
+        assert!(conn
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        let conn_body = conn.text().await.unwrap();
+        // The shim is served (its banner + cap), and the upstream stub body is
+        // gone — i.e. the asset was replaced, not passed through or appended to.
+        assert!(
+            conn_body.contains("Injected by the kamaji reverse proxy"),
+            "served the shim"
+        );
+        assert!(conn_body.contains("MAX_RECONNECT_ATTEMPTS"));
+        assert!(
+            !conn_body.contains("export function initConnectionHandlers() {}"),
+            "upstream stub body replaced, not forwarded"
+        );
+
+        let term = client
+            .get(format!("{base}/assets/terminal.js"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(term, "export const TERMINAL = 1;", "untouched passthrough");
     }
 }
