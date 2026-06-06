@@ -88,8 +88,9 @@ pub fn rail(projects: &[Project], active_id: i64, attention: usize) -> Markup {
                 }
             }
             div class="rail-spacer" {}
-            // "+ Add project" pinned bottom — rendered but inert (a later slice wires it).
-            div class="rail-add" {
+            // "+ Add project" pinned bottom — opens the new-project modal by
+            // morphing the `#modal` mount with the `/ui/projects/new` fragment.
+            div class="rail-add" data-on:click="@get('/ui/projects/new')" {
                 span class="ws-tile" { "+" }
                 span class="ws-label" { "Add project" }
             }
@@ -208,6 +209,10 @@ mod tests {
         let html = rail(&ps, 1, 0).into_string();
         assert!(html.contains(r#"class="rail-add""#), "rail-add:\n{html}");
         assert!(html.contains("Add project"), "add label:\n{html}");
+        assert!(
+            html.contains(r#"data-on:click="@get('/ui/projects/new')""#),
+            "add-project opens the new-project modal:\n{html}"
+        );
         assert!(
             html.contains(r#"data-on:click="document.body.classList.toggle('rail-open')""#),
             "toggle binding:\n{html}"
