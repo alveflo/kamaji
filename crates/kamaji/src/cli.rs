@@ -7,18 +7,27 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::client::{ClientError, DaemonClient};
+use crate::container::{plan::Runtime, UpArgs};
 use kamaji_core::config::Config;
 use kamaji_core::models::{Agent, Project, Ticket};
 
 const USAGE: &str = "\
 Usage:
   kamaji
+  kamaji up [--build] [--runtime podman|docker] [--memory <m>] [--cpus <n>] [--pids-limit <n>]
+  kamaji down
+  kamaji logs
+  kamaji status
   kamaji ticket create --prompt <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
   kamaji ticket create <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
 
 Agents: claude, codex, copilot
 
-  --background, -b   also start the ticket's agent in a detached zellij session
+  up                run the sandbox container (daemon + zellij + agents)
+  down              stop the sandbox container (back to native)
+  logs              follow the container's logs
+  status            show the active mode (native vs container) + board URL
+  --background, -b  also start the ticket's agent in a detached zellij session
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +36,10 @@ pub enum Command {
     Help,
     Version,
     CreateTicket(CreateTicketArgs),
+    Up(UpArgs),
+    Down,
+    Logs,
+    Status,
 }
 
 /// Escape-hatch daemon options for the TUI entrypoint.
@@ -116,6 +129,10 @@ where
                 _ => bail!("unknown ticket command: {action}\n\n{USAGE}"),
             }
         }
+        [cmd, rest @ ..] if cmd == "up" => parse_up(rest),
+        [cmd, ..] if cmd == "down" => Ok(Command::Down),
+        [cmd, ..] if cmd == "logs" => Ok(Command::Logs),
+        [cmd, ..] if cmd == "status" => Ok(Command::Status),
         [other, ..] => bail!("unknown command: {other}\n\n{USAGE}"),
         [] => Ok(Command::Tui(DaemonOpts::default())),
     }
@@ -192,6 +209,36 @@ fn parse_ticket_create(args: &[String]) -> Result<Command> {
     };
     parsed.title_or_prompt()?;
     Ok(Command::CreateTicket(parsed))
+}
+
+fn parse_up(args: &[String]) -> Result<Command> {
+    let mut up = UpArgs::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--build" => up.build = true,
+            "--runtime" => {
+                up.runtime = Some(match take_value(args, &mut i, "--runtime")?.as_str() {
+                    "podman" => Runtime::Podman,
+                    "docker" => Runtime::Docker,
+                    other => bail!("unknown --runtime {other:?} (use podman or docker)"),
+                });
+            }
+            "--memory" => up.memory = Some(take_value(args, &mut i, "--memory")?),
+            "--cpus" => up.cpus = Some(take_value(args, &mut i, "--cpus")?),
+            "--pids-limit" => {
+                let v = take_value(args, &mut i, "--pids-limit")?;
+                up.pids_limit = Some(
+                    v.parse()
+                        .map_err(|_| anyhow!("--pids-limit must be a number"))?,
+                );
+            }
+            "--help" | "-h" => return Ok(Command::Help),
+            other => bail!("unknown up option: {other}\n\n{USAGE}"),
+        }
+        i += 1;
+    }
+    Ok(Command::Up(up))
 }
 
 fn take_value(args: &[String], i: &mut usize, name: &str) -> Result<String> {
@@ -755,6 +802,31 @@ mod tests {
         assert!(err.contains("could not infer project"), "{err}");
         assert!(err.contains("alpha"), "{err}");
         assert!(err.contains("beta"), "{err}");
+    }
+
+    #[test]
+    fn parses_up_with_flags() {
+        let parsed = parse(["up", "--build", "--runtime", "docker", "--memory", "4g"]).unwrap();
+        let Command::Up(args) = parsed else {
+            panic!("expected Up")
+        };
+        assert!(args.build);
+        assert_eq!(args.runtime, Some(crate::container::plan::Runtime::Docker));
+        assert_eq!(args.memory.as_deref(), Some("4g"));
+    }
+
+    #[test]
+    fn parses_bare_up_down_logs_status() {
+        assert!(matches!(parse(["up"]).unwrap(), Command::Up(_)));
+        assert_eq!(parse(["down"]).unwrap(), Command::Down);
+        assert_eq!(parse(["logs"]).unwrap(), Command::Logs);
+        assert_eq!(parse(["status"]).unwrap(), Command::Status);
+    }
+
+    #[test]
+    fn up_rejects_unknown_runtime() {
+        let err = parse(["up", "--runtime", "lxc"]).unwrap_err().to_string();
+        assert!(err.contains("runtime"), "{err}");
     }
 
     /// Needs a real git repo + zellij on PATH (the daemon spawns the detached

@@ -28,7 +28,7 @@ const ZELLIJ_VOLUME: &str = "kamaji-zellij-cache";
 const BOARD_ADDR: &str = "127.0.0.1:8755";
 
 /// Options parsed from `kamaji up`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UpArgs {
     pub runtime: Option<Runtime>,
     pub build: bool,
