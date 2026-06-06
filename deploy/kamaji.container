@@ -1,0 +1,21 @@
+# Podman Quadlet (rootless). Install to ~/.config/containers/systemd/kamaji.container
+# then: systemctl --user daemon-reload && systemctl --user start kamaji
+# Replace <HOME> and <PROJECT_ROOT> (repeat Volume= per project + its worktree dir).
+[Unit]
+Description=kamaji sandbox (daemon + zellij + agents)
+
+[Container]
+Image=ghcr.io/alveflo/kamaji:latest
+ContainerName=kamaji
+PublishPort=127.0.0.1:8755:8755
+PublishPort=127.0.0.1:8756:8756
+Environment=HOME=<HOME>
+Volume=<HOME>/.local/share/kamaji:<HOME>/.local/share/kamaji
+Volume=<HOME>/.config/kamaji:<HOME>/.config/kamaji
+Volume=kamaji-zellij-cache:<HOME>/.cache/zellij
+Volume=<HOME>/.claude:<HOME>/.claude
+Volume=<PROJECT_ROOT>:<PROJECT_ROOT>
+PodmanArgs=--memory 8g --cpus 4 --pids-limit 2048
+
+[Install]
+WantedBy=default.target
