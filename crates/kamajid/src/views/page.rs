@@ -1,5 +1,6 @@
 //! The full HTML document shell: head (the six design-system stylesheets +
-//! vendored Datastar module + viewport), a flex shell of the Slack-style
+//! vendored Datastar module + the board drag-and-drop script + viewport), a flex
+//! shell of the Slack-style
 //! workspace rail (project selection lives here now) beside a `.main` column
 //! holding the topbar (breadcrumb + empty search slot + "+ New"), the board, and
 //! an empty modal mount. `data-init` opens the `/ui/events` SSE stream (RC.6 has
@@ -44,6 +45,7 @@ pub fn page(
                 link rel="stylesheet" href="/assets/board.css";
                 link rel="stylesheet" href="/assets/terminal.css";
                 script type="module" src="/assets/datastar.js" {}
+                script defer src="/assets/board-dnd.js" {}
             }
             body class="rail-open" data-init="@get('/ui/events')" {
                 (super::sidebar::rail(projects, project.id, attention))
@@ -108,6 +110,10 @@ mod tests {
         assert!(
             html.contains(r#"src="/assets/datastar.js""#),
             "datastar module:\n{html}"
+        );
+        assert!(
+            html.contains(r#"src="/assets/board-dnd.js""#),
+            "board drag-and-drop script:\n{html}"
         );
         assert!(
             !html.contains(r#"href="/assets/app.css""#),
