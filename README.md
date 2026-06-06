@@ -102,14 +102,15 @@ kamaji            # native (default): daemon + agents on the host, as always
 kamaji up         # opt in: run daemon + zellij + agents inside the sandbox
 # open http://127.0.0.1:8755
 kamaji status     # which mode am I in? + board URL
-kamaji down       # stop the sandbox (back to native; board + sessions persist)
+kamaji down       # stop the sandbox (data preserved; next `kamaji` runs native)
 kamaji logs       # follow container logs
 ```
 
 `kamaji up` reads your registered projects and bind-mounts each project root
 (and its worktree dir) at identical paths, mounts your agent credentials, sets
-resource limits, and binds the board to the published port. Add a new project in
-the browser/TUI, then re-run `kamaji up` to mount it.
+resource limits, and binds the board to the published port. To add a new project, register it in the browser/TUI, then re-run `kamaji up` —
+it recreates the container to pick up the new project's bind-mount (running
+agent sessions persist via the worktrees and zellij-cache volume, and resume).
 
 In container mode the browser board is the terminal surface — open it and use a
 ticket's inline terminal. (The TUI can drive the board over HTTP, but its
