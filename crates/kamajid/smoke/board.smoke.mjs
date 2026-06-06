@@ -122,6 +122,22 @@ test('board is interactive end-to-end', async ({ page }) => {
     await expect(page.locator('#col-todo').getByText('created via modal')).toHaveCount(1); // unchanged
   });
 
+  await test.step('+ Add project opens the modal; creating a project shows its rail tile', async () => {
+    // The prior step intentionally leaves a ticket modal open; clear it so the
+    // overlay no longer intercepts pointer events on the rail.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#modal #ticket-dialog')).toHaveCount(0);
+    await page.locator('.rail-add').click();
+    const dialog = page.locator('#modal #project-dialog');
+    await expect(dialog).toBeVisible();
+    await page.locator('#proj-name').fill('Smoke Proj');
+    await page.locator('#proj-root').fill(daemon.dir);
+    await dialog.locator('button[type="submit"]').click();
+    // Success navigates to /?project=<new id>; the rail renders from the project
+    // list, so the freshly created project appears as a tile after the nav.
+    await expect(page.locator('.rail').getByText('Smoke Proj')).toBeVisible();
+  });
+
   await test.step('no console errors or page errors occurred', async () => {
     expect(consoleErrors, `console errors:\n${consoleErrors.join('\n')}`).toEqual([]);
     expect(pageErrors, `page errors:\n${pageErrors.join('\n')}`).toEqual([]);

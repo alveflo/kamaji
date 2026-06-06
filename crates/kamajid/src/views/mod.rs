@@ -5,5 +5,6 @@ pub mod board;
 pub mod card;
 pub mod modal;
 pub mod page;
+pub mod project_form;
 pub mod sidebar;
 pub mod terminal;
