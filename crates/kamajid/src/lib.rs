@@ -70,6 +70,8 @@ pub fn router(state: AppState) -> Router {
             "/tickets/:id/attach",
             axum::routing::post(routes::tickets::attach),
         )
+        .route("/manifest.webmanifest", get(routes::pwa::manifest))
+        .route("/sw.js", get(routes::pwa::service_worker))
         .route("/assets/*path", get(routes::assets::serve))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
