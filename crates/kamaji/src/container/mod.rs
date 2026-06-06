@@ -101,7 +101,7 @@ pub fn up(args: &UpArgs) -> Result<()> {
     // 1. Ensure the image is available.
     if args.build {
         run_checked(bin, &["build", "-t", &image, "."], "building image")?;
-    } else if !run_ok(bin, &["image", "exists", &image]) && !run_ok(bin, &["pull", &image]) {
+    } else if !run_ok(bin, &["image", "inspect", &image]) && !run_ok(bin, &["pull", &image]) {
         bail!("could not pull {image}; re-run with --build to build it locally");
     }
 
@@ -151,7 +151,12 @@ pub fn up(args: &UpArgs) -> Result<()> {
 
     // 5. Wait for health on the published port, then record state.
     crate::daemon::wait_for_health(&format!("http://{BOARD_ADDR}"), Duration::from_secs(30))
-        .map_err(|e| anyhow!("container started but board never became healthy: {e}"))?;
+        .map_err(|e| {
+            anyhow!(
+                "container started but board never became healthy: {e}\n\
+                 Check `kamaji logs`, then run `kamaji down` before retrying."
+            )
+        })?;
     state::save(&ContainerState {
         name: CONTAINER_NAME.into(),
         board_addr: BOARD_ADDR.into(),
