@@ -102,6 +102,83 @@ pub fn derive_project_mounts(projects: &[Project], worktree_base_template: &str)
     mounts
 }
 
+/// Everything `build_run_argv` needs. Assembled by the orchestrator from the
+/// host environment + the pure derivations above.
+#[derive(Debug, Clone)]
+pub struct RunSpec {
+    pub image: String,
+    pub container_name: String,
+    pub home: PathBuf,
+    pub data_dir: PathBuf,
+    pub config_dir: PathBuf,
+    pub zellij_volume: String,
+    pub code_mounts: Vec<Mount>,
+    pub cred_mounts: Vec<Mount>,
+    pub env: Vec<(String, String)>,
+    pub memory: String,
+    pub cpus: String,
+    pub pids_limit: u32,
+}
+
+/// Build the `run` argv (everything after the runtime binary). Runtime-agnostic:
+/// detached, named, both ports published to host loopback, identical-path
+/// mounts, HOME + env, and resource limits. The image is always the final arg;
+/// the image's own CMD (`kamajid serve --bind 0.0.0.0:8755`) needs no override.
+pub fn build_run_argv(spec: &RunSpec) -> Vec<String> {
+    let mut a: Vec<String> = Vec::new();
+    let push2 = |flag: &str, val: String, a: &mut Vec<String>| {
+        a.push(flag.to_string());
+        a.push(val);
+    };
+
+    a.push("run".into());
+    a.push("-d".into());
+    push2("--name", spec.container_name.clone(), &mut a);
+
+    // No --userns flag: rootless Podman already maps container-root to the
+    // unprivileged host user (agents are root in the box, files come back owned
+    // by you). Docker's host-root mapping is documented in deploy/.
+    push2("-p", "127.0.0.1:8755:8755".into(), &mut a);
+    push2("-p", "127.0.0.1:8756:8756".into(), &mut a);
+
+    push2("-e", format!("HOME={}", spec.home.display()), &mut a);
+    for (k, v) in &spec.env {
+        push2("-e", format!("{k}={v}"), &mut a);
+    }
+
+    // State + persistence.
+    push2(
+        "-v",
+        Mount::bind(spec.data_dir.clone(), false).arg(),
+        &mut a,
+    );
+    push2(
+        "-v",
+        Mount::bind(spec.config_dir.clone(), false).arg(),
+        &mut a,
+    );
+    push2(
+        "-v",
+        format!(
+            "{}:{}/.cache/zellij",
+            spec.zellij_volume,
+            spec.home.display()
+        ),
+        &mut a,
+    );
+
+    for m in spec.code_mounts.iter().chain(spec.cred_mounts.iter()) {
+        push2("-v", m.arg(), &mut a);
+    }
+
+    push2("--memory", spec.memory.clone(), &mut a);
+    push2("--cpus", spec.cpus.clone(), &mut a);
+    push2("--pids-limit", spec.pids_limit.to_string(), &mut a);
+
+    a.push(spec.image.clone());
+    a
+}
+
 /// A supported container runtime. Podman is preferred (rootless maps
 /// container-root to the unprivileged host user; see the design's trust model).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,5 +312,77 @@ mod tests {
         };
         let cfg = render_container_config(&base);
         assert_eq!(cfg.worktree_base.as_deref(), Some("/custom/wt"));
+    }
+
+    fn sample_spec() -> RunSpec {
+        RunSpec {
+            image: "ghcr.io/alveflo/kamaji:v0.1.0".into(),
+            container_name: "kamaji".into(),
+            home: PathBuf::from("/home/u"),
+            data_dir: PathBuf::from("/home/u/.local/share/kamaji"),
+            config_dir: PathBuf::from("/home/u/.config/kamaji"),
+            zellij_volume: "kamaji-zellij-cache".into(),
+            code_mounts: vec![Mount::bind("/home/u/dev/kamaji", false)],
+            cred_mounts: vec![Mount::bind("/home/u/.claude", false)],
+            env: vec![("ANTHROPIC_API_KEY".into(), "sk-xxx".into())],
+            memory: "8g".into(),
+            cpus: "4".into(),
+            pids_limit: 2048,
+        }
+    }
+
+    #[test]
+    fn run_argv_publishes_both_ports_to_loopback() {
+        let argv = build_run_argv(&sample_spec());
+        assert_eq!(argv[0], "run");
+        assert!(
+            argv.windows(2).any(|w| w == ["-p", "127.0.0.1:8755:8755"]),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(2).any(|w| w == ["-p", "127.0.0.1:8756:8756"]),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn run_argv_sets_home_volumes_limits_and_image_last() {
+        let argv = build_run_argv(&sample_spec());
+        assert!(
+            argv.windows(2).any(|w| w == ["-e", "HOME=/home/u"]),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["-e", "ANTHROPIC_API_KEY=sk-xxx"]),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["-v", "kamaji-zellij-cache:/home/u/.cache/zellij"]),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["-v", "/home/u/dev/kamaji:/home/u/dev/kamaji"]),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["-v", "/home/u/.claude:/home/u/.claude"]),
+            "{argv:?}"
+        );
+        assert!(argv.windows(2).any(|w| w == ["--memory", "8g"]), "{argv:?}");
+        assert!(
+            argv.windows(2).any(|w| w == ["--pids-limit", "2048"]),
+            "{argv:?}"
+        );
+        assert_eq!(
+            argv.last().unwrap(),
+            "ghcr.io/alveflo/kamaji:v0.1.0",
+            "image is the final arg"
+        );
+        assert!(argv.contains(&"--name".to_string()) && argv.contains(&"kamaji".to_string()));
+        assert!(argv.contains(&"-d".to_string()), "runs detached");
     }
 }
