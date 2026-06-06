@@ -76,6 +76,10 @@ pub fn page(
                         }
                         span class="search-count" aria-live="polite" {}
                         span class="spacer" {}
+                        button class="sessions-btn"
+                               data-on:click=(PreEscaped("@get('/ui/sessions/manage')")) {
+                            "Sessions"
+                        }
                         button class="new-ticket"
                                data-on:click=(PreEscaped(format!("@get('/ui/tickets/new?project={}')", project.id))) {
                             "+ New"
@@ -210,6 +214,20 @@ mod tests {
         assert!(
             !html.contains(r#"<div class="search-slot"></div>"#),
             "search slot must be filled, not empty:\n{html}"
+        );
+    }
+
+    #[test]
+    fn topbar_has_sessions_button_opening_the_manage_modal() {
+        let p = project(1, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"class="sessions-btn""#),
+            "sessions button present:\n{html}"
+        );
+        assert!(
+            html.contains("@get('/ui/sessions/manage')"),
+            "sessions button opens the manage modal:\n{html}"
         );
     }
 
