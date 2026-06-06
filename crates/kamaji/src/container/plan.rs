@@ -2,10 +2,6 @@
 //! generated config, and the `run` argv. No process execution, no I/O — every
 //! function here is unit-tested by asserting its output.
 
-// Items in this module are wired to the CLI in later tasks; suppress the
-// "never used" lint while the scaffolding is being built incrementally.
-#![allow(dead_code)]
-
 use kamaji_core::config::Config;
 use kamaji_core::models::Project;
 use std::path::{Component, Path, PathBuf};

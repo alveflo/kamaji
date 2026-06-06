@@ -2,10 +2,6 @@
 //! for the single sandbox container that holds the daemon + zellij + all agents.
 //! Pure planning lives in [`plan`]; the host-side marker in [`state`].
 
-// Scaffolding: up/down/logs/status are wired into the CLI in Task 9; until then
-// they read as dead code. The final-verification task removes this allow.
-#![allow(dead_code)]
-
 pub mod plan;
 pub mod state;
 

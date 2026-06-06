@@ -1,7 +1,3 @@
-// Scaffolding: these items are wired into the CLI in Task 8/10; until then they
-// read as dead code. The final-verification task removes this allow once wired.
-#![allow(dead_code)]
-
 //! The host-side marker that records a running containerized daemon. Written by
 //! `kamaji up`, read by `daemon::ensure_daemon` (to connect instead of spawning
 //! a local daemon) and removed by `kamaji down`.
