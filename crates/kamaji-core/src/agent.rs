@@ -1,3 +1,6 @@
+//! Builds the argv used to launch (or resume) an agent CLI from the configured
+//! command templates, substituting the ticket prompt where requested.
+
 use crate::config::AgentCommands;
 
 /// Resolve the argv to launch. With a non-empty prompt, `{prompt}` is replaced

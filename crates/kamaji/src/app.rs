@@ -1,3 +1,8 @@
+//! The TUI's in-memory view state: the board (project, tickets, selection),
+//! the active modal, and search/filter state. `App` is plain data with small
+//! pure helpers — the [`Engine`](crate::engine::Engine) mutates it and
+//! [`ui::render`](crate::ui::render) draws it; it performs no I/O of its own.
+
 use crate::dir_select::DirField;
 use crate::theme::Theme;
 use kamaji_core::detect::SignalLevel;

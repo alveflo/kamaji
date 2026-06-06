@@ -1,3 +1,11 @@
+//! The TUI's update layer. `Engine` owns the [`App`] state, the
+//! [`DaemonClient`], and the loaded [`Config`]; it turns key events into daemon
+//! mutations and `App` updates. When an action requires releasing the terminal
+//! (attaching to a zellij session, switching projects, self-updating) the
+//! handler returns an [`Effect`] that the `main.rs` loop carries out before
+//! redrawing. The daemon is the single source of truth — the Engine never
+//! touches the DB, git, or zellij directly.
+
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 

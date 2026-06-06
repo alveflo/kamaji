@@ -1,3 +1,6 @@
+//! Renders the Kanban board: the status columns and the ticket cards within
+//! them, applying the active theme, search filter, and per-ticket signal level.
+
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

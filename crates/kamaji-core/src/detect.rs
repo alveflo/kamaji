@@ -129,7 +129,7 @@ pub fn claude_settings_json(marker_path: &str) -> String {
     )
 }
 
-/// Splice `--settings <json>` after argv[0] (a global claude flag, before the
+/// Splice `--settings <json>` after `argv[0]` (a global claude flag, before the
 /// positional prompt). `argv` must be non-empty (build_command guarantees it).
 pub fn inject_claude_settings(argv: Vec<String>, marker_path: &str) -> Vec<String> {
     let json = claude_settings_json(marker_path);

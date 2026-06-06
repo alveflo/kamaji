@@ -1,3 +1,7 @@
+//! Bridges the user's zellij configuration to kamaji's layout generation:
+//! resolves the configured `zellij_bar` value into a concrete [`BarStyle`] and
+//! scans the user's zellij KDL for its `default_layout` to drive `auto` mode.
+
 use crate::layout::BarStyle;
 use std::path::PathBuf;
 

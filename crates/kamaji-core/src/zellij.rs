@@ -1,3 +1,7 @@
+//! Thin wrappers over the `zellij` CLI: listing sessions, distinguishing
+//! running from exited/resurrectable ones, and creating/attaching sessions that
+//! run a generated layout.
+
 use anyhow::Result;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
