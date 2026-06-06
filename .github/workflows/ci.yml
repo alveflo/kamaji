@@ -32,6 +32,20 @@ jobs:
       - name: Run tests
         run: cargo test --all-targets --all-features
 
+  dependency-policy:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: stable
+          command: check advisories bans licenses sources
+
   windows:
     name: Windows build
     runs-on: windows-latest
