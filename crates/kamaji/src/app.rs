@@ -4,6 +4,10 @@ use kamaji_core::detect::SignalLevel;
 use kamaji_core::models::{Agent, Project, Status, Ticket};
 use std::collections::{HashMap, HashSet};
 
+/// Index of the rightmost board column (Done). Derived from the status list so
+/// the navigation clamps don't hardcode the column count.
+pub const LAST_COLUMN: usize = Status::all().len() - 1;
+
 /// Board search/filter state. An empty query means no filter is applied.
 #[derive(Debug, Clone, Default)]
 pub struct Search {
@@ -338,7 +342,7 @@ impl App {
     }
 
     pub fn right(&mut self) {
-        if self.selected_col < 3 {
+        if self.selected_col < LAST_COLUMN {
             self.selected_col += 1;
             self.clamp_row();
         }
@@ -356,8 +360,8 @@ impl App {
     }
 
     pub fn reclamp(&mut self) {
-        if self.selected_col > 3 {
-            self.selected_col = 3;
+        if self.selected_col > LAST_COLUMN {
+            self.selected_col = LAST_COLUMN;
         }
         self.clamp_row();
     }
