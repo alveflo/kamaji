@@ -129,5 +129,11 @@ pub async fn terminal(
         tracing::warn!(ticket = id, error = %e, "proxy pre-auth failed; iframe may prompt");
     }
     let src = format!("{}/{}", state.proxy_base(), info.session_name);
-    Ok(views::terminal::terminal_panel(&ticket.title, &src))
+    Ok(views::terminal::terminal_panel(
+        ticket.id,
+        &ticket.title,
+        ticket.agent,
+        &info.session_name,
+        &src,
+    ))
 }
