@@ -38,6 +38,43 @@ test('board is interactive end-to-end', async ({ page }) => {
     }
   });
 
+  await test.step('Search filters the board live with highlighting and recounting', async () => {
+    // Client-side filter over the already-loaded board. Seeded titles are
+    // "seed <col>", so "todo" matches exactly the todo card.
+    await page.locator('#search').fill('todo');
+    await expect(page.locator(`#card-${seeded.ids.todo}`)).toBeVisible();
+    for (const col of ['in_progress', 'review', 'done']) {
+      await expect(page.locator(`#card-${seeded.ids[col]}`)).toBeHidden();
+    }
+    // Matched substring is highlighted in the title.
+    await expect(page.locator(`#card-${seeded.ids.todo} .card-title mark`)).toHaveText('todo');
+    // Total + per-column recount; a column with a card but no match says so.
+    await expect(page.locator('.search-count')).toHaveText('1 result');
+    await expect(page.locator('#col-todo .col-count')).toHaveText('1');
+    await expect(page.locator('#col-in_progress .col-count')).toHaveText('0');
+    await expect(page.locator('#col-in_progress .col-nomatch')).toBeVisible();
+    // Active-filter chrome: accent border (has-q) + visible ✕ clear.
+    await expect(page.locator('.search-wrap')).toHaveClass(/has-q/);
+    await expect(page.locator('.search-clear')).toBeVisible();
+  });
+
+  await test.step('Escape clears the search and restores the board', async () => {
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#search')).toHaveValue('');
+    for (const col of ['todo', 'in_progress', 'review', 'done']) {
+      await expect(page.locator(`#card-${seeded.ids[col]}`)).toBeVisible();
+    }
+    await expect(page.locator('.search-count')).toHaveText('');
+    await expect(page.locator(`#card-${seeded.ids.todo} .card-title mark`)).toHaveCount(0);
+  });
+
+  await test.step('`/` focuses the search box', async () => {
+    await page.locator('main.board').click(); // move focus off the input first
+    await page.keyboard.press('/');
+    await expect(page.locator('#search')).toBeFocused();
+    await expect(page.locator('#search')).toHaveValue(''); // `/` focuses, does not type
+  });
+
   await test.step('SSE is live: an out-of-band create appears without reload', async () => {
     // Create a ticket directly via the API; if /ui/events is open it patches
     // #col-todo live and the card shows up with no navigation.
@@ -135,6 +172,22 @@ test('board is interactive end-to-end', async ({ page }) => {
     await page.locator('#ticket-dialog button[type="submit"]').click();
     await expect(page.locator('#modal #ticket-dialog')).toBeVisible();
     await expect(page.locator('#col-todo').getByText('created via modal')).toHaveCount(1); // unchanged
+  });
+
+  await test.step('+ Add project opens the modal; creating a project shows its rail tile', async () => {
+    // The prior step intentionally leaves a ticket modal open; clear it so the
+    // overlay no longer intercepts pointer events on the rail.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#modal #ticket-dialog')).toHaveCount(0);
+    await page.locator('.rail-add').click();
+    const dialog = page.locator('#modal #project-dialog');
+    await expect(dialog).toBeVisible();
+    await page.locator('#proj-name').fill('Smoke Proj');
+    await page.locator('#proj-root').fill(daemon.dir);
+    await dialog.locator('button[type="submit"]').click();
+    // Success navigates to /?project=<new id>; the rail renders from the project
+    // list, so the freshly created project appears as a tile after the nav.
+    await expect(page.locator('.rail').getByText('Smoke Proj')).toBeVisible();
   });
 
   await test.step('no console errors or page errors occurred', async () => {
