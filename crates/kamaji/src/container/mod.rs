@@ -227,3 +227,17 @@ fn run_checked(bin: &str, args: &[&str], what: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    //! Real end-to-end check: needs a container runtime + the built image
+    //! (`docker build -t ghcr.io/alveflo/kamaji:v<version> .`). Ignored in CI.
+    #[test]
+    #[ignore = "requires a container runtime and the built image; run with --ignored"]
+    fn up_then_down_round_trip() {
+        super::up(&super::UpArgs { build: true, ..Default::default() }).unwrap();
+        assert!(super::state::load().is_some(), "state marker written");
+        super::down().unwrap();
+        assert!(super::state::load().is_none(), "state marker cleared");
+    }
+}
