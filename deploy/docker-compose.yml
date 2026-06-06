@@ -1,10 +1,18 @@
 # docker compose -f deploy/docker-compose.yml up -d   (then open http://127.0.0.1:8755)
 # docker compose -f deploy/docker-compose.yml down
-# Replace ${HOME} resolves from your shell; add one mapping per project root + its worktree dir.
+# ${HOME} is substituted from the shell that runs `docker compose`; verify all
+# substitutions with: docker compose -f deploy/docker-compose.yml config
+# Add one volume mapping per project root + its worktree dir.
 services:
   kamaji:
     image: ghcr.io/alveflo/kamaji:latest
     container_name: kamaji
+    restart: unless-stopped
+    # mem_limit/cpus/pids_limit are top-level keys enforced by `docker compose up`.
+    # (The `deploy: resources:` block is Swarm-only and silently ignored by Compose.)
+    mem_limit: 8g
+    cpus: 4.0
+    pids_limit: 2048
     # For plain Docker, container-root maps to host-root: prefer rootless Docker
     # or enable the daemon's userns-remap to reduce the gap. (Under rootless
     # Podman this is automatic — container-root maps to your unprivileged user.)
@@ -13,12 +21,6 @@ services:
       - "127.0.0.1:8756:8756"
     environment:
       HOME: ${HOME}
-    deploy:
-      resources:
-        limits:
-          memory: 8g
-          cpus: "4"
-          pids: 2048
     volumes:
       - ${HOME}/.local/share/kamaji:${HOME}/.local/share/kamaji
       - ${HOME}/.config/kamaji:${HOME}/.config/kamaji

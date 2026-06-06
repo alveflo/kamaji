@@ -14,6 +14,7 @@ Volume=<HOME>/.local/share/kamaji:<HOME>/.local/share/kamaji
 Volume=<HOME>/.config/kamaji:<HOME>/.config/kamaji
 Volume=kamaji-zellij-cache:<HOME>/.cache/zellij
 Volume=<HOME>/.claude:<HOME>/.claude
+# Replace <PROJECT_ROOT> with each project's root path; add one Volume= line per project AND one per its worktree-base dir.
 Volume=<PROJECT_ROOT>:<PROJECT_ROOT>
 PodmanArgs=--memory 8g --cpus 4 --pids-limit 2048
 
