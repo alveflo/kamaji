@@ -18,7 +18,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::extract::ws::{CloseFrame as AxClose, Message as AxMsg, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::http::{header, HeaderName, Uri};
+use axum::http::{header, HeaderName, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
@@ -31,6 +31,15 @@ use tokio_tungstenite::tungstenite::Message as TgMsg;
 
 /// The default base `zellij web` serves on (matches [`crate::zellij_web`]).
 const DEFAULT_UPSTREAM_HTTP: &str = "http://127.0.0.1:8082";
+
+/// HTTP requests to zellij web are expected to be small control calls; terminal
+/// traffic uses WebSockets and static assets are fetched with empty GET bodies.
+const MAX_PROXY_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
+/// Only `/assets/connection.js` is buffered, because kamaji may replace that one
+/// zellij asset with a reconnect shim. Bound it separately so a bad upstream
+/// cannot force an unbounded allocation on this exceptional path.
+const MAX_RECONNECT_ASSET_BYTES: usize = 1024 * 1024;
 
 /// Reverse proxy state: the upstream `zellij web` bases plus the cached session
 /// cookie obtained by logging in once with the token.
@@ -256,6 +265,31 @@ fn reconnect_shim(path: &str, body: &[u8]) -> Option<&'static str> {
     }
 }
 
+async fn limited_upstream_bytes(
+    upstream: reqwest::Response,
+    limit: usize,
+) -> Result<axum::body::Bytes, UpstreamBodyError> {
+    let mut stream = upstream.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| UpstreamBodyError::Read)?;
+        let new_len = bytes
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(UpstreamBodyError::TooLarge)?;
+        if new_len > limit {
+            return Err(UpstreamBodyError::TooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes.into())
+}
+
+enum UpstreamBodyError {
+    Read,
+    TooLarge,
+}
+
 async fn http_proxy(
     State(proxy): State<Arc<ZellijProxy>>,
     req: axum::extract::Request,
@@ -268,9 +302,9 @@ async fn http_proxy(
         .unwrap_or("/");
     let path = parts.uri.path().to_string();
     let url = format!("{}{}", proxy.upstream_http, pq);
-    let bytes = match axum::body::to_bytes(body, usize::MAX).await {
+    let bytes = match axum::body::to_bytes(body, MAX_PROXY_REQUEST_BODY_BYTES).await {
         Ok(b) => b,
-        Err(_) => return (axum::http::StatusCode::BAD_REQUEST, "bad body").into_response(),
+        Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "request body too large").into_response(),
     };
 
     let mut rb = proxy.http.request(parts.method.clone(), &url);
@@ -297,25 +331,44 @@ async fn http_proxy(
 
     let status = upstream.status();
     let headers = upstream.headers().clone();
-    let body_bytes = match upstream.bytes().await {
-        Ok(b) => b,
-        Err(_) => {
-            return (axum::http::StatusCode::BAD_GATEWAY, "upstream body error").into_response()
-        }
-    };
+    if path == "/assets/connection.js" {
+        let body_bytes = match limited_upstream_bytes(upstream, MAX_RECONNECT_ASSET_BYTES).await {
+            Ok(b) => b,
+            Err(UpstreamBodyError::TooLarge) => {
+                return (StatusCode::BAD_GATEWAY, "upstream asset too large").into_response()
+            }
+            Err(UpstreamBodyError::Read) => {
+                return (StatusCode::BAD_GATEWAY, "upstream body error").into_response()
+            }
+        };
 
-    // Swap zellij web's reconnect module for our instant/bounded one, if this is
-    // it. We re-derive the content headers (the body changed), so this also drops
-    // any upstream content-encoding/length that would no longer match.
-    if let Some(shim) = reconnect_shim(&path, &body_bytes) {
-        return (
-            [(
-                header::CONTENT_TYPE,
-                "application/javascript; charset=utf-8",
-            )],
-            shim,
-        )
-            .into_response();
+        // Swap zellij web's reconnect module for our instant/bounded one, if this
+        // is it. We re-derive the content headers (the body changed), so this
+        // also drops any upstream content-encoding/length that would no longer
+        // match.
+        if let Some(shim) = reconnect_shim(&path, &body_bytes) {
+            return (
+                [(
+                    header::CONTENT_TYPE,
+                    "application/javascript; charset=utf-8",
+                )],
+                shim,
+            )
+                .into_response();
+        }
+
+        let mut builder = Response::builder().status(status);
+        for (k, v) in headers.iter() {
+            // Drop framing headers (axum re-derives them) and upstream Set-Cookie —
+            // the proxy owns auth, so the browser never needs the cookie.
+            if is_hop(k) || k == header::SET_COOKIE {
+                continue;
+            }
+            builder = builder.header(k, v);
+        }
+        return builder.body(Body::from(body_bytes)).unwrap_or_else(|_| {
+            (StatusCode::BAD_GATEWAY, "bad upstream response").into_response()
+        });
     }
 
     let mut builder = Response::builder().status(status);
@@ -327,9 +380,9 @@ async fn http_proxy(
         }
         builder = builder.header(k, v);
     }
-    builder.body(Body::from(body_bytes)).unwrap_or_else(|_| {
-        (axum::http::StatusCode::BAD_GATEWAY, "bad upstream response").into_response()
-    })
+    builder
+        .body(Body::from_stream(upstream.bytes_stream()))
+        .unwrap_or_else(|_| (StatusCode::BAD_GATEWAY, "bad upstream response").into_response())
 }
 
 async fn ws_handler(
@@ -595,6 +648,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(term, "export const TERMINAL = 1;", "untouched passthrough");
+    }
+
+    #[tokio::test]
+    async fn http_proxy_rejects_request_bodies_over_limit() {
+        use axum::routing::post;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let route_hits = hits.clone();
+        let upstream = Router::new().route(
+            "/echo",
+            post(move || {
+                let route_hits = route_hits.clone();
+                async move {
+                    route_hits.fetch_add(1, Ordering::SeqCst);
+                    "ok"
+                }
+            }),
+        );
+        let up_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = up_listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(up_listener, upstream).await.unwrap() });
+
+        let proxy = Arc::new(ZellijProxy::with_upstream(&format!("http://{up_addr}")));
+        let px_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let px_addr = px_listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(px_listener, router(proxy)).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://{px_addr}/echo"))
+            .body(vec![b'x'; MAX_PROXY_REQUEST_BODY_BYTES + 1])
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(resp.text().await.unwrap(), "request body too large");
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "upstream not called");
     }
 
     // ---- proxy_ws end-to-end tests (issue #97) ----------------------------
