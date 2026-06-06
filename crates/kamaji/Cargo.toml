@@ -3,6 +3,10 @@ name = "kamaji"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# The end-user binary — not a crates.io package (consistent with kamajid /
+# kamaji-core). Also lets cargo-deny's allow-wildcard-paths cover its internal
+# path deps, which crates.io would otherwise disallow on a publishable crate.
+publish = false
 
 [dependencies]
 kamaji-core = { path = "../kamaji-core" }
