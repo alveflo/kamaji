@@ -261,5 +261,8 @@ matching per-agent idle patterns — is tracked in
 
 ## Contributing
 
-See [AGENTS.md](AGENTS.md) for notes on the codebase and how to work with the
-AI coding agents that helped build it.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the human basics — building, testing,
+running the daemon, and the PR flow.
+
+For the AI-coding-agent working agreement (worktrees, issue→task flow), see
+[AGENTS.md](AGENTS.md).

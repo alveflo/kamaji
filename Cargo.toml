@@ -5,3 +5,9 @@ members = [
     "crates/kamaji",
     "crates/kamajid",
 ]
+
+# Shared package metadata. Each crate inherits these with `version.workspace =
+# true` / `edition.workspace = true` so the whole workspace versions in lockstep.
+[workspace.package]
+version = "0.3.0"
+edition = "2021"
