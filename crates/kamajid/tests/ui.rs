@@ -87,7 +87,7 @@ async fn serves_embedded_datastar_and_css() {
         .to_string();
     assert!(ct.contains("javascript"), "datastar served as JS, got {ct}");
 
-    let css = reqwest::get(format!("{base}/assets/app.css"))
+    let css = reqwest::get(format!("{base}/assets/tokens.css"))
         .await
         .unwrap();
     assert_eq!(css.status(), 200);

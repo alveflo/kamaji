@@ -4,7 +4,9 @@
 //! mount. Submit fires the existing JSON API with an explicit `fetch()` (the
 //! response is ignored — the new/updated card arrives over `/ui/events`) and
 //! clears the mount on success. Cancel and Escape clear it directly. Bindings
-//! use the RC.6 colon form (`data-on:click`); the hyphen form is inert.
+//! use the RC.6 colon form (`data-on:click`); the hyphen form is inert. The
+//! fragment is built against the shared modal chrome classes (`modal-head` /
+//! `modal-body` / `modal-foot`) defined in `modal.css`.
 
 use kamaji_core::models::{Agent, Ticket};
 use maud::{html, Markup, PreEscaped};
@@ -23,13 +25,14 @@ pub fn ticket_form(
     default_agent: Agent,
     error: Option<&str>,
 ) -> Markup {
-    let (title, desc, prompt, agent, heading) = match editing {
+    let (title, desc, prompt, agent, heading, submit_label) = match editing {
         Some(t) => (
             t.title.clone(),
             t.description.clone(),
             t.initial_prompt.clone().unwrap_or_default(),
             t.agent,
             "Edit ticket",
+            "Save changes",
         ),
         None => (
             String::new(),
@@ -37,6 +40,7 @@ pub fn ticket_form(
             String::new(),
             default_agent,
             "New ticket",
+            "Create ticket",
         ),
     };
     // Build the JSON body from the form's named controls and POST/PATCH it via an
@@ -67,26 +71,46 @@ pub fn ticket_form(
             dialog open class="modal" id="ticket-dialog"
                    data-on:keydown__window=(PreEscaped(escape_handler)) {
                 form data-on:submit=(PreEscaped(submit_action)) {
-                    h2 { (heading) }
-                    label for="f-title" { "Title" }
-                    input id="f-title" name="title" value=(title) required;
-                    label for="f-desc" { "Description" }
-                    textarea id="f-desc" name="description" rows="3" { (desc) }
-                    label for="f-prompt" { "Initial prompt" }
-                    textarea id="f-prompt" name="initial_prompt" rows="3" { (prompt) }
-                    label for="f-agent" { "Agent" }
-                    select id="f-agent" name="agent" {
-                        @for a in Agent::all() {
-                            option value=(a.as_str()) selected[a == agent] { (a.label()) }
+                    div class="modal-head" {
+                        span class="modal-title" { (heading) }
+                        @if let Some(t) = editing {
+                            span class="modal-idpill" { "#" (t.id) }
+                        }
+                        button type="button" class="modal-close"
+                               data-on:click=(PreEscaped(CLEAR_MODAL_JS)) { "✕" }
+                    }
+                    div class="modal-body" {
+                        div class="field" {
+                            label for="f-title" { "Title" span class="req" { "*" } }
+                            input id="f-title" name="title" value=(title) required;
+                        }
+                        div class="field" {
+                            label for="f-desc" { "Description" }
+                            textarea id="f-desc" name="description" rows="3" { (desc) }
+                        }
+                        div class="field" {
+                            label for="f-prompt" { "Initial prompt" }
+                            textarea id="f-prompt" name="initial_prompt" rows="3" { (prompt) }
+                            div class="hint" {
+                                "The first message handed to the agent when it starts."
+                            }
+                        }
+                        div class="field" {
+                            label for="f-agent" { "Agent" }
+                            select id="f-agent" name="agent" {
+                                @for a in Agent::all() {
+                                    option value=(a.as_str()) selected[a == agent] { (a.label()) }
+                                }
+                            }
+                        }
+                        @if let Some(e) = error {
+                            p class="form-error" { (e) }
                         }
                     }
-                    @if let Some(e) = error {
-                        p class="form-error" { (e) }
-                    }
-                    div class="form-actions" {
-                        button type="button" class="act"
+                    div class="modal-foot" {
+                        button type="button" class="btn"
                                data-on:click=(PreEscaped(CLEAR_MODAL_JS)) { "Cancel" }
-                        button type="submit" class="act" { "Save" }
+                        button type="submit" class="btn btn-primary" { (submit_label) }
                     }
                 }
             }
@@ -139,6 +163,18 @@ mod tests {
             html.contains("project_id:7"),
             "scopes to project as a numeric literal:\n{html}"
         );
+        assert!(
+            html.contains(r#"class="modal-title">New ticket"#),
+            "create heading in the modal-title chrome:\n{html}"
+        );
+        assert!(
+            !html.contains("modal-idpill"),
+            "create mode has no id pill:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="btn btn-primary">Create ticket"#),
+            "create submit label:\n{html}"
+        );
     }
 
     #[test]
@@ -153,6 +189,52 @@ mod tests {
         assert!(
             html.contains(r#"value="codex" selected"#),
             "agent prefilled:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="modal-title">Edit ticket"#),
+            "edit heading in the modal-title chrome:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="modal-idpill">#9</span>"#),
+            "edit mode renders the id pill:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="btn btn-primary">Save changes"#),
+            "edit submit label:\n{html}"
+        );
+    }
+
+    /// The fragment renders against the shared modal chrome (`modal.css`).
+    #[test]
+    fn renders_through_shared_modal_chrome() {
+        let html = ticket_form(1, None, Agent::Claude, None).into_string();
+        for cls in [
+            r#"class="modal-head""#,
+            r#"class="modal-body""#,
+            r#"class="field""#,
+            r#"class="modal-foot""#,
+            r#"class="modal-close""#,
+        ] {
+            assert!(html.contains(cls), "chrome {cls} present:\n{html}");
+        }
+        assert!(
+            html.contains(r#"id="f-title""#),
+            "title input keeps its id:\n{html}"
+        );
+        assert!(
+            html.contains(r#"type="submit" class="btn btn-primary""#),
+            "submit button carries btn btn-primary:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="btn" data-on:click"#) && html.contains("Cancel"),
+            "Cancel button carries btn:\n{html}"
+        );
+        // The legacy markup must be gone.
+        assert!(
+            !html.contains("<h2")
+                && !html.contains("form-actions")
+                && !html.contains(r#"class="act""#),
+            "legacy h2/form-actions/.act markup removed:\n{html}"
         );
     }
 

@@ -1,0 +1,64 @@
+/* ============================================================================
+   kamaji — design tokens
+   Single :root for the entire design system. All other sheets consume these.
+   ========================================================================== */
+
+:root{
+  /* prototype palette */
+  --bg:#16161f; --bg-2:#1b1b27; --surface:#1f2030; --surface-2:#26273a;
+  --hair:#2a2b3c; --hair-2:#34354a;
+  --text:#cdd6f4; --dim:#a6adc8; --muted:#6c7086; --faint:#45475a;
+  --todo:#9399b2; --prog:#89b4fa; --review:#fab387; --done:#a6e3a1; --active:#a6e3a1;
+  --accent:#89b4fa; --danger:#f38ba8;
+  --rail:#0e0e16; --rail-hair:#22222e;
+  --mono:"SF Mono",ui-monospace,"JetBrains Mono","Cascadia Code",monospace;
+  --font:ui-sans-serif,system-ui,"Inter","SF Pro Text","Segoe UI",roboto,sans-serif;
+  --r:7px;
+  /* utility tokens retained for the carried board/terminal/modal CSS */
+  --surface-3:#45475a;
+  --radius:12px; --radius-sm:8px; --gap:14px; --pad:16px;
+  --t-xs:11px; --t-sm:12.5px; --t-base:13px; --t-md:17.5px; --t-lg:22px; --t-xl:28px;
+  --ease:cubic-bezier(0.22,1,0.36,1); --slide:180ms;
+}
+
+/* reset */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+
+/* base typography — flex shell from prototype */
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ----------------------------------------------------------------------------
+   Global polish
+   -------------------------------------------------------------------------- */
+::selection { background: rgba(137, 180, 250, 0.28); }
+
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* reduced motion — drop every non-essential animation/transition */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
