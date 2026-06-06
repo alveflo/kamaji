@@ -53,14 +53,17 @@ pub fn ticket_form(
     // Single-quoted JS only, so the expression is safe inside the double-quoted,
     // unescaped (PreEscaped) attribute value.
     let fields = "title:f.elements['title'].value,description:f.elements['description'].value,initial_prompt:f.elements['initial_prompt'].value,agent:f.elements['agent'].value";
-    let close_on_ok = format!("then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}}})");
     let submit_action = match editing {
+        // Edit: PATCH, then clear the mount on a 2xx (a 4xx leaves the inline error visible).
         Some(t) => format!(
-            "evt.preventDefault();const f=evt.target;fetch('/tickets/{id}',{{method:'PATCH',headers:{{'content-type':'application/json'}},body:JSON.stringify({{{fields}}})}}).{close_on_ok}",
+            "evt.preventDefault();const f=evt.target;fetch('/tickets/{id}',{{method:'PATCH',headers:{{'content-type':'application/json'}},body:JSON.stringify({{{fields}}})}}).then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}}})",
             id = t.id,
         ),
+        // Create: POST, then (if the background box is ticked) read the 201 body and
+        // start the new ticket's session before clearing the mount. The start fetch
+        // is fire-and-forget — the board update arrives over /ui/events.
         None => format!(
-            "evt.preventDefault();const f=evt.target;fetch('/tickets',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{project_id:{project_id},{fields}}})}}).{close_on_ok}",
+            "evt.preventDefault();const f=evt.target;fetch('/tickets',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{project_id:{project_id},{fields}}})}}).then(r=>{{if(r.ok){{if(f.elements['start_now'].checked){{r.json().then(t=>fetch('/tickets/'+t.id+'/start',{{method:'POST'}}))}}{CLEAR_MODAL_JS}}}}})",
         ),
     };
     // Nice-to-have: Escape dismisses the modal. The window keydown handler is on
@@ -111,6 +114,15 @@ pub fn ticket_form(
                                 }
                             }
                             input type="hidden" name="agent" value=(agent.as_str());
+                        }
+                        @if editing.is_none() {
+                            label class="check" {
+                                input type="checkbox" name="start_now" id="f-start";
+                                span class="check-text" {
+                                    b { "Start the agent now, in the background" }
+                                    "Spawns the session immediately and sends the initial prompt. Leave off to create it in Todo and start later."
+                                }
+                            }
                         }
                         @if let Some(e) = error {
                             p class="form-error" { (e) }
@@ -315,6 +327,47 @@ mod tests {
         assert!(
             html.contains("title must not be empty"),
             "error shown:\n{html}"
+        );
+    }
+
+    #[test]
+    fn new_ticket_has_unchecked_background_checkbox_that_starts_on_create() {
+        let html = ticket_form(1, None, Agent::Claude, None).into_string();
+        assert!(
+            html.contains(r#"class="check""#),
+            "renders the checkbox row:\n{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="checkbox" name="start_now""#),
+            "named start_now checkbox:\n{html}"
+        );
+        assert!(
+            !html.contains(r#"name="start_now" checked"#)
+                && !html.contains(r#"name="start_now" id="f-start" checked"#),
+            "checkbox defaults unchecked:\n{html}"
+        );
+        // When ticked, the create-submit reads the 201 body and starts the session.
+        assert!(
+            html.contains("f.elements['start_now'].checked"),
+            "create-submit branches on the checkbox:\n{html}"
+        );
+        assert!(
+            html.contains("r.json().then(t=>fetch('/tickets/'+t.id+'/start',{method:'POST'}))"),
+            "ticking starts the new ticket's session:\n{html}"
+        );
+    }
+
+    #[test]
+    fn edit_ticket_has_no_background_checkbox() {
+        let t = ticket();
+        let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
+        assert!(
+            !html.contains(r#"class="check""#),
+            "edit mode has no checkbox:\n{html}"
+        );
+        assert!(
+            !html.contains("start_now"),
+            "edit mode never starts on save:\n{html}"
         );
     }
 
