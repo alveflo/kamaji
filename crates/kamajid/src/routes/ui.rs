@@ -87,6 +87,15 @@ pub async fn cancel_ticket() -> Markup {
     views::modal::modal_closed()
 }
 
+/// `GET /ui/projects/new` → the create-project modal fragment. There is no
+/// project yet, so the segmented agent control defaults to the config default.
+/// Submit reuses `POST /projects`; on success the page navigates to the new
+/// project so the rail shows its tile (projects broadcast no SSE event).
+pub async fn new_project(State(state): State<AppState>) -> Markup {
+    let default_agent = state.config_async().await.default_agent();
+    views::project_form::project_form(default_agent, None)
+}
+
 /// `GET /ui/tickets/:id/edit` → the edit-ticket modal fragment, prefilled.
 pub async fn edit_ticket(
     State(state): State<AppState>,
