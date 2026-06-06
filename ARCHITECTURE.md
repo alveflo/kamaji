@@ -81,6 +81,9 @@ crates/
       ui_events.rs   GET /ui/events    (Datastar SSE — for the browser)
       ui.rs          GET /, /ui/tickets/* (maud HTML + fragments)
       tickets.rs     ticket CRUD + session control
+      assets.rs      GET /assets/* (rust-embed static files)
+      pwa.rs         GET /manifest.webmanifest, /sw.js (installable-PWA wiring)
+    assets/          embedded static files (CSS/JS, PWA manifest + icons + sw.js)
     views/           maud templates (page, board, card, modal, terminal, sidebar)
     zellij_web.rs    lazy `zellij web` server manager + token handling
     zellij_proxy.rs  authenticating reverse proxy (:8756)
@@ -94,6 +97,13 @@ crates/
     sse.rs           SSE listener thread + reconnect
     app/ engine/ ui/ theme/   TUI state and rendering
 ```
+
+The browser board is an installable PWA. A `manifest.webmanifest` (served at
+`/manifest.webmanifest`) plus a minimal service worker (`/sw.js`, root scope, no
+caching — the live daemon is required, so there is no offline mode) make the
+browser offer "Install". Both are embedded assets served by `routes/pwa.rs`; the
+monogram icons live alongside the other static files in `crates/kamajid/src/assets/`
+(regenerate the PNGs from the SVGs per `crates/kamajid/src/assets/icons.README.md`).
 
 ---
 
