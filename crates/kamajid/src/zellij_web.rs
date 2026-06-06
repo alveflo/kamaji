@@ -115,7 +115,7 @@ impl ZellijWeb {
 /// test passes there); if a future zellij changes the `--create-token` output
 /// format, re-run that test with `--ignored` and adjust this parser.
 fn create_token() -> anyhow::Result<String> {
-    let out = std::process::Command::new("zellij")
+    let out = kamaji_core::zellij::command()
         .args(["web", "--create-token"])
         .output()?;
     if !out.status.success() {
@@ -149,7 +149,7 @@ fn probe_iframeable(_url: &str) -> bool {
 /// Spawn a detached `zellij web` server. We do not hold the child (the spec
 /// accepts that the server outlives the daemon and is reused on next start).
 fn spawn_zellij_web() -> anyhow::Result<()> {
-    std::process::Command::new("zellij")
+    kamaji_core::zellij::command()
         .arg("web")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

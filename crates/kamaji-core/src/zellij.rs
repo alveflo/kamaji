@@ -2,6 +2,24 @@ use anyhow::Result;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
 
+/// Build a `zellij` [`Command`] with the ambient session's environment stripped.
+///
+/// kamaji orchestrates zellij sessions from the outside. If the daemon (or TUI)
+/// was launched *inside* a zellij session, every child process inherits
+/// `ZELLIJ`, `ZELLIJ_SESSION_NAME`, and `ZELLIJ_PANE_ID`. With those set, zellij
+/// treats CLI invocations as *in-session* commands — most damagingly,
+/// `zellij --layout … attach --create-background <name>` silently injects the
+/// layout's tab into the ambient session and exits 0 *without* creating the
+/// named background session. Stripping the vars makes every invocation behave as
+/// a standalone client regardless of where the daemon happens to run.
+pub fn command() -> Command {
+    let mut c = Command::new("zellij");
+    c.env_remove("ZELLIJ")
+        .env_remove("ZELLIJ_SESSION_NAME")
+        .env_remove("ZELLIJ_PANE_ID");
+    c
+}
+
 /// True if a session named `name` appears in `zellij list-sessions` output.
 /// Compares the first whitespace-delimited token of each line. Note that
 /// zellij keeps exited-but-resurrectable sessions in this list, so presence
@@ -25,7 +43,7 @@ pub fn session_exited(list_output: &str, name: &str) -> bool {
 /// Raw `zellij list-sessions` output, or `None` if the command failed (so
 /// callers can distinguish "no sessions" from "couldn't ask").
 pub fn list_sessions() -> Option<String> {
-    match Command::new("zellij")
+    match command()
         .args(["list-sessions", "--no-formatting"])
         .output()
     {
@@ -37,7 +55,7 @@ pub fn list_sessions() -> Option<String> {
 /// Create AND attach a new session running the given layout. Returns when the
 /// user detaches.
 pub fn create_session(name: &str, layout_path: &Path) -> Result<ExitStatus> {
-    Ok(Command::new("zellij")
+    Ok(command()
         .args(["--session", name, "-n"])
         .arg(layout_path)
         .status()?)
@@ -52,7 +70,7 @@ pub fn create_session(name: &str, layout_path: &Path) -> Result<ExitStatus> {
 /// Runs from `cwd` and uses `output()` so zellij's stdout/stderr are captured
 /// rather than painted onto the live TUI (same rationale as `dump_screen`).
 pub fn create_session_background(name: &str, layout_path: &Path, cwd: &Path) -> Result<()> {
-    let out = Command::new("zellij")
+    let out = command()
         .current_dir(cwd)
         .arg("--layout")
         .arg(layout_path)
@@ -64,12 +82,28 @@ pub fn create_session_background(name: &str, layout_path: &Path, cwd: &Path) -> 
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    // A 0 exit code is not proof the session exists. `command()` scrubs the
+    // ambient ZELLIJ env that would otherwise make zellij no-op this into a
+    // tab-injection, but verify the session actually materialized so any future
+    // silent-success mode fails loudly here instead of surfacing later as a
+    // reconcile-cleared session and a 400 on attach. (`list_sessions` reflects a
+    // new background session synchronously once this command returns.) If we
+    // can't reach zellij to check, assume success — same as `is_session_live`.
+    if !list_sessions()
+        .map(|l| session_in_list(&l, name))
+        .unwrap_or(true)
+    {
+        anyhow::bail!(
+            "zellij reported success but session {name:?} is absent from list-sessions \
+             (is the daemon running inside a zellij session?)"
+        );
+    }
     Ok(())
 }
 
 /// Attach to an existing session. Returns when the user detaches.
 pub fn attach_session(name: &str) -> Result<ExitStatus> {
-    Ok(Command::new("zellij").args(["attach", name]).status()?)
+    Ok(command().args(["attach", name]).status()?)
 }
 
 /// Capture the focused pane of a (possibly background) session. Returns `None`
@@ -79,7 +113,7 @@ pub fn dump_screen(session: &str) -> Option<String> {
     let tmp = std::env::temp_dir().join(format!("kamaji-dump-{session}.txt"));
     // Use output() (not status()) so zellij's stdout/stderr are captured rather
     // than inherited — otherwise its noise would paint onto the live TUI.
-    let output = Command::new("zellij")
+    let output = command()
         .args(["--session", session, "action", "dump-screen"])
         .arg(&tmp)
         .output()
@@ -95,10 +129,8 @@ pub fn dump_screen(session: &str) -> Option<String> {
 
 /// Kill and delete a session; errors are ignored (it may already be gone).
 pub fn terminate_session(name: &str) {
-    let _ = Command::new("zellij").args(["kill-session", name]).output();
-    let _ = Command::new("zellij")
-        .args(["delete-session", "--force", name])
-        .output();
+    let _ = command().args(["kill-session", name]).output();
+    let _ = command().args(["delete-session", "--force", name]).output();
 }
 
 #[cfg(test)]
@@ -111,6 +143,24 @@ mod tests {
         assert!(session_in_list(out, "kamaji-1-foo"));
         assert!(session_in_list(out, "other-session"));
         assert!(!session_in_list(out, "kamaji-2-bar"));
+    }
+
+    #[test]
+    fn command_strips_ambient_zellij_env() {
+        // kamaji orchestrates zellij from the outside. If the daemon/TUI was
+        // launched inside a zellij session it inherits these vars, which make a
+        // child `zellij` behave as an in-session command (e.g. create-background
+        // silently injects a tab and exits 0). The builder must scrub them.
+        let cmd = command();
+        assert_eq!(cmd.get_program(), "zellij");
+        let removed: Vec<String> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        for var in ["ZELLIJ", "ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID"] {
+            assert!(removed.contains(&var.to_string()), "{var} not scrubbed");
+        }
     }
 
     #[test]
