@@ -130,7 +130,8 @@ pub fn claude_settings_json(marker_path: &str) -> String {
 }
 
 /// Splice `--settings <json>` after `argv[0]` (a global claude flag, before the
-/// positional prompt). `argv` must be non-empty (build_command guarantees it).
+/// positional prompt). The session preparation path validates that `argv` is
+/// non-empty before calling this helper.
 pub fn inject_claude_settings(argv: Vec<String>, marker_path: &str) -> Vec<String> {
     let json = claude_settings_json(marker_path);
     let mut out = Vec::with_capacity(argv.len() + 2);
