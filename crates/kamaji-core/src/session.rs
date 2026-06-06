@@ -3,6 +3,7 @@
 //! CLI so both paths produce identical sessions.
 
 use anyhow::{bail, Result};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -190,6 +191,78 @@ pub fn reconcile(
         let _ = std::fs::remove_file(detect::marker_path(state_dir, name));
     }
     Ok(vanished)
+}
+
+/// How a live `kamaji-*` zellij session relates to the board.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionKind {
+    /// Bound to a ticket via its recorded `session_name`.
+    Ticket {
+        id: i64,
+        title: String,
+        status: Status,
+    },
+    /// A project's bare "main" workspace (`kamaji-main-<project-id>`).
+    Main,
+    /// A `kamaji-*` session with no matching ticket and not a main session.
+    Orphan,
+}
+
+/// One classified zellij session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionEntry {
+    pub name: String,
+    pub kind: SessionKind,
+}
+
+/// Classify the `kamaji-*` sessions in raw `zellij list-sessions` output against
+/// the DB. The first whitespace-delimited token of each line is the session
+/// name; non-`kamaji-` names are dropped, and duplicate names (zellij lists a
+/// session and its EXITED/resurrectable stub separately) collapse to the first
+/// occurrence, preserving list order. A name matching a ticket's recorded
+/// `session_name` is `Ticket`; one matching `kamaji-main-<project-id>` is `Main`;
+/// anything else is `Orphan`.
+pub fn classify_sessions(db: &Db, list_output: &str) -> Result<Vec<SessionEntry>> {
+    let projects = db.list_projects()?;
+    let main_names: HashSet<String> = projects
+        .iter()
+        .map(|p| slug::main_session_name(p.id))
+        .collect();
+    let mut ticket_by_session: HashMap<String, (i64, String, Status)> = HashMap::new();
+    for p in &projects {
+        for t in db.list_tickets(p.id)? {
+            if let Some(name) = t.session_name {
+                ticket_by_session.insert(name, (t.id, t.title, t.status));
+            }
+        }
+    }
+
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut entries = Vec::new();
+    for line in list_output.lines() {
+        let Some(name) = line.split_whitespace().next() else {
+            continue;
+        };
+        if !name.starts_with("kamaji-") || !seen.insert(name) {
+            continue;
+        }
+        let kind = if let Some((id, title, status)) = ticket_by_session.get(name) {
+            SessionKind::Ticket {
+                id: *id,
+                title: title.clone(),
+                status: *status,
+            }
+        } else if main_names.contains(name) {
+            SessionKind::Main
+        } else {
+            SessionKind::Orphan
+        };
+        entries.push(SessionEntry {
+            name: name.to_string(),
+            kind,
+        });
+    }
+    Ok(entries)
 }
 
 /// Write a rendered layout to a uniquely-named temp file and return its path.
@@ -386,6 +459,53 @@ mod tests {
             &Config::default()
         )
         .is_ok());
+    }
+
+    #[test]
+    fn classify_sessions_labels_ticket_main_and_orphan() {
+        let db = Db::open_in_memory().unwrap();
+        let p = db
+            .create_project("p", std::path::Path::new("/tmp/p"), None)
+            .unwrap();
+        // A ticket with a live session.
+        let t = db
+            .create_ticket(p.id, "Fix auth", "", None, Agent::Claude)
+            .unwrap();
+        db.set_ticket_session(t.id, "kamaji-1-fix-auth", "/wt", "kamaji-1-fix-auth")
+            .unwrap();
+
+        let main = crate::slug::main_session_name(p.id);
+        let list = format!(
+            "kamaji-1-fix-auth [Created 2h ago]\n\
+             {main} [Created 1h ago]\n\
+             kamaji-7-old [Created 3h ago]\n\
+             other-session (current)\n\
+             kamaji-1-fix-auth [Created 2h ago] (EXITED - attach to resurrect)\n"
+        );
+
+        let entries = classify_sessions(&db, &list).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["kamaji-1-fix-auth", main.as_str(), "kamaji-7-old"]
+        );
+
+        match &entries[0].kind {
+            SessionKind::Ticket { id, title, status } => {
+                assert_eq!(*id, t.id);
+                assert_eq!(title, "Fix auth");
+                assert_eq!(*status, Status::Todo);
+            }
+            other => panic!("expected ticket kind, got {other:?}"),
+        }
+        assert!(matches!(entries[1].kind, SessionKind::Main));
+        assert!(matches!(entries[2].kind, SessionKind::Orphan));
+    }
+
+    #[test]
+    fn classify_sessions_empty_list_is_empty() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(classify_sessions(&db, "").unwrap().is_empty());
     }
 
     /// cleanup_ticket removes the worktree + branch and clears the ticket's
