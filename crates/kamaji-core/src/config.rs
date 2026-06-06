@@ -52,6 +52,9 @@ fn default_log_format() -> String {
 fn default_log_level() -> String {
     "info".to_string()
 }
+fn default_web_theme() -> String {
+    "auto".to_string()
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScrapePatterns {
@@ -71,6 +74,17 @@ pub struct DaemonConfig {
     pub log_format: String,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Colorscheme for the browser zellij-web sessions. `"auto"` (default)
+    /// respects the user's own zellij config — kamaji injects no theme. `"match"`
+    /// pulls the sessions toward the kamaji board's palette: it forces the
+    /// built-in `catppuccin-mocha` theme on zellij's chrome *and* applies kamaji's
+    /// token palette to the browser xterm terminal. Any other value is treated as
+    /// a zellij theme name to force on the chrome (no browser-palette injection,
+    /// since its colors aren't known to kamaji). Note: forcing a theme is
+    /// session-wide, so it also recolors the TUI view of those sessions, and a
+    /// change takes effect only for sessions created after a daemon restart.
+    #[serde(default = "default_web_theme")]
+    pub web_theme: String,
 }
 
 impl Default for DaemonConfig {
@@ -79,6 +93,7 @@ impl Default for DaemonConfig {
             bind: default_bind(),
             log_format: default_log_format(),
             log_level: default_log_level(),
+            web_theme: default_web_theme(),
         }
     }
 }

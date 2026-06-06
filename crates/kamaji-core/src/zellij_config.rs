@@ -2,6 +2,7 @@
 //! resolves the configured `zellij_bar` value into a concrete [`BarStyle`] and
 //! scans the user's zellij KDL for its `default_layout` to drive `auto` mode.
 
+use crate::config;
 use crate::layout::BarStyle;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -112,14 +113,52 @@ pub fn ensure_web_sharing_on(kdl: &str) -> String {
     out
 }
 
+/// Resolve the configured `web_theme` value into the zellij theme name to force
+/// on browser sessions, or `None` to leave the user's config untouched.
+/// `"auto"` (and empty) → `None` (respect the user's file). `"match"` → the
+/// built-in `catppuccin-mocha` (the board's palette). Any other value is taken
+/// as a literal zellij theme name to force.
+fn resolve_web_theme(web_theme: &str) -> Option<&str> {
+    match web_theme.trim() {
+        "auto" | "" => None,
+        "match" => Some("catppuccin-mocha"),
+        other => Some(other),
+    }
+}
+
+/// Return `kdl` with its theme forced to `theme_name`: drop any existing
+/// uncommented top-level `theme` node and append a single canonical
+/// `theme "<name>"`. Mirrors [`ensure_web_sharing_on`]'s tolerant line scan, and
+/// like it requires a delimiter after `theme` so the `themes { … }` block that
+/// *defines* custom themes is preserved, not stripped.
+pub fn ensure_theme(kdl: &str, theme_name: &str) -> String {
+    let mut out = String::with_capacity(kdl.len() + theme_name.len() + 12);
+    for line in kdl.lines() {
+        let trimmed = line.trim_start();
+        let active_theme = !trimmed.starts_with("//")
+            && !trimmed.starts_with("/-")
+            && trimmed
+                .strip_prefix("theme")
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace() || c == '"'));
+        if active_theme {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(&format!("theme \"{theme_name}\"\n"));
+    out
+}
+
 /// Path to a kamaji-managed zellij config that mirrors the user's config but
-/// forces `web_sharing "on"`, for use as the `-c` argument when *creating*
-/// sessions (so they are browser-attachable while keeping the user's theme,
-/// keybindings, etc.). Built once per process: zellij reads web settings only at
-/// session/server start ("Requires restart"), so a config change needs a daemon
-/// restart to take effect anyway. Returns `None` only if the file can't be
-/// written, in which case callers create the session without `-c` (preserving
-/// the prior, non-shareable behavior rather than failing the start).
+/// forces `web_sharing "on"` (and, when `web_theme` is not `"auto"`, a theme),
+/// for use as the `-c` argument when *creating* sessions (so they are
+/// browser-attachable while keeping the user's keybindings etc.). Built once per
+/// process: zellij reads web settings only at session/server start ("Requires
+/// restart"), so a config change needs a daemon restart to take effect anyway.
+/// Returns `None` only if the file can't be written, in which case callers
+/// create the session without `-c` (preserving the prior, non-shareable behavior
+/// rather than failing the start).
 pub fn web_sharing_config_file() -> Option<&'static Path> {
     static CFG: OnceLock<Option<PathBuf>> = OnceLock::new();
     CFG.get_or_init(build_web_sharing_config_file).as_deref()
@@ -131,7 +170,17 @@ fn build_web_sharing_config_file() -> Option<PathBuf> {
     let base = config_file_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
-    let derived = ensure_web_sharing_on(&base);
+    let mut derived = ensure_web_sharing_on(&base);
+    // Layer 1: force the configured browser theme onto zellij's chrome, unless
+    // `web_theme = "auto"` (the default), which leaves the user's theme intact.
+    // Read from kamaji's own config; a read failure falls back to "auto".
+    let web_theme = config::config_path()
+        .and_then(|p| config::load_from(&p))
+        .map(|c| c.daemon.web_theme)
+        .unwrap_or_else(|_| "auto".to_string());
+    if let Some(theme) = resolve_web_theme(&web_theme) {
+        derived = ensure_theme(&derived, theme);
+    }
     let dir = std::env::temp_dir().join("kamaji-zellij");
     std::fs::create_dir_all(&dir).ok()?;
     let path = dir.join("web-config.kdl");
