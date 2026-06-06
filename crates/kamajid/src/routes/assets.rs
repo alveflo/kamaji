@@ -1,13 +1,14 @@
 //! Serve the embedded static assets (`/assets/*path`). The Datastar runtime and
-//! `app.css` are compiled into the binary via `rust-embed`, so `kamajid` stays a
-//! single self-contained binary. Content-type is derived from the extension; an
-//! ETag from the embedded content hash drives conditional requests.
+//! the stylesheets (`tokens.css`, `layout.css`, etc.) are compiled into the
+//! binary via `rust-embed`, so `kamajid` stays a single self-contained binary.
+//! Content-type is derived from the extension; an ETag from the embedded content
+//! hash drives conditional requests.
 //!
 //! Assets are served `Cache-Control: no-cache` — i.e. the browser may cache but
 //! must revalidate every load. It sends `If-None-Match` with the cached ETag; we
 //! answer `304 Not Modified` when unchanged (cheap) or fresh bytes when the
 //! embedded asset changed. This means a daemon restart with new code shows the
-//! new `app.css`/`datastar.js` on a normal reload — no hard-refresh needed (#96).
+//! new `tokens.css`/`datastar.js` on a normal reload — no hard-refresh needed (#96).
 //! A bare `max-age` (the old behavior) let the browser skip revalidation and
 //! serve a stale asset for up to a day.
 
@@ -90,7 +91,7 @@ mod tests {
 
     #[tokio::test]
     async fn serves_bytes_with_revalidating_cache_control() {
-        let resp = serve(Path("app.css".to_string()), HeaderMap::new()).await;
+        let resp = serve(Path("tokens.css".to_string()), HeaderMap::new()).await;
 
         assert_eq!(resp.status(), StatusCode::OK);
         // `no-cache` forces the browser to revalidate every load, so a daemon
@@ -106,13 +107,13 @@ mod tests {
     #[tokio::test]
     async fn unchanged_asset_returns_304_without_body() {
         // First load to learn the current ETag.
-        let first = serve(Path("app.css".to_string()), HeaderMap::new()).await;
+        let first = serve(Path("tokens.css".to_string()), HeaderMap::new()).await;
         let etag = header_value(&first, header::ETAG).expect("etag");
 
         // Reload with that ETag → 304, no bytes on the wire.
         let mut headers = HeaderMap::new();
         headers.insert(header::IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
-        let resp = serve(Path("app.css".to_string()), headers).await;
+        let resp = serve(Path("tokens.css".to_string()), headers).await;
 
         assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
         assert_eq!(
@@ -131,7 +132,7 @@ mod tests {
             header::IF_NONE_MATCH,
             HeaderValue::from_static("\"deadbeef\""),
         );
-        let resp = serve(Path("app.css".to_string()), headers).await;
+        let resp = serve(Path("tokens.css".to_string()), headers).await;
 
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(body_len(resp).await > 0, "fresh bytes served");

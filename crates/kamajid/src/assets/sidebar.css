@@ -1,0 +1,202 @@
+/* ============================================================================
+   kamaji — sidebar / workspace rail
+   Slack-style collapsible rail with project tiles.
+   ========================================================================== */
+
+.rail {
+  flex: 0 0 64px;
+  width: 64px;
+  background: var(--rail);
+  border-right: 1px solid var(--rail-hair);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 10px 0;
+  gap: 4px;
+  transition: width 0.18s var(--ease), flex-basis 0.18s var(--ease);
+}
+body.rail-open .rail {
+  flex-basis: 212px;
+  width: 212px;
+}
+
+.rail-head {
+  display: flex;
+  align-items: center;
+  height: 44px;
+  padding: 0 12px;
+  margin-bottom: 6px;
+  justify-content: center;
+}
+body.rail-open .rail-head {
+  justify-content: flex-start;
+  padding: 0 14px 0 16px;
+}
+
+.rail-mark {
+  display: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, var(--prog), var(--done));
+  box-shadow: 0 0 8px rgba(137, 180, 250, 0.5);
+}
+body.rail-open .rail-mark { display: inline-block; }
+
+.rail-word {
+  display: none;
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  margin-left: 9px;
+  white-space: nowrap;
+}
+body.rail-open .rail-word { display: inline-block; }
+
+.rail-toggle {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  font-size: 15px;
+  line-height: 1;
+}
+body.rail-open .rail-toggle {
+  margin-left: auto;
+  font-size: 13px;
+}
+.rail-toggle:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.rail-toggle .ic-open { display: none; }
+body.rail-open .rail-toggle .ic-open { display: inline; }
+body.rail-open .rail-toggle .ic-collapsed { display: none; }
+
+.rail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+
+/* each workspace entry */
+.ws {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.ws-ind {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%) scaleY(0);
+  width: 3px;
+  height: 30px;
+  border-radius: 0 3px 3px 0;
+  background: var(--text);
+  transition: transform 0.15s var(--ease);
+}
+.ws:hover .ws-ind { transform: translateY(-50%) scaleY(0.4); }
+.ws.active .ws-ind { transform: translateY(-50%) scaleY(1); }
+
+.ws-tile {
+  position: relative;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  color: #0b0b14;
+  letter-spacing: -0.02em;
+  transition: border-radius 0.15s var(--ease), box-shadow 0.15s var(--ease), transform 0.12s var(--ease);
+}
+.ws:hover .ws-tile {
+  border-radius: 11px;
+  transform: translateY(-1px);
+}
+.ws.active .ws-tile {
+  border-radius: 11px;
+  box-shadow: 0 0 0 2px var(--rail), 0 0 0 3px rgba(255, 255, 255, 0.15);
+}
+
+.ws-tile.c1 { background: linear-gradient(135deg, #89b4fa, #5b7fd6); }
+.ws-tile.c2 { background: linear-gradient(135deg, #cba6f7, #f38ba8); }
+.ws-tile.c3 { background: linear-gradient(135deg, #fab387, #f9a03f); }
+.ws-tile.c4 { background: linear-gradient(135deg, #a6e3a1, #5fb37a); }
+
+.ws-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--review);
+  color: #1a1208;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--rail);
+}
+
+.ws-label {
+  margin-left: 11px;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--dim);
+  opacity: 0;
+  transition: opacity 0.12s var(--ease);
+  overflow: hidden;
+}
+body.rail-open .ws-label { opacity: 1; }
+.ws.active .ws-label {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* add-project entry */
+.rail-add {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 12px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.rail-add .ws-tile {
+  background: transparent;
+  border: 1.5px dashed var(--hair-2);
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 18px;
+}
+.rail-add:hover .ws-tile {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.rail-add .ws-label { color: var(--muted); }
+
+.rail-spacer { flex: 1; }
