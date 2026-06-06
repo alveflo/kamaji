@@ -89,7 +89,8 @@
   margin-bottom: 6px;
 }
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   width: 100%;
   box-sizing: border-box;
   font-family: var(--font);
@@ -105,10 +106,12 @@
 .field input::placeholder,
 .field textarea::placeholder { color: var(--faint); }
 .field input:focus,
-.field textarea:focus {
+.field textarea:focus,
+.field select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.16);
 }
+.field select { cursor: pointer; appearance: none; -webkit-appearance: none; }
 .field textarea { resize: vertical; min-height: 62px; line-height: 1.5; }
 .field input.mono { font-family: var(--mono); font-size: 12px; }
 .field .hint { font-size: 11px; color: var(--muted); margin-top: 5px; }
@@ -206,72 +209,6 @@ dialog.modal {
               0 0 0 1px rgba(137, 180, 250, 0.08);
   animation: modal-in 200ms var(--ease) both;
   overflow: hidden;
-}
-
-/* ----------------------------------------------------------------------------
-   Carried rules for the live modal.rs markup (until Task 3 rewrites it)
-   -------------------------------------------------------------------------- */
-dialog.modal form { padding: 22px 24px 24px; }
-
-.modal h2 {
-  margin: 0 0 18px;
-  font-family: var(--mono);
-  font-size: var(--t-lg);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: var(--text);
-}
-.modal label {
-  display: block;
-  margin: 14px 0 5px;
-  font-family: var(--mono);
-  font-size: var(--t-xs);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.modal input,
-.modal textarea,
-.modal select {
-  width: 100%;
-  font-family: var(--font);
-  font-size: var(--t-base);
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--hair-2);
-  border-radius: var(--radius-sm);
-  padding: 9px 11px;
-  transition: border-color 130ms var(--ease), box-shadow 130ms var(--ease);
-}
-.modal textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
-.modal input::placeholder,
-.modal textarea::placeholder { color: var(--faint); }
-.modal input:focus,
-.modal textarea:focus,
-.modal select:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.18);
-}
-
-.form-actions {
-  display: flex;
-  gap: 10px;
-  justify-content: flex-end;
-  margin-top: 22px;
-  padding-top: 18px;
-  border-top: 1px solid var(--hair);
-}
-.form-actions .act { font-size: var(--t-sm); padding: 7px 16px; }
-.form-actions .act[type="submit"] {
-  color: #11111b;
-  background: var(--accent);
-  border-color: var(--accent);
-  font-weight: 600;
-}
-.form-actions .act[type="submit"]:hover {
-  filter: brightness(1.07);
-  background: var(--accent);
 }
 
 .form-error {
