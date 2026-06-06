@@ -42,6 +42,7 @@ pub fn page(
                 link rel="stylesheet" href="/assets/layout.css";
                 link rel="stylesheet" href="/assets/sidebar.css";
                 link rel="stylesheet" href="/assets/modal.css";
+                link rel="stylesheet" href="/assets/sessions.css";
                 link rel="stylesheet" href="/assets/board.css";
                 link rel="stylesheet" href="/assets/search.css";
                 link rel="stylesheet" href="/assets/terminal.css";
@@ -214,6 +215,16 @@ mod tests {
         assert!(
             !html.contains(r#"<div class="search-slot"></div>"#),
             "search slot must be filled, not empty:\n{html}"
+        );
+    }
+
+    #[test]
+    fn page_links_sessions_css() {
+        let p = project(1, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"href="/assets/sessions.css""#),
+            "sessions css link:\n{html}"
         );
     }
 

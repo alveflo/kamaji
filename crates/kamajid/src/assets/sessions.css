@@ -1,0 +1,64 @@
+/* Session-cleanup modal: the checkbox list and per-session kind tags.
+   Chrome (modal, modal-head/body/foot, btn, check) comes from modal.css. */
+
+.sess-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.sess-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #2a2a33);
+  border-radius: 8px;
+}
+
+.sess-row:hover {
+  background: var(--surface-2, #1c1c22);
+}
+
+.sess-name {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 13px;
+}
+
+.sess-tag {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted, #9aa0aa);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 55%;
+}
+
+.sess-tag-main {
+  color: var(--warn, #e6a23c);
+}
+
+/* Main/project workspaces are heavier to kill — tint the whole row. */
+.sess-warn {
+  border-color: var(--warn, #e6a23c);
+}
+
+.sess-confirm-text {
+  font-size: 13px;
+  color: var(--text, #e6e6ea);
+}
+
+.sess-foot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.sess-empty {
+  color: var(--muted, #9aa0aa);
+  padding: 8px 2px;
+}
