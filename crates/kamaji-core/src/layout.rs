@@ -1,3 +1,7 @@
+//! Generates the zellij KDL layout for a kamaji session, choosing the bar style
+//! ([`BarStyle`]) and keeping the agent command out of the per-tab template so
+//! newly-created tabs open a plain shell.
+
 pub(crate) fn kdl_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }

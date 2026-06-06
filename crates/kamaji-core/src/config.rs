@@ -1,3 +1,7 @@
+//! The on-disk kamaji configuration: the `Config` tree (agent commands, paths,
+//! zellij bar style, theme, auto-review) plus loading, saving, and the built-in
+//! defaults that keep older config files forward-compatible.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -115,9 +119,9 @@ pub struct Config {
     /// and tolerates older configs that omit the key.
     #[serde(default = "default_zellij_bar")]
     pub zellij_bar: String,
-    /// Active colorscheme name. One of the built-in theme keys (see
-    /// `crate::theme::Theme::ALL`), e.g. "catppuccin" or "default". Tolerates
-    /// older configs that omit the key.
+    /// Active colorscheme name. One of the built-in theme keys defined by the
+    /// TUI's theme registry, e.g. "catppuccin" or "default". Tolerates older
+    /// configs that omit the key.
     #[serde(default = "default_theme")]
     pub theme: String,
     pub agents: Agents,

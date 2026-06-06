@@ -1,3 +1,7 @@
+//! Renders the board's overlay modals — the ticket/project create-edit forms,
+//! the move and confirm dialogs, and the directory-search field — as centered
+//! frames drawn over the board.
+
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};

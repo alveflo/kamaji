@@ -1,3 +1,7 @@
+//! The project picker: the pre-board screen that lists known projects, lets the
+//! user create one (mirroring the ticket form's directory-search field), and
+//! returns the chosen project for the main board loop to open.
+
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};

@@ -1,3 +1,7 @@
+//! The TUI's color themes. A [`Theme`] is a set of semantic color roles every
+//! widget draws from, so selecting one re-skins the whole app; this module
+//! holds the built-in themes and the lookup from a config name to a `Theme`.
+
 use ratatui::style::Color;
 
 use kamaji_core::models::Status;

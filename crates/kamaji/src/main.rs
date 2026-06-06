@@ -1,3 +1,9 @@
+//! The `kamaji` TUI binary. Parses the CLI, connects to the `kamajid` daemon
+//! over HTTP, runs the project picker then the Kanban board, and drives the
+//! main loop: input and SSE deltas feed the [`Engine`], which
+//! returns an [`Effect`] the loop runs by releasing the
+//! terminal (e.g. to attach to a zellij session) before redrawing.
+
 mod app;
 mod cli;
 mod client;
