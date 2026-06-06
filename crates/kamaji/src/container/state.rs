@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 pub struct ContainerState {
     /// The container name (for `down`/`logs`).
     pub name: String,
-    /// The host-reachable board address, e.g. `127.0.0.1:8755`.
+    /// The host-reachable board address as a bare `host:port` (e.g.
+    /// `127.0.0.1:8755`) — NO scheme. Callers prepend `http://` (see
+    /// `status_report`); a scheme-bearing value here would double up.
     pub board_addr: String,
     /// The runtime binary used, e.g. `podman`.
     pub runtime: String,
@@ -142,5 +144,16 @@ mod tests {
         assert!(s.contains("mode: container"), "{s}");
         assert!(s.contains("podman"), "{s}");
         assert!(s.contains("(up)"), "{s}");
+    }
+
+    #[test]
+    fn status_container_reports_down_when_unhealthy() {
+        let st = ContainerState {
+            name: "kamaji".into(),
+            board_addr: "127.0.0.1:8755".into(),
+            runtime: "podman".into(),
+        };
+        let s = status_report(&Mode::Container(st), "http://127.0.0.1:8755", |_| false);
+        assert!(s.contains("(down)"), "{s}");
     }
 }
