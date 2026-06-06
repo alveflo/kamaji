@@ -63,7 +63,7 @@ pub fn ticket_form(
         // start the new ticket's session before clearing the mount. The start fetch
         // is fire-and-forget — the board update arrives over /ui/events.
         None => format!(
-            "evt.preventDefault();const f=evt.target;fetch('/tickets',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{project_id:{project_id},{fields}}})}}).then(r=>{{if(r.ok){{if(f.elements['start_now'].checked){{r.json().then(t=>fetch('/tickets/'+t.id+'/start',{{method:'POST'}}))}}{CLEAR_MODAL_JS}}}}})",
+            "evt.preventDefault();const f=evt.target;fetch('/tickets',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{project_id:{project_id},{fields}}})}}).then(r=>{{if(r.ok){{if(f.elements['start_now'].checked){{r.json().then(t=>fetch('/tickets/'+t.id+'/start',{{method:'POST'}})).catch(e=>console.error('background start failed',e))}}{CLEAR_MODAL_JS}}}}})",
         ),
     };
     // Nice-to-have: Escape dismisses the modal. The window keydown handler is on

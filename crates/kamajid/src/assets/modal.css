@@ -222,7 +222,7 @@ dialog.modal {
 }
 
 /* ----------------------------------------------------------------------------
-   Slice 2 extras: background-start checkbox
+   Background-start checkbox (new-ticket modal)
    -------------------------------------------------------------------------- */
 .check {
   display: flex;
@@ -231,7 +231,7 @@ dialog.modal {
   margin-top: 15px;
   cursor: pointer;
 }
-.check input {
+.check input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
   flex: 0 0 auto;
@@ -245,11 +245,11 @@ dialog.modal {
   position: relative;
   transition: background 0.12s var(--ease), border-color 0.12s var(--ease);
 }
-.check input:checked {
+.check input[type="checkbox"]:checked {
   background: var(--accent);
   border-color: var(--accent);
 }
-.check input:checked::after {
+.check input[type="checkbox"]:checked::after {
   content: "✓";
   position: absolute;
   inset: 0;
