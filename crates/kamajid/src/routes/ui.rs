@@ -7,6 +7,7 @@ use maud::Markup;
 use serde::Deserialize;
 
 use kamaji_core::models::{Status, Ticket};
+use kamaji_core::session;
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -136,4 +137,26 @@ pub async fn terminal(
         &info.session_name,
         &src,
     ))
+}
+
+/// `GET /ui/sessions/manage` → the session-cleanup modal fragment. Snapshots
+/// `zellij list-sessions` (through the session-driver seam, off the async
+/// runtime since it shells out), classifies each `kamaji-*` session against the
+/// DB, and renders the modal. When zellij can't be queried the modal shows an
+/// explanatory note rather than erroring.
+pub async fn manage_sessions(State(state): State<AppState>) -> Result<Markup, ApiError> {
+    let st = state.clone();
+    let list = tokio::task::spawn_blocking(move || st.sessions().list_sessions())
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("list-sessions task panicked: {e}")))?;
+    let reachable = list.is_some();
+    let entries = match list {
+        Some(list) => {
+            state
+                .with_db(move |db| session::classify_sessions(db, &list))
+                .await?
+        }
+        None => Vec::new(),
+    };
+    Ok(views::sessions::sessions_modal(&entries, reachable))
 }

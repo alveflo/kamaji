@@ -29,6 +29,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ui/projects/new", get(routes::ui::new_project))
         .route("/ui/tickets/:id/edit", get(routes::ui::edit_ticket))
         .route("/ui/tickets/:id/terminal", get(routes::ui::terminal))
+        .route("/ui/sessions/manage", get(routes::ui::manage_sessions))
         .route(
             "/config",
             get(routes::config::get_config).patch(routes::config::patch_config),
