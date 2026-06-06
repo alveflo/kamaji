@@ -48,6 +48,7 @@ pub fn page(
                 script type="module" src="/assets/datastar.js" {}
                 script defer src="/assets/board-dnd.js" {}
                 script type="module" src="/assets/search.js" {}
+                script type="module" src="/assets/keybindings.js" {}
             }
             body class="rail-open" data-init="@get('/ui/events')" {
                 (super::sidebar::rail(projects, project.id, attention))
@@ -132,6 +133,10 @@ mod tests {
         assert!(
             html.contains(r#"src="/assets/board-dnd.js""#),
             "board drag-and-drop script:\n{html}"
+        );
+        assert!(
+            html.contains(r#"src="/assets/keybindings.js""#),
+            "global keybindings module:\n{html}"
         );
         assert!(
             !html.contains(r#"href="/assets/app.css""#),
