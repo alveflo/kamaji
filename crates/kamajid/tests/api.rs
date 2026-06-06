@@ -1131,13 +1131,15 @@ async fn main_session_creates_and_is_idempotent() {
 
 /// Boot a daemon with a fake session driver reporting `list`, a temp state dir,
 /// and return the base URL + state (to seed + inspect) + the driver handle (to
-/// assert terminate calls).
+/// assert terminate calls) + the TempDir guard (caller must hold it for the
+/// test body's lifetime).
 async fn spawn_with_session_list(
     list: &str,
 ) -> (
     String,
     AppState,
     std::sync::Arc<kamajid::session_driver::FakeSessionDriver>,
+    tempfile::TempDir,
 ) {
     let driver = std::sync::Arc::new(
         kamajid::session_driver::FakeSessionDriver::new(true).with_sessions(list),
@@ -1146,20 +1148,18 @@ async fn spawn_with_session_list(
     state.set_session_driver(driver.clone());
     let sd = tempfile::tempdir().unwrap();
     state.set_state_dir(sd.path().to_path_buf());
-    // Leak the tempdir so it outlives the test body (state holds only the path).
-    std::mem::forget(sd);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = kamajid::router(state.clone());
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    (format!("http://{addr}"), state, driver)
+    (format!("http://{addr}"), state, driver, sd)
 }
 
 #[tokio::test]
 async fn delete_sessions_rejects_empty_names() {
-    let (base, _state, _d) = spawn_with_session_list("").await;
+    let (base, _state, _d, _sd) = spawn_with_session_list("").await;
     let resp = reqwest::Client::new()
         .post(format!("{base}/sessions/delete"))
         .json(&serde_json::json!({ "names": [] }))
@@ -1172,7 +1172,7 @@ async fn delete_sessions_rejects_empty_names() {
 #[tokio::test]
 async fn delete_orphan_session_terminates_via_driver() {
     let list = "kamaji-9-orphan [Created 1h ago]\n";
-    let (base, _state, driver) = spawn_with_session_list(list).await;
+    let (base, _state, driver, _sd) = spawn_with_session_list(list).await;
     let body: serde_json::Value = reqwest::Client::new()
         .post(format!("{base}/sessions/delete"))
         .json(&serde_json::json!({ "names": ["kamaji-9-orphan"] }))
@@ -1189,7 +1189,7 @@ async fn delete_orphan_session_terminates_via_driver() {
 
 #[tokio::test]
 async fn delete_non_kamaji_name_is_reported_failed() {
-    let (base, _state, driver) = spawn_with_session_list("").await;
+    let (base, _state, driver, _sd) = spawn_with_session_list("").await;
     let body: serde_json::Value = reqwest::Client::new()
         .post(format!("{base}/sessions/delete"))
         .json(&serde_json::json!({ "names": ["some-random-session"] }))
@@ -1206,7 +1206,7 @@ async fn delete_non_kamaji_name_is_reported_failed() {
 
 #[tokio::test]
 async fn delete_already_gone_kamaji_session_is_idempotent_success() {
-    let (base, _state, driver) = spawn_with_session_list("").await;
+    let (base, _state, driver, _sd) = spawn_with_session_list("").await;
     let body: serde_json::Value = reqwest::Client::new()
         .post(format!("{base}/sessions/delete"))
         .json(&serde_json::json!({ "names": ["kamaji-5-vanished"] }))
@@ -1230,7 +1230,7 @@ async fn delete_ticket_session_full_teardown_and_event() {
     assert!(worktree.exists());
 
     let list = "kamaji-1-x [Created 1h ago]\n";
-    let (base, state, _driver) = spawn_with_session_list(list).await;
+    let (base, state, _driver, _sd) = spawn_with_session_list(list).await;
     let tid = state
         .with_db({
             let root = root.clone();

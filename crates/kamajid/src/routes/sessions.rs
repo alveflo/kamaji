@@ -82,11 +82,8 @@ pub async fn delete(
                     }
                     // Ticket vanished between classify and teardown → already gone.
                     Ok(false) => deleted += 1,
-                    Err(ApiError::Internal(e)) => {
-                        failed.push(json!({ "name": name, "reason": e.to_string() }));
-                    }
                     Err(e) => {
-                        failed.push(json!({ "name": name, "reason": format!("{e:?}") }));
+                        failed.push(json!({ "name": name, "reason": format_api_error(&e) }));
                     }
                 }
             }
@@ -103,4 +100,14 @@ pub async fn delete(
     }
 
     Ok(Json(json!({ "deleted": deleted, "failed": failed })))
+}
+
+/// Human-readable reason for a per-session teardown failure. `with_db` only ever
+/// yields `ApiError::Internal`, but matching the whole enum keeps this total.
+fn format_api_error(e: &ApiError) -> String {
+    match e {
+        ApiError::Internal(err) => err.to_string(),
+        ApiError::BadRequest(m) => m.clone(),
+        ApiError::NotFound => "not found".to_string(),
+    }
 }
