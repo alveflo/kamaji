@@ -31,6 +31,8 @@ RUN npm install -g @anthropic-ai/claude-code @openai/codex @github/copilot \
 
 COPY --from=builder /src/target/release/kamajid /usr/local/bin/kamajid
 
+WORKDIR /root
+
 EXPOSE 8755 8756
 # tini reaps zombie agent/zellij children. --bind 0.0.0.0 so the board is
 # reachable from the host; the proxy auto-derives 0.0.0.0:8756.
