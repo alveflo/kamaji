@@ -1,0 +1,34 @@
+name: image
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t kamaji:ci .
+      - name: Smoke-test binaries
+        run: |
+          docker run --rm kamaji:ci kamajid --version
+          docker run --rm --entrypoint zellij kamaji:ci --version
+          docker run --rm --entrypoint claude kamaji:ci --version
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push tagged image
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          REF="ghcr.io/${{ github.repository_owner }}/kamaji:${GITHUB_REF_NAME}"
+          docker tag kamaji:ci "$REF"
+          docker push "$REF"
