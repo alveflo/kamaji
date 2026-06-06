@@ -131,6 +131,8 @@ async fn main() -> Result<()> {
         .local_addr()
         .with_context(|| "reading bound address")?;
     let (pidfile, addrfile) = runtime_paths()?;
+    // Startup clients treat the addrfile as the point where health can be
+    // probed, so replace the non-PID lock placeholder before publishing it.
     std::fs::write(&pidfile, std::process::id().to_string())
         .with_context(|| format!("writing {}", pidfile.display()))?;
     std::fs::write(&addrfile, local.to_string())
