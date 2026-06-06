@@ -111,8 +111,10 @@ kamaji logs       # follow container logs
 resource limits, and binds the board to the published port. Add a new project in
 the browser/TUI, then re-run `kamaji up` to mount it.
 
-Only the host browser is needed; the TUI's terminal attach is proxied via the
-runtime in container mode. v1 targets Linux hosts. Raw `podman`/`docker`
+In container mode the browser board is the terminal surface — open it and use a
+ticket's inline terminal. (The TUI can drive the board over HTTP, but its
+Enter-to-attach opens a local `zellij` session, so it isn't used for attaching
+to in-container agents in v1.) v1 targets Linux hosts. Raw `podman`/`docker`
 equivalents live in [`deploy/`](deploy/).
 
 ## Features
