@@ -13,18 +13,20 @@ FROM node:22-bookworm-slim AS runtime
 ARG ZELLIJ_VERSION=v0.43.1
 
 # git for worktrees; curl/ca-certificates to fetch zellij; tini for PID 1 reaping.
+# curl is purged after fetching zellij; ca-certificates + git + tini remain for runtime.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git curl ca-certificates tini \
- && rm -rf /var/lib/apt/lists/*
-
-# zellij prebuilt (musl static runs fine on glibc). amd64 only in v1 (see plan).
-RUN curl -fsSL "https://github.com/zellij-org/zellij/releases/download/${ZELLIJ_VERSION}/zellij-x86_64-unknown-linux-musl.tar.gz" \
+ && curl -fsSL "https://github.com/zellij-org/zellij/releases/download/${ZELLIJ_VERSION}/zellij-x86_64-unknown-linux-musl.tar.gz" \
       | tar -xz -C /usr/local/bin \
- && zellij --version
+ && zellij --version \
+ && apt-get purge -y curl \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
 
 # Agent CLIs. Package names are verified by the --version smoke below; if any
 # changes upstream, the build fails loudly here rather than at runtime.
 RUN npm install -g @anthropic-ai/claude-code @openai/codex @github/copilot \
+ && npm cache clean --force \
  && claude --version && codex --version && copilot --version
 
 COPY --from=builder /src/target/release/kamajid /usr/local/bin/kamajid
