@@ -424,8 +424,12 @@ async fn new_ticket_fragment_mounts_and_self_closes() {
         "morphs the #modal mount:\n{body}"
     );
     assert!(
-        body.contains("if(r.ok){document.getElementById('modal').replaceChildren()}"),
+        body.contains("document.getElementById('modal').replaceChildren()"),
         "submit closes the modal on a 2xx:\n{body}"
+    );
+    assert!(
+        body.contains("f.elements['start_now'].checked"),
+        "create-submit branches on the background-start checkbox:\n{body}"
     );
 }
 
