@@ -1,268 +1,232 @@
 /* ============================================================================
-   kamaji — board
-   Column and card styling. Carried + retokenized from app.css.
-   Slice 1 rewrites this for dense cards + drag-and-drop.
+   kamaji — board (Slice 1: dense cards + drag-and-drop)
+   Columns, dense cards with status stripes, hover-revealed actions, and the
+   drag-and-drop drop-zone states. Ported from the validated dense prototype.
+   Column moves happen by DnD (board-dnd.js) — there are no Move buttons.
    ========================================================================== */
 
 /* ----------------------------------------------------------------------------
    Columns
    -------------------------------------------------------------------------- */
 .column {
-  --col: var(--muted);
-  background:
-    linear-gradient(180deg,
-      color-mix(in srgb, var(--col) 6%, var(--bg-2)) 0%,
-      var(--bg-2) 96px);
-  border: 1px solid var(--hair-2);
-  border-radius: var(--radius);
-  padding: var(--pad) 13px 18px;
-  min-height: 160px;
-  position: relative;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
-/* accent rail along the column's top edge */
-.column::before {
-  content: "";
-  position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 2px;
-  background: var(--col);
-  opacity: 0.85;
-}
-.column[data-status="todo"]        { --col: var(--todo); }
-.column[data-status="in_progress"] { --col: var(--prog); }
-.column[data-status="review"]      { --col: var(--review); }
-.column[data-status="done"]        { --col: var(--done); }
 
 .col-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 2px 4px 12px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--hair);
-}
-.col-title {
-  font-family: var(--mono);
-  font-weight: 700;
-  font-size: var(--t-xs);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--col);
-  display: inline-flex;
-  align-items: center;
   gap: 8px;
+  padding: 0 2px 10px;
 }
-/* a tiny square glyph echoing the TUI's column accent */
-.col-title::before {
-  content: "";
-  width: 7px; height: 7px;
-  border-radius: 2px;
-  background: var(--col);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--col) 60%, transparent);
+.col-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+[data-status="todo"] .col-dot        { background: var(--todo); }
+[data-status="in_progress"] .col-dot { background: var(--prog); }
+[data-status="review"] .col-dot      { background: var(--review); }
+[data-status="done"] .col-dot        { background: var(--done); }
+
+.col-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
 }
 .col-count {
   font-family: var(--mono);
-  font-size: var(--t-xs);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
-  color: var(--dim);
-  background: color-mix(in srgb, var(--col) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--col) 26%, transparent);
-  border-radius: 999px;
-  min-width: 22px;
-  padding: 1px 7px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: 20px;
+  min-width: 20px;
   text-align: center;
+  padding: 1px 6px;
 }
 
+/* The body is the drag-and-drop drop zone; min-height keeps a target even when
+   a column is near-empty. */
 .col-body {
   display: flex;
   flex-direction: column;
-  gap: 11px;
-  min-height: 40px;
+  gap: 8px;
+  min-height: 120px;
+}
+.col-body.drop {
+  outline: 2px dashed var(--hair-2);
+  outline-offset: 3px;
+  border-radius: 8px;
+  background: rgba(137, 180, 250, 0.05);
 }
 
 .col-empty {
-  margin: 8px 0 4px;
-  padding: 18px 12px;
-  text-align: center;
-  font-family: var(--mono);
-  font-size: var(--t-xs);
-  letter-spacing: 0.08em;
-  color: var(--muted);
-  border: 1px dashed var(--hair-2);
-  border-radius: var(--radius-sm);
-  background: repeating-linear-gradient(
-    -45deg,
-    transparent, transparent 7px,
-    color-mix(in srgb, var(--muted) 5%, transparent) 7px,
-    color-mix(in srgb, var(--muted) 5%, transparent) 8px);
+  margin: 0;
+  font-size: 12px;
+  color: var(--faint);
+  padding: 6px 2px;
 }
 
 /* ----------------------------------------------------------------------------
    Cards
    -------------------------------------------------------------------------- */
 .card {
-  --col: var(--muted);
   position: relative;
   background: var(--surface);
-  border: 1px solid var(--hair-2);
-  border-radius: var(--radius-sm);
-  padding: 12px 13px 11px 15px;
-  animation: card-in var(--slide) var(--ease) both;
-  transition: background 150ms var(--ease), border-color 150ms var(--ease),
-              transform 150ms var(--ease), box-shadow 150ms var(--ease);
+  border: 1px solid var(--hair);
+  border-radius: var(--r);
+  padding: 9px 11px 9px 13px;
+  cursor: grab;
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.12s ease;
 }
-.card[data-status="todo"]        { --col: var(--todo); }
-.card[data-status="in_progress"] { --col: var(--prog); }
-.card[data-status="review"]      { --col: var(--review); }
-.card[data-status="done"]        { --col: var(--done); }
-/* accent rail down the card's leading edge */
+/* status-coloured leading stripe */
 .card::before {
   content: "";
   position: absolute;
-  left: 0; top: 8px; bottom: 8px;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
   width: 2px;
   border-radius: 2px;
-  background: var(--col);
-  opacity: 0.85;
 }
-.card:hover {
-  background: var(--surface-2);
-  border-color: color-mix(in srgb, var(--col) 35%, var(--hair-2));
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px -16px rgba(0, 0, 0, 0.8);
-}
+.card[data-status="todo"]::before        { background: var(--todo); }
+.card[data-status="in_progress"]::before { background: var(--prog); }
+.card[data-status="review"]::before      { background: var(--review); }
+.card[data-status="done"]::before        { background: var(--done); opacity: 0.5; }
 
-@keyframes card-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.985); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
+.card:hover {
+  border-color: var(--hair-2);
+  background: var(--surface-2);
+  transform: translateY(-1px);
+}
+/* dragging dims the card; the cursor signals the grab */
+.card.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
 }
 
 .card-head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 7px;
 }
-.bullet {
-  font-size: 11px;
-  line-height: 1;
-  color: var(--muted);
-  flex: none;
-  align-self: center;
-}
-/* a filled bullet means a live session */
-.card[data-status="in_progress"] .bullet { color: var(--active); }
-.card[data-status="review"] .bullet      { color: var(--review); }
-
 .card-id {
   font-family: var(--mono);
-  font-size: var(--t-xs);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--col);
-  flex: none;
+  font-size: 11px;
+  color: var(--muted);
 }
 .card-title {
-  font-size: var(--t-base);
-  font-weight: 550;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text);
   line-height: 1.35;
   word-break: break-word;
 }
+.card[data-status="done"] .card-title { color: var(--dim); }
 
 .card-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 9px 0 11px;
+  margin-top: 7px;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.dot.live {
+  background: var(--active);
+  box-shadow: 0 0 7px rgba(166, 227, 161, 0.6);
+}
+.dot.idle {
+  background: var(--faint);
+  border: 1px solid var(--muted);
 }
 .agent {
-  font-family: var(--mono);
-  font-size: var(--t-xs);
-  letter-spacing: 0.03em;
+  font-size: 11px;
   color: var(--dim);
-  background: color-mix(in srgb, var(--muted) 12%, transparent);
-  border-radius: 5px;
-  padding: 2px 7px;
 }
 .chip {
   font-family: var(--mono);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  font-size: 9.5px;
   text-transform: uppercase;
-  color: var(--muted);
-  border: 1px solid var(--hair-2);
-  border-radius: 999px;
-  padding: 1px 9px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  letter-spacing: 0.05em;
+  padding: 1.5px 6px;
+  border-radius: 4px;
 }
-.chip::before {
-  content: "";
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: currentColor;
+.chip.active {
+  color: var(--prog);
+  background: rgba(137, 180, 250, 0.12);
+  border: 1px solid rgba(137, 180, 250, 0.25);
 }
-/* active (in_progress) chip glows green and pulses; idle (review) is amber-static */
-.card[data-status="in_progress"] .chip {
-  color: var(--active);
-  border-color: color-mix(in srgb, var(--active) 40%, transparent);
-  background: color-mix(in srgb, var(--active) 9%, transparent);
-}
-.card[data-status="in_progress"] .chip::before {
-  animation: pulse 1.6s var(--ease) infinite;
-}
-.card[data-status="review"] .chip {
+.chip.idle {
   color: var(--review);
-  border-color: color-mix(in srgb, var(--review) 40%, transparent);
-  background: color-mix(in srgb, var(--review) 9%, transparent);
+  background: rgba(250, 179, 135, 0.12);
+  border: 1px solid rgba(250, 179, 135, 0.25);
 }
 
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--active) 70%, transparent); opacity: 1; }
-  50%      { box-shadow: 0 0 0 4px transparent; opacity: 0.55; }
-}
-
-.card-actions {
+/* actions reveal on hover */
+.actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
+  margin-top: 9px;
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition: opacity 0.12s ease;
+}
+.card:hover .actions,
+.card:focus-within .actions {
+  opacity: 1;
+  /* not animated (only opacity transitions) — generous so wrapped rows of
+     buttons in a narrow column are never clipped by overflow:hidden */
+  max-height: 200px;
 }
 .act {
-  font-family: var(--mono);
-  font-size: var(--t-xs);
-  font-weight: 500;
-  letter-spacing: 0.01em;
+  font-size: 11px;
+  padding: 3px 8px;
   color: var(--dim);
   background: transparent;
   border: 1px solid var(--hair-2);
-  border-radius: 6px;
-  padding: 4px 10px;
+  border-radius: 5px;
   cursor: pointer;
-  transition: color 130ms var(--ease), border-color 130ms var(--ease),
-              background 130ms var(--ease), transform 90ms var(--ease);
+  font-family: var(--font);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
 }
 .act:hover {
   color: var(--text);
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: var(--surface);
 }
-.act:active { transform: translateY(1px); }
 .act:focus-visible {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.18);
 }
-.act.danger { color: var(--muted); }
+.act.primary {
+  color: var(--accent);
+  border-color: rgba(137, 180, 250, 0.3);
+}
 .act.danger:hover {
   color: var(--danger);
-  border-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border-color: rgba(243, 139, 168, 0.4);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .card[data-status="in_progress"] .chip::before { animation: none; }
+  .card,
+  .actions,
+  .act {
+    transition: none;
+  }
+  .card:hover {
+    transform: none;
+  }
 }

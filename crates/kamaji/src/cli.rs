@@ -1,3 +1,7 @@
+//! Command-line parsing for the `kamaji` binary: turns argv into a [`Command`]
+//! (launch the TUI, print help/version, or create a ticket headlessly) and
+//! provides the usage text.
+
 use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;

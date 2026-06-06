@@ -1,2 +1,7 @@
 /target
 /.superpowers
+
+# Scratch / one-off scripts at the repo root (e.g. ad-hoc Playwright screenshot
+# runners). Lasting browser scripts live in crates/kamajid/smoke/, not here.
+/*.mjs
+/scratch/

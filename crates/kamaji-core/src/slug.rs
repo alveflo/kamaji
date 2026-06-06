@@ -1,3 +1,7 @@
+//! Slugification and the zellij session-name scheme. Turns ticket titles into
+//! filesystem/zellij-safe slugs and derives the deterministic, collision-free
+//! session names kamaji uses for per-project and per-ticket sessions.
+
 /// Lowercase ASCII slug: alphanumerics kept, runs of anything else become a
 /// single '-', trimmed and capped at 40 chars.
 pub fn slugify(input: &str) -> String {

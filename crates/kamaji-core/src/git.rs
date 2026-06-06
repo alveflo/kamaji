@@ -1,3 +1,6 @@
+//! Thin wrappers over the `git` CLI: repo detection, default-branch resolution,
+//! and worktree management used when kamaji isolates a ticket's work.
+
 use anyhow::{bail, Result};
 use std::path::Path;
 use std::process::Command;

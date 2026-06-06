@@ -3,8 +3,55 @@
 This file applies to **all** AI coding agents working in this repository
 (Claude Code, Codex, and any other). `CLAUDE.md` is a symlink to this file.
 
-kamaji is a Rust + ratatui TUI that orchestrates AI agents as zellij sessions on
-a per-project Kanban board. See `docs/superpowers/specs/` for the design.
+kamaji orchestrates AI agents as zellij sessions on a per-project Kanban board,
+reachable from both a web browser and a ratatui TUI over one shared backend.
+
+**To understand the system as it is today, read
+[`ARCHITECTURE.md`](ARCHITECTURE.md)** — crate responsibilities, ports, the
+command/event flow, daemon lifecycle, and how zellij web + the proxy fit. The
+`docs/superpowers/` tree is *historical design history* (see below), not a
+description of the current system.
+
+---
+
+## Codebase map
+
+A three-crate Cargo workspace (full detail in [`ARCHITECTURE.md`](ARCHITECTURE.md)):
+
+| Crate | What it is |
+|-------|------------|
+| `crates/kamaji-core` | Pure domain logic library — SQLite DB, git worktrees, zellij orchestration, agent templates, auto-review detection. No UI, no transport. |
+| `crates/kamajid` | The **daemon**: axum HTTP server wrapping `kamaji-core`, SSE event broadcaster, `maud` browser board, managed `zellij web` + reverse proxy. Owns the single DB writer. |
+| `crates/kamaji` | The binary the user runs: thin launcher + ratatui TUI client. Auto-spawns the daemon, talks to it over HTTP, renders board state from the event stream. |
+
+**Ports** (all `127.0.0.1`): **8755** board HTTP API + HTML + SSE · **8756**
+reverse proxy for zellij web (board port + 1) · **8082** `zellij web` (the
+browser terminal subprocess).
+
+**Commands down, events up:** clients POST commands over HTTP; the daemon
+mutates state and broadcasts deltas over SSE (`/events` JSON for the TUI,
+`/ui/events` Datastar for the browser).
+
+**Make targets** (daemon control — see the `Makefile`):
+
+| Target | Use |
+|--------|-----|
+| `make restart` | Rebuild + relaunch the daemon — **run this after pulling new code** so the running process picks up changes. |
+| `make start` / `make stop` | Start / stop the daemon (board :8755, proxy :8756). |
+| `make status` / `make logs` | Is it up (`GET /healthz`)? / follow `/tmp/kamajid.log`. |
+
+The `kamaji` TUI auto-spawns the daemon, so it doesn't need `make start` first;
+`make start`/`restart` are for the daemon that serves the **browser** board.
+
+### `docs/superpowers/` is historical design history
+
+`docs/superpowers/specs/` and `docs/superpowers/plans/` are a dated,
+append-only record of brainstorms, specs, and implementation plans — *partially
+superseded* as the system evolved (notably the 2026-05-27 browser-first pivot).
+They explain **why** kamaji is shaped the way it is, but they are **not** a
+description of the current system. For current architecture read
+[`ARCHITECTURE.md`](ARCHITECTURE.md); reach for `docs/superpowers/` only for
+historical context or when working a plan that explicitly references one.
 
 ---
 

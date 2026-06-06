@@ -40,16 +40,59 @@ pub(crate) fn drain_records(buf: &mut String) -> Vec<Event> {
     out
 }
 
+/// Decode the maximal complete UTF-8 prefix of `bytes`, appending it to `out`
+/// and removing the consumed bytes. An incomplete multi-byte sequence at the end
+/// (a character split across reads) is left in `bytes` to be finished by the next
+/// read instead of being mangled into U+FFFD. Genuinely invalid bytes are
+/// replaced with U+FFFD and skipped so the stream can't stall.
+pub(crate) fn decode_utf8_prefix(bytes: &mut Vec<u8>, out: &mut String) {
+    loop {
+        match std::str::from_utf8(bytes) {
+            Ok(s) => {
+                out.push_str(s);
+                bytes.clear();
+                return;
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if valid > 0 {
+                    // The prefix up to `valid` is guaranteed valid UTF-8.
+                    out.push_str(std::str::from_utf8(&bytes[..valid]).expect("valid prefix"));
+                }
+                match e.error_len() {
+                    // End reached mid-sequence: keep the partial bytes for next read.
+                    None => {
+                        bytes.drain(..valid);
+                        return;
+                    }
+                    // Invalid bytes in the middle: emit U+FFFD, skip them, continue.
+                    Some(bad) => {
+                        out.push('\u{FFFD}');
+                        bytes.drain(..valid + bad);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Spawn the SSE listener thread. It connects to `<base>/events`, emits
 /// `Connected` (→ UI re-fetch), streams `Event`s, and on stream end/error emits
 /// `Disconnected` and retries with capped backoff (250ms → 2s). Ends when the
 /// receiver is dropped (send fails).
 pub fn spawn(base: String, tx: Sender<SseMsg>) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let http = reqwest::blocking::Client::builder()
+        let http = match reqwest::blocking::Client::builder()
             .timeout(None) // a streaming response must not time out mid-stream
             .build()
-            .expect("build sse client");
+        {
+            Ok(http) => http,
+            Err(_) => {
+                // Don't panic the listener silently — tell the UI we're down.
+                let _ = tx.send(SseMsg::Disconnected);
+                return;
+            }
+        };
         let mut backoff = Duration::from_millis(250);
         loop {
             match http.get(format!("{base}/events")).send() {
@@ -58,13 +101,17 @@ pub fn spawn(base: String, tx: Sender<SseMsg>) -> JoinHandle<()> {
                     if tx.send(SseMsg::Connected).is_err() {
                         return;
                     }
+                    // Raw bytes accumulate here; `buf` only ever receives complete
+                    // UTF-8, so a multi-byte char split across reads stays intact.
+                    let mut bytes: Vec<u8> = Vec::new();
                     let mut buf = String::new();
                     let mut chunk = [0u8; 4096];
                     loop {
                         match resp.read(&mut chunk) {
                             Ok(0) => break, // stream ended
                             Ok(n) => {
-                                buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                                bytes.extend_from_slice(&chunk[..n]);
+                                decode_utf8_prefix(&mut bytes, &mut buf);
                                 for ev in drain_records(&mut buf) {
                                     if tx.send(SseMsg::Event(Box::new(ev))).is_err() {
                                         return;
@@ -112,6 +159,43 @@ mod tests {
         // axum keep-alive sends `:` comment lines; they carry no event:/data:.
         let mut buf = String::from(": keep-alive\n\n");
         assert!(drain_records(&mut buf).is_empty());
+    }
+
+    #[test]
+    fn decode_handles_multibyte_char_split_across_reads() {
+        // "日" is the 3-byte sequence E6 97 A5. Simulate it arriving split across
+        // two reads: first the leading two bytes, then the trailing byte.
+        let full = "café 日本".as_bytes().to_vec();
+        let split = full.len() - 2; // split mid-way through the last char's bytes
+        let mut bytes = Vec::new();
+        let mut out = String::new();
+
+        bytes.extend_from_slice(&full[..split]);
+        decode_utf8_prefix(&mut bytes, &mut out);
+        // The dangling incomplete sequence must be buffered, not turned into U+FFFD.
+        assert!(
+            !out.contains('\u{FFFD}'),
+            "partial sequence corrupted: {out:?}"
+        );
+
+        bytes.extend_from_slice(&full[split..]);
+        decode_utf8_prefix(&mut bytes, &mut out);
+        assert_eq!(out, "café 日本");
+        assert!(
+            bytes.is_empty(),
+            "fully decoded input should leave no bytes"
+        );
+    }
+
+    #[test]
+    fn decode_replaces_genuinely_invalid_bytes() {
+        // A stray 0xFF is not part of any valid sequence; it must become U+FFFD
+        // without stalling the rest of the stream.
+        let mut bytes = vec![b'a', 0xFF, b'b'];
+        let mut out = String::new();
+        decode_utf8_prefix(&mut bytes, &mut out);
+        assert_eq!(out, "a\u{FFFD}b");
+        assert!(bytes.is_empty());
     }
 
     /// Boot a real kamajid on 127.0.0.1:0, returning its base URL. The tokio

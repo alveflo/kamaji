@@ -424,7 +424,73 @@ async fn new_ticket_fragment_mounts_and_self_closes() {
         "morphs the #modal mount:\n{body}"
     );
     assert!(
-        body.contains("if(r.ok){document.getElementById('modal').replaceChildren()}"),
+        body.contains("document.getElementById('modal').replaceChildren()"),
         "submit closes the modal on a 2xx:\n{body}"
+    );
+    assert!(
+        body.contains("f.elements['start_now'].checked"),
+        "create-submit branches on the background-start checkbox:\n{body}"
+    );
+}
+
+/// `GET /ui/projects/new` serves the create-project modal fragment: rooted at
+/// `#modal` (so `@get` morphs the mount), composing the shared chrome, and
+/// submitting via `POST /projects`. On success it navigates to the new project
+/// so the rail shows its tile (projects broadcast no SSE event).
+#[tokio::test]
+async fn new_project_modal_renders_form() {
+    let (base, _state) = spawn().await;
+    let body = reqwest::get(format!("{base}/ui/projects/new"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "morphs the #modal mount:\n{body}"
+    );
+    assert!(
+        body.contains("fetch('/projects',{method:'POST'"),
+        "create action posts to /projects:\n{body}"
+    );
+    assert!(body.contains(r#"name="name""#), "name field:\n{body}");
+    assert!(
+        body.contains(r#"name="root_dir" class="mono""#),
+        "root dir is a mono path input:\n{body}"
+    );
+    assert!(
+        body.contains(r#"class="seg""#),
+        "agent is a segmented control:\n{body}"
+    );
+    assert!(
+        body.contains("window.location='/?project='+p.id"),
+        "navigates to the new project on success:\n{body}"
+    );
+}
+
+/// End-to-end: the fragment's `POST /projects` body deserializes and creates a
+/// project, and its returned `id` is what the fragment navigates to — so the
+/// rail (which renders from the project list) shows the new tile after the nav.
+#[tokio::test]
+async fn create_project_via_fragments_endpoint_succeeds() {
+    let (base, state) = spawn().await;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/projects"))
+        .json(&serde_json::json!({
+            "name": "Acme",
+            "root_dir": "/tmp/acme",
+            "default_agent": "codex",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let created: serde_json::Value = resp.json().await.unwrap();
+    let id = created["id"].as_i64().unwrap();
+    let names = state.with_db(|db| db.list_projects()).await.unwrap();
+    assert!(
+        names.iter().any(|p| p.id == id && p.name == "Acme"),
+        "created project is listed (rail renders from this list): {names:?}"
     );
 }

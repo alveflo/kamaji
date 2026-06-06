@@ -26,6 +26,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ui/events", get(routes::ui_events::events))
         .route("/ui/tickets/new", get(routes::ui::new_ticket))
         .route("/ui/tickets/cancel", get(routes::ui::cancel_ticket))
+        .route("/ui/projects/new", get(routes::ui::new_project))
         .route("/ui/tickets/:id/edit", get(routes::ui::edit_ticket))
         .route("/ui/tickets/:id/terminal", get(routes::ui::terminal))
         .route(

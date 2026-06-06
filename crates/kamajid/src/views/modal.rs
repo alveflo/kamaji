@@ -43,6 +43,9 @@ pub fn ticket_form(
             "Create ticket",
         ),
     };
+    // A started ticket (it has a session) locks the initial prompt — that text is
+    // only consumed at session creation — and flags the session as running.
+    let session_running = editing.map(|t| t.session_name.is_some()).unwrap_or(false);
     // Build the JSON body from the form's named controls and POST/PATCH it via an
     // explicit `fetch()` — a Datastar `@post`'s second argument is request
     // *options*, not a body, so signal/typing pitfalls are avoided entirely. Read
@@ -53,14 +56,17 @@ pub fn ticket_form(
     // Single-quoted JS only, so the expression is safe inside the double-quoted,
     // unescaped (PreEscaped) attribute value.
     let fields = "title:f.elements['title'].value,description:f.elements['description'].value,initial_prompt:f.elements['initial_prompt'].value,agent:f.elements['agent'].value";
-    let close_on_ok = format!("then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}}})");
     let submit_action = match editing {
+        // Edit: PATCH, then clear the mount on a 2xx (a 4xx leaves the inline error visible).
         Some(t) => format!(
-            "evt.preventDefault();const f=evt.target;fetch('/tickets/{id}',{{method:'PATCH',headers:{{'content-type':'application/json'}},body:JSON.stringify({{{fields}}})}}).{close_on_ok}",
+            "evt.preventDefault();const f=evt.target;fetch('/tickets/{id}',{{method:'PATCH',headers:{{'content-type':'application/json'}},body:JSON.stringify({{{fields}}})}}).then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}}})",
             id = t.id,
         ),
+        // Create: POST, then (if the background box is ticked) read the 201 body and
+        // start the new ticket's session before clearing the mount. The start fetch
+        // is fire-and-forget — the board update arrives over /ui/events.
         None => format!(
-            "evt.preventDefault();const f=evt.target;fetch('/tickets',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{project_id:{project_id},{fields}}})}}).{close_on_ok}",
+            "evt.preventDefault();const f=evt.target;fetch('/tickets',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{project_id:{project_id},{fields}}})}}).then(r=>{{if(r.ok){{if(f.elements['start_now'].checked){{r.json().then(t=>fetch('/tickets/'+t.id+'/start',{{method:'POST'}})).catch(e=>console.error('background start failed',e))}}{CLEAR_MODAL_JS}}}}})",
         ),
     };
     // Nice-to-have: Escape dismisses the modal. The window keydown handler is on
@@ -75,6 +81,9 @@ pub fn ticket_form(
                         span class="modal-title" { (heading) }
                         @if let Some(t) = editing {
                             span class="modal-idpill" { "#" (t.id) }
+                            @if session_running {
+                                span class="modal-livedot" title="session running" {}
+                            }
                         }
                         button type="button" class="modal-close"
                                data-on:click=(PreEscaped(CLEAR_MODAL_JS)) { "✕" }
@@ -89,17 +98,42 @@ pub fn ticket_form(
                             textarea id="f-desc" name="description" rows="3" { (desc) }
                         }
                         div class="field" {
-                            label for="f-prompt" { "Initial prompt" }
-                            textarea id="f-prompt" name="initial_prompt" rows="3" { (prompt) }
+                            label for="f-prompt" {
+                                "Initial prompt"
+                                @if session_running { span class="lock-tag" { "🔒 locked" } }
+                            }
+                            textarea id="f-prompt" name="initial_prompt" rows="3" readonly[session_running] { (prompt) }
                             div class="hint" {
-                                "The first message handed to the agent when it starts."
+                                @if session_running {
+                                    "Only used when the session is first created — read-only once the agent has started."
+                                } @else {
+                                    "The first message handed to the agent when it starts."
+                                }
                             }
                         }
                         div class="field" {
-                            label for="f-agent" { "Agent" }
-                            select id="f-agent" name="agent" {
+                            label { "Agent" }
+                            // The agent value spliced into the click JS is `Agent::as_str()` —
+                            // a closed match of static ASCII identifiers (claude/codex/copilot),
+                            // so it needs no escaping inside the single-quoted JS literal.
+                            div class="seg" role="group" aria-label="Agent" {
                                 @for a in Agent::all() {
-                                    option value=(a.as_str()) selected[a == agent] { (a.label()) }
+                                    button type="button"
+                                           class=[(a == agent).then_some("on")]
+                                           data-on:click=(PreEscaped(format!(
+                                               "this.form.elements['agent'].value='{val}';this.closest('.seg').querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')",
+                                               val = a.as_str()
+                                           ))) { (a.label()) }
+                                }
+                            }
+                            input type="hidden" name="agent" value=(agent.as_str());
+                        }
+                        @if editing.is_none() {
+                            label class="check" {
+                                input type="checkbox" name="start_now" id="f-start";
+                                span class="check-text" {
+                                    b { "Start the agent now, in the background" }
+                                    "Spawns the session immediately and sends the initial prompt. Leave off to create it in Todo and start later."
                                 }
                             }
                         }
@@ -108,6 +142,14 @@ pub fn ticket_form(
                         }
                     }
                     div class="modal-foot" {
+                        @if let Some(t) = editing {
+                            button type="button" class="btn btn-danger"
+                                   data-on:click=(PreEscaped(format!(
+                                       "confirm('Delete #{id}? This cannot be undone.')&&fetch('/tickets/{id}',{{method:'DELETE'}}).then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}}})",
+                                       id = t.id
+                                   ))) { "Delete" }
+                            span class="foot-spacer" {}
+                        }
                         button type="button" class="btn"
                                data-on:click=(PreEscaped(CLEAR_MODAL_JS)) { "Cancel" }
                         button type="submit" class="btn btn-primary" { (submit_label) }
@@ -156,8 +198,8 @@ mod tests {
             "create posts via fetch:\n{html}"
         );
         assert!(
-            html.contains(r#"value="claude" selected"#),
-            "default agent preselected:\n{html}"
+            html.contains(r#"<input type="hidden" name="agent" value="claude">"#),
+            "default agent is the hidden input value:\n{html}"
         );
         assert!(
             html.contains("project_id:7"),
@@ -187,8 +229,8 @@ mod tests {
         );
         assert!(html.contains("Add login"), "title prefilled:\n{html}");
         assert!(
-            html.contains(r#"value="codex" selected"#),
-            "agent prefilled:\n{html}"
+            html.contains(r#"<input type="hidden" name="agent" value="codex">"#),
+            "agent prefilled as the hidden input value:\n{html}"
         );
         assert!(
             html.contains(r#"class="modal-title">Edit ticket"#),
@@ -306,6 +348,151 @@ mod tests {
         assert!(
             html.contains("title must not be empty"),
             "error shown:\n{html}"
+        );
+    }
+
+    #[test]
+    fn new_ticket_has_unchecked_background_checkbox_that_starts_on_create() {
+        let html = ticket_form(1, None, Agent::Claude, None).into_string();
+        assert!(
+            html.contains(r#"class="check""#),
+            "renders the checkbox row:\n{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="checkbox" name="start_now""#),
+            "named start_now checkbox:\n{html}"
+        );
+        assert!(
+            !html.contains(r#"name="start_now" checked"#)
+                && !html.contains(r#"name="start_now" id="f-start" checked"#),
+            "checkbox defaults unchecked:\n{html}"
+        );
+        // When ticked, the create-submit reads the 201 body and starts the session.
+        assert!(
+            html.contains("f.elements['start_now'].checked"),
+            "create-submit branches on the checkbox:\n{html}"
+        );
+        assert!(
+            html.contains("r.json().then(t=>fetch('/tickets/'+t.id+'/start',{method:'POST'}))"),
+            "ticking starts the new ticket's session:\n{html}"
+        );
+    }
+
+    #[test]
+    fn edit_ticket_has_no_background_checkbox() {
+        let t = ticket();
+        let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
+        assert!(
+            !html.contains(r#"class="check""#),
+            "edit mode has no checkbox:\n{html}"
+        );
+        assert!(
+            !html.contains("start_now"),
+            "edit mode never starts on save:\n{html}"
+        );
+    }
+
+    fn started_ticket() -> Ticket {
+        let mut t = ticket();
+        t.session_name = Some("kamaji-9".into());
+        t
+    }
+
+    #[test]
+    fn edit_started_ticket_locks_prompt_and_shows_livedot() {
+        let t = started_ticket();
+        let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
+        assert!(
+            html.contains(r#"name="initial_prompt" rows="3" readonly"#),
+            "started ticket: prompt is read-only:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="lock-tag""#),
+            "shows the locked tag:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="modal-livedot""#),
+            "header live-dot:\n{html}"
+        );
+        assert!(
+            html.contains("read-only once the agent has started"),
+            "explains why the prompt is locked:\n{html}"
+        );
+    }
+
+    #[test]
+    fn edit_unstarted_ticket_keeps_prompt_editable() {
+        let t = ticket(); // session_name: None
+        let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
+        assert!(
+            !html.contains("readonly"),
+            "unstarted ticket: prompt stays editable:\n{html}"
+        );
+        assert!(!html.contains("lock-tag"), "no locked tag:\n{html}");
+        assert!(!html.contains("modal-livedot"), "no live-dot:\n{html}");
+    }
+
+    #[test]
+    fn edit_footer_has_left_pinned_delete() {
+        let t = ticket();
+        let html = ticket_form(1, Some(&t), Agent::Claude, None).into_string();
+        assert!(
+            html.contains(r#"class="btn btn-danger""#) && html.contains("Delete"),
+            "edit footer has a danger Delete:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="foot-spacer""#),
+            "Delete is pinned left:\n{html}"
+        );
+        assert!(
+            html.contains("confirm(") && html.contains("fetch('/tickets/9',{method:'DELETE'})"),
+            "Delete is confirm-guarded and hits the JSON API:\n{html}"
+        );
+    }
+
+    #[test]
+    fn create_footer_has_no_delete() {
+        let html = ticket_form(1, None, Agent::Claude, None).into_string();
+        assert!(
+            !html.contains("btn-danger"),
+            "create has no Delete:\n{html}"
+        );
+        assert!(
+            !html.contains("foot-spacer"),
+            "create footer is right-aligned only:\n{html}"
+        );
+    }
+
+    #[test]
+    fn agent_picker_is_segmented_control_not_select() {
+        let html = ticket_form(1, None, Agent::Claude, None).into_string();
+        assert!(
+            html.contains(r#"class="seg""#),
+            "renders a segmented control:\n{html}"
+        );
+        // The default agent's button is highlighted.
+        assert!(
+            html.contains(r#"class="on" data-on:click"#),
+            "default agent button carries `on`:\n{html}"
+        );
+        // The value is still a form-named control the submit JS can read.
+        assert!(
+            html.contains(r#"<input type="hidden" name="agent" value="claude">"#),
+            "hidden agent input carries the selected value:\n{html}"
+        );
+        // The seg buttons set the hidden input + move the highlight, client-side.
+        assert!(
+            html.contains("this.form.elements['agent'].value='codex'"),
+            "a seg button writes its value into the hidden input:\n{html}"
+        );
+        assert!(
+            !html.contains("<select"),
+            "the old dropdown is gone:\n{html}"
+        );
+        assert_eq!(
+            html.matches(r#"class="on""#).count(),
+            1,
+            "exactly one seg button is highlighted:\n{html}"
         );
     }
 }

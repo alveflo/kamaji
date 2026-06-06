@@ -1,3 +1,7 @@
+//! Core domain types shared across kamaji: the `Agent`, `Project`, `Ticket`,
+//! and `Status` records (and their string/serde conversions) that flow between
+//! the database, the daemon API, and the TUI.
+
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -73,7 +77,7 @@ impl Status {
             Status::Done => "Done",
         }
     }
-    pub fn all() -> [Status; 4] {
+    pub const fn all() -> [Status; 4] {
         [
             Status::Todo,
             Status::InProgress,

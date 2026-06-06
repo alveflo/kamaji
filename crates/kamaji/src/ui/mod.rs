@@ -1,3 +1,7 @@
+//! Rendering for the TUI. Given the read-only [`App`] state, draws the board
+//! and overlays the active modal; the `board` and `modals` submodules hold the
+//! actual widget layout. Pure rendering — it never mutates state.
+
 mod board;
 mod modals;
 

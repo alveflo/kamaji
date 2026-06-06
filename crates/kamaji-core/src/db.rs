@@ -1,3 +1,7 @@
+//! SQLite persistence for projects and tickets: the schema, lightweight
+//! additive migrations (`PRAGMA table_info` column-adds), and the CRUD/query
+//! helpers the daemon uses as its single source of truth.
+
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::path::{Path, PathBuf};
