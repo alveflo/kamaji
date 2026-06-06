@@ -51,6 +51,22 @@ projects it was handed, and — because git worktrees share the repo's object
 store — could corrupt that one repository. That residual risk is inherent to
 "let the agent work on my code" and is the accepted scope of the sandbox.
 
+## Modes: native (default) vs container (opt-in)
+
+Container mode is **additive and opt-in** — it does not replace how kamaji runs
+today. The choice is global (the whole app), made with two commands:
+
+- **Native (default).** Run `kamaji` / `make start` as now: the daemon and all
+  agents run on the host. This is the zero-config default and is unchanged. The
+  container-aware client step (see "How existing kamaji adapts") is a no-op
+  whenever no container is recorded, so the native path behaves exactly as before.
+- **Container (opt-in).** `kamaji up` runs the whole app — daemon, zellij, every
+  agent — inside the sandbox container; `kamaji down` returns you to native.
+
+`kamaji status` reports the active mode and board URL so the choice is always
+visible. Per-project mode selection (some projects native, some containerized)
+is explicitly out of scope (see below).
+
 ## Decisions
 
 These were proposed during brainstorming and approved.
@@ -118,8 +134,11 @@ What `kamaji up` encodes (and what the Quadlet/Compose escape hatches document).
 default. A process bound to loopback *inside* a container is unreachable from the
 host even with port publishing, so:
 
-- The daemon binds `0.0.0.0:8755`. `derive_proxy_addr()` (in `kamajid/main.rs`)
-  then derives the proxy bind `0.0.0.0:8756` and — already implemented —
+- The daemon binds `0.0.0.0:8755` **via the image's CMD** (`kamajid serve --bind
+  0.0.0.0:8755`), which overrides config — so the user's `daemon.bind` stays
+  untouched and native runs keep binding loopback. `derive_proxy_addr()` (in
+  `kamajid/main.rs`) then derives the proxy bind `0.0.0.0:8756` and — already
+  implemented —
   rewrites the iframe's *public* host back to `127.0.0.1`, which is correct when
   the browser runs on the same host as the container.
 - Publish **`127.0.0.1:8755:8755`** and **`127.0.0.1:8756:8756`** — bound to the
@@ -153,16 +172,17 @@ config (below).
 - Project roots are bind-mounted per Decision 5.
 - Credentials are mounted per Decision 3.
 
-**Generated config.** `kamaji up` writes a container-flavored `config.toml` into
-the shared config dir, merged from the user's existing settings with these
-overrides: `daemon.bind = "0.0.0.0:8755"` and a concrete `worktree_base`. All
-other settings (agents, theme, auto-review) carry through unchanged.
+**Generated config.** Because the container binds the wildcard host via its CMD,
+`kamaji up` does **not** modify `daemon.bind` — doing so would leak `0.0.0.0`
+into a later native run. It only ensures a concrete `worktree_base` is set in the
+shared `config.toml` (the headless daemon can't prompt for one); all other
+settings (bind, agents, theme, auto-review) carry through unchanged.
 
 **Identity & limits.** The container runs as root-in-container (Decision 2) under
 rootless-Podman userns mapping (Decision 1), with the default resource limits of
 Decision 4.
 
-### Deliverable C — the launcher (`kamaji up` / `kamaji down` / `kamaji logs`)
+### Deliverable C — the launcher (`kamaji up` / `kamaji down` / `kamaji logs` / `kamaji status`)
 
 New subcommands on the existing `kamaji` binary. This mirrors what `kamaji`
 already does — it auto-spawns a *local* `kamajid` today; here it spawns a
@@ -187,7 +207,9 @@ already does — it auto-spawns a *local* `kamajid` today; here it spawns a
 
 `kamaji down` stops and removes the container; the named/bind volumes persist, so
 no board state or resumable sessions are lost. `kamaji logs` tails the
-container's logs (for surfacing agent/zellij/daemon errors).
+container's logs (for surfacing agent/zellij/daemon errors). `kamaji status`
+prints the active mode (native vs container) and board URL, so which mode is
+running is always visible.
 
 ## How existing kamaji adapts
 
@@ -238,8 +260,11 @@ container's logs (for surfacing agent/zellij/daemon errors).
 ## Distribution & install UX
 
 - `curl install.sh | sh` installs the host `kamaji` binary, unchanged.
+- **Native stays the default:** `kamaji` / `make start` run on the host as today,
+  with no container involved.
 - `kamaji up` pulls the image and starts the container; open `localhost:8755`.
-- `kamaji down` stops it; `kamaji logs` tails logs.
+- `kamaji down` stops it; `kamaji logs` tails logs; `kamaji status` shows the
+  active mode.
 - Ship a **Podman Quadlet unit** (`kamaji.container`, for
   `systemctl --user start kamaji`) and a **Compose file** for users who prefer to
   manage the container directly. The launcher is sugar over the same conventions.

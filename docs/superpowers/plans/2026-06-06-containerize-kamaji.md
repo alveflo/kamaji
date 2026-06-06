@@ -12,12 +12,13 @@
 
 ---
 
-## Refinements vs. the spec (read first)
+## Design notes & refinements (read first)
 
 The spec is correct in intent; two details are made precise here:
 
 1. **Worktree mounts.** The default `worktree_base` (`{root}/../kamaji-worktrees`) is a *sibling* of the project root, not a child. So mounting only each project root would leave worktrees off-mount (invisible to the host, and with absolute-path links that don't resolve there). The launcher therefore mounts **both** the project root **and** the resolved worktree-base directory, each at its identical path (Task 4).
 2. **`HOME` + identical paths.** For agent credentials and kamaji's XDG paths to resolve to the *same* locations inside the container as on the host, the container runs with `-e HOME=<host $HOME>` and every mount uses the identical host path. This makes `~/.config/kamaji`, `~/.local/share/kamaji`, `~/.claude`, and worktrees line up on both sides (Tasks 4, 6, 8).
+3. **Native stays the default; container is opt-in.** The choice is global (whole app): run `kamaji` / `make start` for native (zero-config, unchanged), or `kamaji up` to run everything in the container; `kamaji down` returns to native. The container-aware `ensure_daemon` step (Task 10) is a no-op without a marker, so native is untouched, and `kamaji status` (Tasks 7, 8, 9) makes the active mode visible. Container mode must **not** mutate the user's `daemon.bind` (Task 5) — the container binds `0.0.0.0` via its image CMD, so native keeps binding loopback.
 
 ## File structure
 
@@ -457,7 +458,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 5: `render_container_config` (force bind 0.0.0.0, ensure worktree_base)
+### Task 5: `render_container_config` (ensure worktree_base; bind comes from the image CMD)
 
 **Files:**
 - Modify: `crates/kamaji/src/container/plan.rs`
@@ -470,9 +471,10 @@ Append to the `tests` module:
     use kamaji_core::config::Config;
 
     #[test]
-    fn container_config_forces_wildcard_bind() {
+    fn container_config_leaves_bind_untouched() {
+        // Native must keep binding loopback; the container overrides via its CMD.
         let cfg = render_container_config(&Config::default());
-        assert_eq!(cfg.daemon.bind, "0.0.0.0:8755");
+        assert_eq!(cfg.daemon.bind, "127.0.0.1:8755");
     }
 
     #[test]
@@ -493,7 +495,7 @@ Append to the `tests` module:
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test -p kamaji container::plan::tests::container_config_forces_wildcard_bind 2>&1 | tail -20`
+Run: `cargo test -p kamaji container::plan::tests::container_config_leaves_bind_untouched 2>&1 | tail -20`
 Expected: FAIL — `function render_container_config not found`.
 
 - [ ] **Step 3: Write the implementation**
@@ -509,12 +511,12 @@ use kamaji_core::config::Config;
 pub const DEFAULT_WORKTREE_BASE: &str = "{root}/../kamaji-worktrees";
 
 /// Produce the config the *containerized* daemon should load: the user's config
-/// with the board bound to the wildcard host (so the published port is
-/// reachable) and a worktree base guaranteed to be set (no TUI prompt exists in
-/// the container). All other settings carry through unchanged.
+/// with a `worktree_base` guaranteed to be set (the headless container has no TUI
+/// to prompt for one). `daemon.bind` is deliberately left untouched — the
+/// container binds the wildcard host via its image CMD, so native runs keep their
+/// own (loopback) bind. All other settings carry through unchanged.
 pub fn render_container_config(base: &Config) -> Config {
     let mut cfg = base.clone();
-    cfg.daemon.bind = "0.0.0.0:8755".to_string();
     if cfg.worktree_base.is_none() {
         cfg.worktree_base = Some(DEFAULT_WORKTREE_BASE.to_string());
     }
@@ -534,7 +536,7 @@ Expected: PASS.
 ```bash
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
 git add crates/kamaji/src/container/plan.rs
-git commit -m "feat(container): render container config (wildcard bind, worktree base)
+git commit -m "feat(container): ensure worktree_base in generated config (bind via image CMD)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -685,7 +687,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 7: `ContainerState` marker file
+### Task 7: `ContainerState` marker + mode/status helpers
 
 **Files:**
 - Create: `crates/kamaji/src/container/state.rs`
@@ -753,6 +755,41 @@ pub fn clear() {
     }
 }
 
+/// The active run mode, derived from the marker's presence.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Mode {
+    Native,
+    Container(ContainerState),
+}
+
+/// Native unless `kamaji up` recorded a container.
+pub fn active_mode() -> Mode {
+    match load() {
+        Some(s) => Mode::Container(s),
+        None => Mode::Native,
+    }
+}
+
+/// Human-readable status. `native_base` is the board URL native mode would use
+/// (from `daemon.bind`); `healthy(base)` probes a board's `/healthz`.
+pub fn status_report(mode: &Mode, native_base: &str, healthy: impl Fn(&str) -> bool) -> String {
+    match mode {
+        Mode::Native => {
+            let up = if healthy(native_base) { "running" } else { "not running" };
+            format!("mode: native\nboard: {native_base} ({up})")
+        }
+        Mode::Container(s) => {
+            let base = format!("http://{}", s.board_addr);
+            let up = if healthy(&base) { "up" } else { "down" };
+            format!(
+                "mode: container ({rt}, container {name})\nboard: {base} ({up})",
+                rt = s.runtime,
+                name = s.name
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -775,6 +812,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(ContainerState::load_from(&dir.path().join("nope.json")), None);
     }
+
+    #[test]
+    fn status_native_reports_native_and_health() {
+        let s = status_report(&Mode::Native, "http://127.0.0.1:8755", |_| false);
+        assert!(s.contains("mode: native"), "{s}");
+        assert!(s.contains("not running"), "{s}");
+    }
+
+    #[test]
+    fn status_container_reports_runtime_and_up() {
+        let st = ContainerState {
+            name: "kamaji".into(),
+            board_addr: "127.0.0.1:8755".into(),
+            runtime: "podman".into(),
+        };
+        let s = status_report(&Mode::Container(st), "http://127.0.0.1:8755", |_| true);
+        assert!(s.contains("mode: container"), "{s}");
+        assert!(s.contains("podman"), "{s}");
+        assert!(s.contains("(up)"), "{s}");
+    }
 }
 ```
 
@@ -795,14 +852,14 @@ pub mod state;
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cargo test -p kamaji container::state::tests 2>&1 | tail -20`
-Expected: PASS (2 tests).
+Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
 git add crates/kamaji/src/container/state.rs crates/kamaji/src/container/mod.rs
-git commit -m "feat(container): ContainerState marker file (save/load/clear)
+git commit -m "feat(container): ContainerState marker + mode/status helpers
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -918,7 +975,7 @@ pub fn up(args: &UpArgs) -> Result<()> {
         bail!("could not pull {image}; re-run with --build to build it locally");
     }
 
-    // 2. Generate the container config into the shared config dir.
+    // 2. Ensure worktree_base in the shared config (bind comes from the image CMD).
     let base = config::load_or_init()?;
     let cfg = render_container_config(&base);
     let cfg_path = config::config_path()?;
@@ -992,6 +1049,24 @@ pub fn logs() -> Result<()> {
     Ok(())
 }
 
+/// Print whether kamaji is running natively or in a container, and where.
+pub fn status() -> Result<()> {
+    let cfg = config::load_or_init()?;
+    let native_base = format!("http://{}", cfg.daemon.bind);
+    let mode = state::active_mode();
+    let report = state::status_report(&mode, &native_base, |base| {
+        reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(300))
+            .build()
+            .ok()
+            .and_then(|c| c.get(format!("{base}/healthz")).send().ok())
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+    });
+    println!("{report}");
+    Ok(())
+}
+
 fn run_ok(bin: &str, args: &[&str]) -> bool {
     Command::new(bin).args(args).output().map(|o| o.status.success()).unwrap_or(false)
 }
@@ -1029,7 +1104,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 9: CLI parsing + dispatch for `up`/`down`/`logs`
+### Task 9: CLI parsing + dispatch for `up`/`down`/`logs`/`status`
 
 **Files:**
 - Modify: `crates/kamaji/src/cli.rs`
@@ -1050,10 +1125,11 @@ Append to the `tests` module in `cli.rs`:
     }
 
     #[test]
-    fn parses_bare_up_down_logs() {
+    fn parses_bare_up_down_logs_status() {
         assert!(matches!(parse(["up"]).unwrap(), Command::Up(_)));
         assert_eq!(parse(["down"]).unwrap(), Command::Down);
         assert_eq!(parse(["logs"]).unwrap(), Command::Logs);
+        assert_eq!(parse(["status"]).unwrap(), Command::Status);
     }
 
     #[test]
@@ -1065,8 +1141,8 @@ Append to the `tests` module in `cli.rs`:
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cargo test -p kamaji cli::tests::parses_bare_up_down_logs 2>&1 | tail -20`
-Expected: FAIL — `no variant Up`/`Down`/`Logs` on `Command`.
+Run: `cargo test -p kamaji cli::tests::parses_bare_up_down_logs_status 2>&1 | tail -20`
+Expected: FAIL — `no variant Up`/`Down`/`Logs`/`Status` on `Command`.
 
 - [ ] **Step 3: Extend the `Command` enum and parser**
 
@@ -1082,6 +1158,7 @@ Add variants to `Command` (after `CreateTicket(CreateTicketArgs)`):
     Up(UpArgs),
     Down,
     Logs,
+    Status,
 ```
 
 > `UpArgs` derives `Default` and `Clone`; add `PartialEq, Eq` to its derive in `container/mod.rs` so `Command` keeps `PartialEq, Eq`. Update its derive line to:
@@ -1093,6 +1170,7 @@ In `parse()`, add these match arms to the top-level `match args.as_slice()` bloc
         [cmd, rest @ ..] if cmd == "up" => parse_up(rest),
         [cmd, ..] if cmd == "down" => Ok(Command::Down),
         [cmd, ..] if cmd == "logs" => Ok(Command::Logs),
+        [cmd, ..] if cmd == "status" => Ok(Command::Status),
 ```
 
 Add the `parse_up` helper alongside `parse_ticket_create`:
@@ -1135,14 +1213,16 @@ Usage:
   kamaji up [--build] [--runtime podman|docker] [--memory <m>] [--cpus <n>] [--pids-limit <n>]
   kamaji down
   kamaji logs
+  kamaji status
   kamaji ticket create --prompt <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
   kamaji ticket create <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
 
 Agents: claude, codex, copilot
 
   up                run the sandbox container (daemon + zellij + agents)
-  down              stop the sandbox container
+  down              stop the sandbox container (back to native)
   logs              follow the container's logs
+  status            show the active mode (native vs container) + board URL
   --background, -b  also start the ticket's agent in a detached zellij session
 ";
 ```
@@ -1155,6 +1235,7 @@ In `main.rs`, add arms to the `match cli::parse(...)` block (after the `CreateTi
         cli::Command::Up(args) => container::up(&args),
         cli::Command::Down => container::down(),
         cli::Command::Logs => container::logs(),
+        cli::Command::Status => container::status(),
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
@@ -1167,7 +1248,7 @@ Expected: PASS (existing + 3 new).
 ```bash
 cargo fmt --all && cargo clippy --all-targets -- -D warnings
 git add crates/kamaji/src/cli.rs crates/kamaji/src/main.rs crates/kamaji/src/container/mod.rs
-git commit -m "feat(cli): kamaji up/down/logs commands
+git commit -m "feat(cli): kamaji up/down/logs/status commands
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -1423,15 +1504,20 @@ Insert after the `## Install` section (after line ~89):
 ````markdown
 ## Container mode (sandboxed agents)
 
-Run the daemon, zellij, and every agent inside one container so an agent can
-have **root inside the box** without risking your host. Rootless **Podman** is
-recommended (container-root maps to your unprivileged user); Docker also works.
+There are two ways to run kamaji: **native** (the default — daemon and agents on
+your host, exactly as before) and **sandboxed**, where the daemon, zellij, and
+every agent run inside one container so an agent can have **root inside the box**
+without risking your host. Container mode is opt-in via `kamaji up`. Rootless
+**Podman** is recommended (container-root maps to your unprivileged user); Docker
+also works.
 
 ```sh
-kamaji up        # pull the image and start the sandbox; prints the board URL
+kamaji            # native (default): daemon + agents on the host, as always
+kamaji up         # opt in: run daemon + zellij + agents inside the sandbox
 # open http://127.0.0.1:8755
-kamaji down      # stop it (board + sessions persist)
-kamaji logs      # follow container logs
+kamaji status     # which mode am I in? + board URL
+kamaji down       # stop the sandbox (back to native; board + sessions persist)
+kamaji logs       # follow container logs
 ```
 
 `kamaji up` reads your registered projects and bind-mounts each project root
@@ -1453,14 +1539,17 @@ Insert a short subsection under "## Remote-future seams" (after line ~257):
 ```markdown
 ## Container mode
 
-A `kamaji up`/`down` launcher runs the whole daemon (board, proxy, managed
-`zellij web`, all agent sessions) inside one container — the sandbox boundary
-for "agents with root, host protected." It is a transport/packaging layer over
-the same daemon: the board binds `0.0.0.0` and publishes 8755/8756 (8082 stays
-internal); project roots and worktree dirs are bind-mounted at identical paths
-(so worktree links and XDG paths resolve on both sides); a state marker in the
-runtime dir tells the client to connect to the container instead of spawning a
-local daemon. See `docs/superpowers/specs/2026-06-06-containerize-kamaji-design.md`.
+Native (daemon + agents on the host) remains the default and is unchanged. As an
+opt-in alternative, a `kamaji up`/`down` launcher runs the whole daemon (board,
+proxy, managed `zellij web`, all agent sessions) inside one container — the
+sandbox boundary for "agents with root, host protected." It is a
+transport/packaging layer over the same daemon: the board binds `0.0.0.0` (via
+the image CMD, so the native config bind is untouched) and publishes 8755/8756
+(8082 stays internal); project roots and worktree dirs are bind-mounted at
+identical paths (so worktree links and XDG paths resolve on both sides); a state
+marker in the runtime dir tells the client to connect to the container instead of
+spawning a local daemon, and `kamaji status` shows which mode is active. See
+`docs/superpowers/specs/2026-06-06-containerize-kamaji-design.md`.
 ```
 
 - [ ] **Step 3: Verify the docs render (no broken fences)**
@@ -1552,6 +1641,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Persistence (data/config bind, zellij cache volume) → Tasks 6, 8. ✓
 - `kamaji up`/`down`/`logs` → Tasks 8, 9. ✓
 - Client adapts (connect to container, no local spawn) → Task 10. ✓
+- Modes: native default (unchanged) vs container (opt-in), choice visible via `kamaji status` → Tasks 5 (bind left untouched so native keeps loopback), 7/8/9 (status command), 10 (no-op without a marker), 12 (docs). ✓
 - TUI attach via `<runtime> exec` → documented (Task 12); not yet code. **Gap:** the exec-attach code path is described in the spec but only documented here, not implemented. Acceptable for v1 (browser-primary); filed as a follow-up note below.
 - Re-`up` to mount new project, macOS, remote limits → Task 12 docs. ✓
 - Error handling (runtime missing, port in use via health timeout, pull failure) → Task 8. ✓
