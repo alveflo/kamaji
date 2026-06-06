@@ -63,8 +63,32 @@ test('board is interactive end-to-end', async ({ page }) => {
     await expect(page.locator(`#col-review #card-${seeded.ids.in_progress}`)).toBeVisible();
   });
 
-  await test.step('+ Ticket opens the modal; Save creates the card and closes it', async () => {
+  await test.step('+ Ticket opens the modal as a centered overlay over a dimmed board', async () => {
     await page.locator('button.new-ticket').click();
+    const dialog = page.locator('#modal #ticket-dialog');
+    await expect(dialog).toBeVisible();
+    // Regression for #95: the dialog is morphed in (not showModal()), so it must
+    // be pinned as a fixed, centered overlay — not left in normal flow below the
+    // board where it computed position:absolute, top:1241px (off-screen).
+    const layout = await dialog.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      const back = getComputedStyle(document.getElementById('modal'), '::before');
+      return {
+        position: cs.position,
+        top: r.top,
+        bottom: r.bottom,
+        viewportH: window.innerHeight,
+        backdrop: back.content, // '""' once the ::before backdrop applies, 'none' otherwise
+      };
+    });
+    expect(layout.position).toBe('fixed');
+    expect(layout.top).toBeGreaterThanOrEqual(0);
+    expect(layout.bottom).toBeLessThanOrEqual(layout.viewportH);
+    expect(layout.backdrop).not.toBe('none'); // dimmed/blurred board behind the form
+  });
+
+  await test.step('+ Ticket: Save creates the card and closes the modal', async () => {
     await expect(page.locator('#modal #ticket-dialog')).toBeVisible();
     await page.locator('#f-title').fill('created via modal');
     await page.locator('#ticket-dialog button[type="submit"]').click();
