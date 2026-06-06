@@ -556,3 +556,58 @@ async fn create_project_via_fragments_endpoint_succeeds() {
         "created project is listed (rail renders from this list): {names:?}"
     );
 }
+
+/// Boot a daemon whose session driver reports a fixed `list-sessions` output,
+/// and seed one ticket whose session is in that list.
+async fn spawn_with_sessions(list: &str) -> (String, AppState) {
+    let mut state = AppState::new(Db::open_in_memory().unwrap(), Config::default());
+    state.set_session_driver(std::sync::Arc::new(
+        kamajid::session_driver::FakeSessionDriver::new(true).with_sessions(list),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), state)
+}
+
+#[tokio::test]
+async fn manage_sessions_modal_lists_classified_sessions() {
+    let list = "kamaji-1-fix-auth [Created 2h ago]\nkamaji-9-orphan [Created 1h ago]\n";
+    let (base, state) = spawn_with_sessions(list).await;
+    state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(
+                p.id,
+                "Fix auth",
+                "",
+                None,
+                kamaji_core::models::Agent::Claude,
+            )?;
+            db.set_ticket_session(t.id, "kamaji-1-fix-auth", "/wt", "kamaji-1-fix-auth")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let html = reqwest::get(format!("{base}/ui/sessions/manage"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.starts_with(r#"<div id="modal">"#), "{html}");
+    assert!(
+        html.contains(r#"value="kamaji-1-fix-auth""#),
+        "ticket session row:\n{html}"
+    );
+    assert!(html.contains("Fix auth"), "ticket title:\n{html}");
+    assert!(
+        html.contains(r#"value="kamaji-9-orphan""#),
+        "orphan row:\n{html}"
+    );
+    assert!(html.contains("orphan"), "orphan label:\n{html}");
+}

@@ -76,6 +76,29 @@
 .new-ticket:hover { filter: brightness(1.07); }
 .new-ticket:active { transform: translateY(1px); }
 
+/* topbar secondary "Sessions" ghost button */
+.sessions-btn {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #9aa0aa);
+  background: transparent;
+  border: 1px solid var(--hair, #2a2a33);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sessions-btn:hover {
+  color: var(--text, #e6e6ea);
+  border-color: var(--border, #3a3a44);
+  background: var(--surface-2, #1c1c22);
+}
+.sessions-btn:active { transform: translateY(1px); }
+
 /* ----------------------------------------------------------------------------
    Board grid (prototype version — flex:1 inside .main)
    -------------------------------------------------------------------------- */

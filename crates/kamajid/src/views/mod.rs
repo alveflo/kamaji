@@ -7,5 +7,6 @@ pub mod confirm;
 pub mod modal;
 pub mod page;
 pub mod project_form;
+pub mod sessions;
 pub mod sidebar;
 pub mod terminal;
