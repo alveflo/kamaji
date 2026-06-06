@@ -116,12 +116,16 @@ pub fn ticket_form(
                             // The agent value spliced into the click JS is `Agent::as_str()` —
                             // a closed match of static ASCII identifiers (claude/codex/copilot),
                             // so it needs no escaping inside the single-quoted JS literal.
+                            // Reference the button as `el` (the element Datastar binds the
+                            // expression to), NOT `this`: Datastar invokes the compiled handler
+                            // as a plain call, so `this` is `window` and `this.form` would throw —
+                            // leaving the picker stuck on the default agent.
                             div class="seg" role="group" aria-label="Agent" {
                                 @for a in Agent::all() {
                                     button type="button"
                                            class=[(a == agent).then_some("on")]
                                            data-on:click=(PreEscaped(format!(
-                                               "this.form.elements['agent'].value='{val}';this.closest('.seg').querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')",
+                                               "el.form.elements['agent'].value='{val}';el.closest('.seg').querySelectorAll('button').forEach(b=>b.classList.remove('on'));el.classList.add('on')",
                                                val = a.as_str()
                                            ))) { (a.label()) }
                                 }
@@ -481,9 +485,15 @@ mod tests {
             "hidden agent input carries the selected value:\n{html}"
         );
         // The seg buttons set the hidden input + move the highlight, client-side.
+        // They must reference the button as Datastar's `el`, not `this` (which is
+        // `window` in a Datastar expression and would throw).
         assert!(
-            html.contains("this.form.elements['agent'].value='codex'"),
-            "a seg button writes its value into the hidden input:\n{html}"
+            html.contains("el.form.elements['agent'].value='codex'"),
+            "a seg button writes its value into the hidden input via `el`:\n{html}"
+        );
+        assert!(
+            !html.contains("this.form.elements"),
+            "seg buttons must not use `this` (it is `window` in a Datastar handler):\n{html}"
         );
         assert!(
             !html.contains("<select"),
