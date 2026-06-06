@@ -25,6 +25,19 @@ pub fn command() -> Command {
     c
 }
 
+/// Add `-c <config>` to a session-*creating* command so the new session opts
+/// into web sharing (zellij sessions default to `web_sharing "off"`, which makes
+/// `zellij web` refuse a browser attach with "Web clients are not allowed to
+/// attach to this session"). The config mirrors the user's so theme/keybindings
+/// survive; see [`crate::zellij_config::web_sharing_config_file`]. A no-op if the
+/// config can't be written — the session is still created, just not shareable.
+/// Only creation needs this; `list`/`dump`/`attach`/`terminate` must not carry it.
+fn with_web_sharing(cmd: &mut Command) {
+    if let Some(cfg) = crate::zellij_config::web_sharing_config_file() {
+        cmd.arg("-c").arg(cfg);
+    }
+}
+
 /// True if a session named `name` appears in `zellij list-sessions` output.
 /// Compares the first whitespace-delimited token of each line. Note that
 /// zellij keeps exited-but-resurrectable sessions in this list, so presence
@@ -61,7 +74,9 @@ pub fn list_sessions() -> Option<String> {
 /// user detaches. The layout file is a single-use throwaway: zellij reads it
 /// when the session starts, so we delete it once that's done (best-effort).
 pub fn create_session(name: &str, layout_path: &Path) -> Result<ExitStatus> {
-    let status = command()
+    let mut cmd = command();
+    with_web_sharing(&mut cmd);
+    let status = cmd
         .args(["--session", name, "-n"])
         .arg(layout_path)
         .status();
@@ -78,8 +93,10 @@ pub fn create_session(name: &str, layout_path: &Path) -> Result<ExitStatus> {
 /// Runs from `cwd` and uses `output()` so zellij's stdout/stderr are captured
 /// rather than painted onto the live TUI (same rationale as `dump_screen`).
 pub fn create_session_background(name: &str, layout_path: &Path, cwd: &Path) -> Result<()> {
-    let out = command()
-        .current_dir(cwd)
+    let mut cmd = command();
+    cmd.current_dir(cwd);
+    with_web_sharing(&mut cmd);
+    let out = cmd
         .arg("--layout")
         .arg(layout_path)
         .args(["attach", "--create-background", name])
