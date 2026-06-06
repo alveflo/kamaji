@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// True if a session named `name` appears in `zellij list-sessions` output.
 /// Compares the first whitespace-delimited token of each line. Note that
@@ -35,12 +36,15 @@ pub fn list_sessions() -> Option<String> {
 }
 
 /// Create AND attach a new session running the given layout. Returns when the
-/// user detaches.
+/// user detaches. The layout file is a single-use throwaway: zellij reads it
+/// when the session starts, so we delete it once that's done (best-effort).
 pub fn create_session(name: &str, layout_path: &Path) -> Result<ExitStatus> {
-    Ok(Command::new("zellij")
+    let status = Command::new("zellij")
         .args(["--session", name, "-n"])
         .arg(layout_path)
-        .status()?)
+        .status();
+    let _ = std::fs::remove_file(layout_path);
+    Ok(status?)
 }
 
 /// Create a DETACHED session running `layout_path`, without attaching the
@@ -57,7 +61,13 @@ pub fn create_session_background(name: &str, layout_path: &Path, cwd: &Path) -> 
         .arg("--layout")
         .arg(layout_path)
         .args(["attach", "--create-background", name])
-        .output()?;
+        .output();
+    // The layout file is a single-use throwaway: by the time `output()` returns
+    // zellij has read it into the session's initial tab, so it's safe to delete
+    // whether the spawn succeeded or not (best-effort). Without this, every
+    // session start/resume leaks one file into temp_dir()/kamaji-layouts.
+    let _ = std::fs::remove_file(layout_path);
+    let out = out?;
     if !out.status.success() {
         anyhow::bail!(
             "zellij --layout … attach --create-background failed: {}",
@@ -75,8 +85,15 @@ pub fn attach_session(name: &str) -> Result<ExitStatus> {
 /// Capture the focused pane of a (possibly background) session. Returns `None`
 /// if zellij isn't reachable or the dump fails, so callers treat it as "no
 /// information". `dump-screen` writes to a file, which we read then delete.
+/// The temp filename is made unique (pid + counter) so that the TUI and daemon
+/// polling the same session concurrently never read/delete each other's dump.
 pub fn dump_screen(session: &str) -> Option<String> {
-    let tmp = std::env::temp_dir().join(format!("kamaji-dump-{session}.txt"));
+    static DUMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = DUMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!(
+        "kamaji-dump-{session}-{}-{counter}.txt",
+        std::process::id()
+    ));
     // Use output() (not status()) so zellij's stdout/stderr are captured rather
     // than inherited — otherwise its noise would paint onto the live TUI.
     let output = Command::new("zellij")

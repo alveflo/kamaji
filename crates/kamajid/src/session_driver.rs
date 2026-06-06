@@ -107,8 +107,11 @@ impl SessionDriver for FakeSessionDriver {
     }
 
     fn create_background(&self, name: &str, layout_path: &Path, cwd: &Path) -> anyhow::Result<()> {
-        // Read the rendered layout so assertions can inspect the launched argv.
+        // Read the rendered layout so assertions can inspect the launched argv,
+        // then delete it — mirroring the real driver, which relies on zellij
+        // having consumed the single-use layout file by the time it returns.
         let layout = std::fs::read_to_string(layout_path)?;
+        let _ = std::fs::remove_file(layout_path);
         self.created
             .lock()
             .expect("created mutex poisoned")
@@ -143,6 +146,9 @@ mod tests {
         assert_eq!(created[0].name, "kamaji-1-x");
         assert!(created[0].layout.contains("codex"));
         assert_eq!(created[0].cwd, dir.path());
+        // The single-use layout file is deleted once consumed, so it never
+        // accumulates in temp_dir()/kamaji-layouts across session starts.
+        assert!(!layout.exists());
     }
 
     #[test]
