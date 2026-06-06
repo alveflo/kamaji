@@ -35,10 +35,34 @@ CREATE TABLE IF NOT EXISTS tickets (
 );
 ";
 
+/// A bare SQL identifier (table or column name): non-empty, ASCII letters,
+/// digits and underscores only, not starting with a digit. We interpolate such
+/// identifiers directly into SQL because SQLite cannot bind identifiers as
+/// parameters; this guard keeps that interpolation from ever becoming an
+/// injection vector if a future caller forgets the "trusted literal" rule.
+fn is_identifier_safe(s: &str) -> bool {
+    let mut bytes = s.bytes();
+    match bytes.next() {
+        Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}
+        _ => return false,
+    }
+    bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
 /// Add a column to `table` if it isn't already present. SQLite has no
 /// `ADD COLUMN IF NOT EXISTS`, so we check `PRAGMA table_info` first. This keeps
 /// databases created by older kamaji versions forward-compatible.
+///
+/// SECURITY: `table` and `col` are interpolated directly into SQL (SQLite cannot
+/// bind identifiers as parameters), and `decl` is appended verbatim. All three
+/// MUST be trusted, compile-time literals — never user input or anything derived
+/// from it. `table`/`col` are debug-asserted to be bare identifiers as a
+/// defence-in-depth backstop; `decl` (e.g. `"INTEGER NOT NULL DEFAULT 0"`) is a
+/// declaration fragment and cannot be identifier-checked, so it relies entirely
+/// on the trusted-literal contract.
 fn add_column_if_missing(conn: &Connection, table: &str, col: &str, decl: &str) -> Result<()> {
+    debug_assert!(is_identifier_safe(table), "untrusted table name: {table:?}");
+    debug_assert!(is_identifier_safe(col), "untrusted column name: {col:?}");
     let present = conn
         .prepare(&format!("PRAGMA table_info({table})"))?
         .query_map([], |r| r.get::<_, String>(1))?
@@ -50,20 +74,54 @@ fn add_column_if_missing(conn: &Connection, table: &str, col: &str, decl: &str) 
     Ok(())
 }
 
-/// Bring an existing database up to the current schema (idempotent).
+/// The ordered migration ladder. Each entry transforms the database from the
+/// state left by the previous entry to the next. An entry's 1-based position is
+/// the `PRAGMA user_version` recorded after it runs, so the ladder is the single
+/// source of truth for "what schema version is this database at".
+///
+/// Rules for adding a migration:
+/// - **Append only.** Never reorder, edit, or remove an existing entry — already
+///   migrated databases have advanced past it and will never run it again.
+/// - Each entry must be idempotent-safe against a database that already has the
+///   end-state schema (a fresh DB created from [`SCHEMA`] sits at `user_version`
+///   0 and must survive replaying the additive entries below as no-ops).
+/// - Additive column adds use [`add_column_if_missing`]. Non-additive changes
+///   (rename / backfill / drop) belong here too — that is the whole point of the
+///   ladder: a versioned hook to run them exactly once, in order.
+const MIGRATIONS: &[fn(&Connection) -> Result<()>] = &[
+    // v1: per-session detection flags. Additive; a no-op on databases (including
+    // every freshly created one) that already declare these columns.
+    |conn| {
+        add_column_if_missing(
+            conn,
+            "tickets",
+            "auto_reviewed",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(
+            conn,
+            "tickets",
+            "instrumented",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Ok(())
+    },
+];
+
+/// Bring an existing database up to the current schema by running every ladder
+/// entry whose version is newer than the database's recorded `user_version`,
+/// then stamping the new version. Idempotent: a second call is a no-op.
 fn migrate(conn: &Connection) -> Result<()> {
-    add_column_if_missing(
-        conn,
-        "tickets",
-        "auto_reviewed",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
-    add_column_if_missing(
-        conn,
-        "tickets",
-        "instrumented",
-        "INTEGER NOT NULL DEFAULT 0",
-    )?;
+    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    for (i, migration) in MIGRATIONS.iter().enumerate() {
+        let version = (i + 1) as i64;
+        if version > current {
+            migration(conn)?;
+            // `user_version` takes no bound parameters; `version` is an i64 we
+            // control, so `pragma_update` interpolates it safely.
+            conn.pragma_update(None, "user_version", version)?;
+        }
+    }
     Ok(())
 }
 
@@ -451,6 +509,12 @@ mod tests {
                 created_at TEXT, updated_at TEXT);",
         )
         .unwrap();
+        // Legacy databases sit at user_version 0 with the columns missing.
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 0);
+
         migrate(&conn).unwrap();
         migrate(&conn).unwrap(); // idempotent: second run must not error
         let cols: Vec<String> = conn
@@ -462,5 +526,43 @@ mod tests {
             .collect();
         assert!(cols.contains(&"auto_reviewed".to_string()));
         assert!(cols.contains(&"instrumented".to_string()));
+    }
+
+    #[test]
+    fn migrate_stamps_user_version_to_latest() {
+        // A freshly opened database must be stamped at the top of the ladder, so
+        // already-run migrations are skipped on the next open.
+        let db = db();
+        let version: i64 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn migrate_skips_entries_at_or_below_current_version() {
+        // A database already stamped at the top of the ladder runs no entries
+        // and keeps its version — the ladder only moves forward.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "user_version", MIGRATIONS.len() as i64)
+            .unwrap();
+        migrate(&conn).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn identifier_safety_guard() {
+        assert!(is_identifier_safe("tickets"));
+        assert!(is_identifier_safe("auto_reviewed"));
+        assert!(is_identifier_safe("_x9"));
+        assert!(!is_identifier_safe(""));
+        assert!(!is_identifier_safe("9col"));
+        assert!(!is_identifier_safe("a b"));
+        assert!(!is_identifier_safe("a;DROP TABLE tickets"));
+        assert!(!is_identifier_safe("col)--"));
     }
 }
