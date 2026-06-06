@@ -41,6 +41,11 @@
   color: var(--warn, #e6a23c);
 }
 
+/* Per-kind tag modifiers — share .sess-tag base; listed here for future
+   per-kind coloring. Currently neutral (muted) to keep them unobtrusive. */
+.sess-tag-ticket { color: var(--muted, #9aa0aa); }
+.sess-tag-orphan { color: var(--muted, #9aa0aa); }
+
 /* Main/project workspaces are heavier to kill — tint the whole row. */
 .sess-warn {
   border-color: var(--warn, #e6a23c);
