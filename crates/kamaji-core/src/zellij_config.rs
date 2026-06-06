@@ -3,7 +3,8 @@
 //! scans the user's zellij KDL for its `default_layout` to drive `auto` mode.
 
 use crate::layout::BarStyle;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Resolve the configured `zellij_bar` value into a concrete [`BarStyle`].
 ///
@@ -80,9 +81,111 @@ pub fn detect_default_layout() -> Option<String> {
     parse_default_layout(&text)
 }
 
+/// Return `kdl` with web sharing forced on: drop any existing uncommented
+/// top-level `web_sharing` node and append a single canonical `web_sharing
+/// "on"`. zellij sessions default to `web_sharing "off"` ("do not allow web
+/// sharing unless sessions explicitly opt-in"), so a browser client attaching
+/// to a default-created session is refused with "Web clients are not allowed to
+/// attach to this session". kamaji's sessions exist to be viewed in the browser,
+/// so every session it creates must opt in.
+///
+/// Tolerant by design (same lightweight line scan as [`parse_default_layout`],
+/// not a full KDL parse): commented `web_sharing` lines are inert and kept;
+/// dropping then re-appending guarantees exactly one active node, avoiding a
+/// duplicate-key KDL error.
+pub fn ensure_web_sharing_on(kdl: &str) -> String {
+    let mut out = String::with_capacity(kdl.len() + 24);
+    for line in kdl.lines() {
+        let trimmed = line.trim_start();
+        let active_web_sharing = !trimmed.starts_with("//")
+            && !trimmed.starts_with("/-")
+            && trimmed
+                .strip_prefix("web_sharing")
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace() || c == '"'));
+        if active_web_sharing {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("web_sharing \"on\"\n");
+    out
+}
+
+/// Path to a kamaji-managed zellij config that mirrors the user's config but
+/// forces `web_sharing "on"`, for use as the `-c` argument when *creating*
+/// sessions (so they are browser-attachable while keeping the user's theme,
+/// keybindings, etc.). Built once per process: zellij reads web settings only at
+/// session/server start ("Requires restart"), so a config change needs a daemon
+/// restart to take effect anyway. Returns `None` only if the file can't be
+/// written, in which case callers create the session without `-c` (preserving
+/// the prior, non-shareable behavior rather than failing the start).
+pub fn web_sharing_config_file() -> Option<&'static Path> {
+    static CFG: OnceLock<Option<PathBuf>> = OnceLock::new();
+    CFG.get_or_init(build_web_sharing_config_file).as_deref()
+}
+
+fn build_web_sharing_config_file() -> Option<PathBuf> {
+    // Missing/unreadable user config → start from empty, so the derived config is
+    // just `web_sharing "on"` (zellij fills the rest with its defaults).
+    let base = config_file_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    let derived = ensure_web_sharing_on(&base);
+    let dir = std::env::temp_dir().join("kamaji-zellij");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("web-config.kdl");
+    std::fs::write(&path, derived).ok()?;
+    Some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Count the active (uncommented) `web_sharing` nodes in some KDL.
+    fn active_web_sharing_lines(kdl: &str) -> Vec<&str> {
+        kdl.lines()
+            .map(str::trim_start)
+            .filter(|l| {
+                !l.starts_with("//")
+                    && !l.starts_with("/-")
+                    && l.strip_prefix("web_sharing")
+                        .is_some_and(|r| r.starts_with(|c: char| c.is_whitespace() || c == '"'))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn web_sharing_added_to_empty_config() {
+        assert_eq!(ensure_web_sharing_on(""), "web_sharing \"on\"\n");
+    }
+
+    #[test]
+    fn web_sharing_replaces_existing_value_leaving_exactly_one() {
+        // An explicit `off` must be overridden, with no duplicate node left.
+        let out = ensure_web_sharing_on("theme \"gruvbox\"\nweb_sharing \"off\"\n");
+        assert_eq!(active_web_sharing_lines(&out), vec!["web_sharing \"on\""]);
+        // Unrelated config is preserved.
+        assert!(out.contains("theme \"gruvbox\""));
+    }
+
+    #[test]
+    fn web_sharing_preserves_commented_lines_and_stays_single() {
+        // A commented example line is inert and kept; we still add one active node.
+        let out = ensure_web_sharing_on("// web_sharing \"on\"\nkeybinds {}\n");
+        assert!(out.contains("// web_sharing \"on\""));
+        assert!(out.contains("keybinds {}"));
+        assert_eq!(active_web_sharing_lines(&out), vec!["web_sharing \"on\""]);
+    }
+
+    #[test]
+    fn web_sharing_ignores_keys_that_only_share_a_prefix() {
+        // `web_sharing_foo` is a different key and must be left untouched.
+        let out = ensure_web_sharing_on("web_sharing_foo \"x\"\n");
+        assert!(out.contains("web_sharing_foo \"x\""));
+        assert_eq!(active_web_sharing_lines(&out), vec!["web_sharing \"on\""]);
+    }
 
     #[test]
     fn parses_default_layout_value() {
