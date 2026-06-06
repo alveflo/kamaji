@@ -96,12 +96,18 @@ pub fn ticket_form(
                             }
                         }
                         div class="field" {
-                            label for="f-agent" { "Agent" }
-                            select id="f-agent" name="agent" {
+                            label { "Agent" }
+                            div class="seg" {
                                 @for a in Agent::all() {
-                                    option value=(a.as_str()) selected[a == agent] { (a.label()) }
+                                    button type="button"
+                                           class=[(a == agent).then_some("on")]
+                                           data-on:click=(PreEscaped(format!(
+                                               "this.form.elements['agent'].value='{val}';this.closest('.seg').querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')",
+                                               val = a.as_str()
+                                           ))) { (a.label()) }
                                 }
                             }
+                            input type="hidden" name="agent" value=(agent.as_str());
                         }
                         @if let Some(e) = error {
                             p class="form-error" { (e) }
@@ -156,8 +162,8 @@ mod tests {
             "create posts via fetch:\n{html}"
         );
         assert!(
-            html.contains(r#"value="claude" selected"#),
-            "default agent preselected:\n{html}"
+            html.contains(r#"<input type="hidden" name="agent" value="claude">"#),
+            "default agent is the hidden input value:\n{html}"
         );
         assert!(
             html.contains("project_id:7"),
@@ -187,8 +193,8 @@ mod tests {
         );
         assert!(html.contains("Add login"), "title prefilled:\n{html}");
         assert!(
-            html.contains(r#"value="codex" selected"#),
-            "agent prefilled:\n{html}"
+            html.contains(r#"<input type="hidden" name="agent" value="codex">"#),
+            "agent prefilled as the hidden input value:\n{html}"
         );
         assert!(
             html.contains(r#"class="modal-title">Edit ticket"#),
@@ -306,6 +312,34 @@ mod tests {
         assert!(
             html.contains("title must not be empty"),
             "error shown:\n{html}"
+        );
+    }
+
+    #[test]
+    fn agent_picker_is_segmented_control_not_select() {
+        let html = ticket_form(1, None, Agent::Claude, None).into_string();
+        assert!(
+            html.contains(r#"class="seg""#),
+            "renders a segmented control:\n{html}"
+        );
+        // The default agent's button is highlighted.
+        assert!(
+            html.contains(r#"class="on" data-on:click"#),
+            "default agent button carries `on`:\n{html}"
+        );
+        // The value is still a form-named control the submit JS can read.
+        assert!(
+            html.contains(r#"<input type="hidden" name="agent" value="claude">"#),
+            "hidden agent input carries the selected value:\n{html}"
+        );
+        // The seg buttons set the hidden input + move the highlight, client-side.
+        assert!(
+            html.contains("this.form.elements['agent'].value='codex'"),
+            "a seg button writes its value into the hidden input:\n{html}"
+        );
+        assert!(
+            !html.contains("<select"),
+            "the old dropdown is gone:\n{html}"
         );
     }
 }
