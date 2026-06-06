@@ -19,7 +19,7 @@ use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
 #[folder = "src/assets/"]
-struct Assets;
+pub(crate) struct Assets;
 
 /// `GET /assets/*path` → the embedded file (200 or 304), or 404.
 pub async fn serve(Path(path): Path<String>, headers: HeaderMap) -> Response {
