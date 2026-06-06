@@ -176,7 +176,9 @@ fn spawn_detached(bin: &Path, addr: &str) -> std::io::Result<()> {
 /// Ensure a healthy daemon and return a connected client. Tries an existing
 /// daemon; else lock-acquires (winner spawns + health-waits + writes addr;
 /// loser health-waits on the expected addr). Bounded retry on a lost race whose
-/// winner crashed. `forced_addr` (from `--daemon`) skips spawning entirely.
+/// winner crashed. `forced_addr` (from `--daemon`) skips spawning entirely. If
+/// `kamaji up` recorded a containerized daemon, connects to it (or reports it
+/// down) instead of the local spawn logic below.
 pub fn ensure_daemon(
     config: &Config,
     forced_addr: Option<&str>,

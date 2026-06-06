@@ -28,6 +28,7 @@ pub fn path() -> Option<PathBuf> {
 impl ContainerState {
     pub fn save_to(&self, file: &Path) -> anyhow::Result<()> {
         if let Some(parent) = file.parent() {
+            // ensure the runtime dir exists
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(file, serde_json::to_vec_pretty(self)?)?;

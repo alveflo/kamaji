@@ -27,6 +27,7 @@ Agents: claude, codex, copilot
   down              stop the sandbox container (back to native)
   logs              follow the container's logs
   status            show the active mode (native vs container) + board URL
+
   --background, -b  also start the ticket's agent in a detached zellij session
 ";
 
@@ -130,11 +131,21 @@ where
             }
         }
         [cmd, rest @ ..] if cmd == "up" => parse_up(rest),
-        [cmd, ..] if cmd == "down" => Ok(Command::Down),
-        [cmd, ..] if cmd == "logs" => Ok(Command::Logs),
-        [cmd, ..] if cmd == "status" => Ok(Command::Status),
+        [cmd, rest @ ..] if cmd == "down" => parse_bare(rest, Command::Down, "down"),
+        [cmd, rest @ ..] if cmd == "logs" => parse_bare(rest, Command::Logs, "logs"),
+        [cmd, rest @ ..] if cmd == "status" => parse_bare(rest, Command::Status, "status"),
         [other, ..] => bail!("unknown command: {other}\n\n{USAGE}"),
         [] => Ok(Command::Tui(DaemonOpts::default())),
+    }
+}
+
+/// Parse a command that takes no arguments. Returns the unit variant when `rest`
+/// is empty, `Command::Help` for `--help`/`-h`, and an error for any other token.
+fn parse_bare(rest: &[String], cmd: Command, name: &str) -> Result<Command> {
+    match rest {
+        [] => Ok(cmd),
+        [flag] if flag == "--help" || flag == "-h" => Ok(Command::Help),
+        [extra, ..] => bail!("unknown {name} argument: {extra}\n\n{USAGE}"),
     }
 }
 
@@ -234,7 +245,8 @@ fn parse_up(args: &[String]) -> Result<Command> {
                 );
             }
             "--help" | "-h" => return Ok(Command::Help),
-            other => bail!("unknown up option: {other}\n\n{USAGE}"),
+            other if other.starts_with('-') => bail!("unknown up flag: {other}\n\n{USAGE}"),
+            other => bail!("unexpected argument to up: {other}\n\n{USAGE}"),
         }
         i += 1;
     }
@@ -827,6 +839,37 @@ mod tests {
     fn up_rejects_unknown_runtime() {
         let err = parse(["up", "--runtime", "lxc"]).unwrap_err().to_string();
         assert!(err.contains("runtime"), "{err}");
+    }
+
+    #[test]
+    fn up_unknown_flag_says_flag() {
+        let err = parse(["up", "--foo"]).unwrap_err().to_string();
+        assert!(err.contains("flag"), "{err}");
+    }
+
+    #[test]
+    fn up_pids_limit_non_number_says_number() {
+        let err = parse(["up", "--pids-limit", "abc"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("number"), "{err}");
+    }
+
+    #[test]
+    fn up_runtime_missing_value_errors() {
+        assert!(parse(["up", "--runtime"]).is_err());
+    }
+
+    #[test]
+    fn down_rejects_trailing_args() {
+        assert!(parse(["down", "x"]).is_err());
+    }
+
+    #[test]
+    fn bare_commands_honor_help_flag() {
+        assert_eq!(parse(["down", "--help"]).unwrap(), Command::Help);
+        assert_eq!(parse(["logs", "-h"]).unwrap(), Command::Help);
+        assert_eq!(parse(["status", "--help"]).unwrap(), Command::Help);
     }
 
     /// Needs a real git repo + zellij on PATH (the daemon spawns the detached

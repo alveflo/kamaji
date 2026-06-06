@@ -96,6 +96,7 @@ pub fn up(args: &UpArgs) -> Result<()> {
 
     // 1. Ensure the image is available.
     if args.build {
+        // "." build context: run `kamaji up --build` from the repo root that holds the Dockerfile.
         run_checked(bin, &["build", "-t", &image, "."], "building image")?;
     } else if !run_ok(bin, &["image", "inspect", &image]) && !run_ok(bin, &["pull", &image]) {
         bail!("could not pull {image}; re-run with --build to build it locally");
@@ -146,13 +147,16 @@ pub fn up(args: &UpArgs) -> Result<()> {
     )?;
 
     // 5. Wait for health on the published port, then record state.
-    crate::daemon::wait_for_health(&format!("http://{BOARD_ADDR}"), Duration::from_secs(30))
-        .map_err(|e| {
-            anyhow!(
-                "container started but board never became healthy: {e}\n\
-                 Check `kamaji logs`, then run `kamaji down` before retrying."
-            )
-        })?;
+    // The returned client is intentionally unused here; we only need to confirm
+    // the board is up before writing the state marker.
+    let _client =
+        crate::daemon::wait_for_health(&format!("http://{BOARD_ADDR}"), Duration::from_secs(30))
+            .map_err(|e| {
+                anyhow!(
+                    "container started but board never became healthy: {e}\n\
+                     Check `kamaji logs`, then run `kamaji down` before retrying."
+                )
+            })?;
     state::save(&ContainerState {
         name: CONTAINER_NAME.into(),
         board_addr: BOARD_ADDR.into(),
@@ -217,6 +221,9 @@ fn run_ok(bin: &str, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+/// Run `bin args` and wait; stdout/stderr stream to the user's terminal via the
+/// inherited handles (contrast with daemon.rs's detached null stdio). Uses
+/// `.status()` so build and pull output is visible in real time.
 fn run_checked(bin: &str, args: &[&str], what: &str) -> Result<()> {
     let status = Command::new(bin)
         .args(args)
@@ -235,7 +242,11 @@ mod tests {
     #[test]
     #[ignore = "requires a container runtime and the built image; run with --ignored"]
     fn up_then_down_round_trip() {
-        super::up(&super::UpArgs { build: true, ..Default::default() }).unwrap();
+        super::up(&super::UpArgs {
+            build: true,
+            ..Default::default()
+        })
+        .unwrap();
         assert!(super::state::load().is_some(), "state marker written");
         super::down().unwrap();
         assert!(super::state::load().is_none(), "state marker cleared");

@@ -2,9 +2,11 @@
 //! generated config, and the `run` argv. No process execution, no I/O — every
 //! function here is unit-tested by asserting its output.
 
+use std::collections::BTreeSet;
+use std::path::{Component, Path, PathBuf};
+
 use kamaji_core::config::Config;
 use kamaji_core::models::Project;
-use std::path::{Component, Path, PathBuf};
 
 /// The default container worktree base when the user has not set one. A sibling
 /// of each project root; the launcher mounts it explicitly (see
@@ -81,14 +83,13 @@ fn resolved_worktree_base(root: &Path, template: &str) -> PathBuf {
 /// Bind mounts for the agents' code: each project root **and** its resolved
 /// worktree-base directory, all read-write at identical paths, deduplicated.
 pub fn derive_project_mounts(projects: &[Project], worktree_base_template: &str) -> Vec<Mount> {
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = BTreeSet::new();
     let mut mounts = Vec::new();
-    let push =
-        |path: PathBuf, mounts: &mut Vec<Mount>, seen: &mut std::collections::BTreeSet<PathBuf>| {
-            if seen.insert(path.clone()) {
-                mounts.push(Mount::bind(path, false));
-            }
-        };
+    let push = |path: PathBuf, mounts: &mut Vec<Mount>, seen: &mut BTreeSet<PathBuf>| {
+        if seen.insert(path.clone()) {
+            mounts.push(Mount::bind(path, false));
+        }
+    };
     for p in projects {
         let root = lexical_normalize(&p.root_dir);
         let wt = resolved_worktree_base(&root, worktree_base_template);
@@ -137,6 +138,8 @@ pub fn build_run_argv(spec: &RunSpec) -> Vec<String> {
     push2("-p", "127.0.0.1:8755:8755".into(), &mut args);
     push2("-p", "127.0.0.1:8756:8756".into(), &mut args);
 
+    // `home` is rendered via `display()` (lossy for non-UTF-8 paths), which is
+    // acceptable since HOME is a conventional path and always UTF-8 in practice.
     push2("-e", format!("HOME={}", spec.home.display()), &mut args);
     for (k, v) in &spec.env {
         push2("-e", format!("{k}={v}"), &mut args);
@@ -209,6 +212,9 @@ pub fn detect_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kamaji_core::config::Config;
+    use kamaji_core::models::{Agent, Project};
+    use std::path::PathBuf;
 
     #[test]
     fn prefers_podman_when_both_present() {
@@ -238,9 +244,6 @@ mod tests {
             None
         );
     }
-
-    use kamaji_core::models::{Agent, Project};
-    use std::path::PathBuf;
 
     fn proj(id: i64, root: &str) -> Project {
         Project {
@@ -279,9 +282,14 @@ mod tests {
             .filter(|m| m.source == *Path::new("/home/u/dev/kamaji-worktrees"))
             .count();
         assert_eq!(wt, 1, "shared worktree base mounted once");
+        // Both project roots plus the shared worktree base = 3 total mounts.
+        assert_eq!(mounts.len(), 3, "{mounts:?}");
     }
 
-    use kamaji_core::config::Config;
+    #[test]
+    fn mount_arg_read_only_branch() {
+        assert_eq!(Mount::bind("/x", true).arg(), "/x:/x:ro");
+    }
 
     #[test]
     fn container_config_leaves_bind_untouched() {
@@ -383,5 +391,32 @@ mod tests {
             "{argv:?}"
         );
         assert!(argv.contains(&"-d".to_string()), "runs detached");
+    }
+
+    #[test]
+    fn run_argv_empty_mounts_image_last() {
+        // Empty code_mounts and cred_mounts must still produce a well-formed argv
+        // with the image as the final argument.
+        let spec = RunSpec {
+            image: "ghcr.io/alveflo/kamaji:v0.1.0".into(),
+            container_name: "kamaji".into(),
+            home: PathBuf::from("/home/u"),
+            data_dir: PathBuf::from("/home/u/.local/share/kamaji"),
+            config_dir: PathBuf::from("/home/u/.config/kamaji"),
+            zellij_volume: "kamaji-zellij-cache".into(),
+            code_mounts: vec![],
+            cred_mounts: vec![],
+            env: vec![],
+            memory: "8g".into(),
+            cpus: "4".into(),
+            pids_limit: 2048,
+        };
+        let argv = build_run_argv(&spec);
+        assert_eq!(argv[0], "run", "starts with run");
+        assert_eq!(
+            argv.last().unwrap(),
+            "ghcr.io/alveflo/kamaji:v0.1.0",
+            "image is the final arg even with empty mounts"
+        );
     }
 }
