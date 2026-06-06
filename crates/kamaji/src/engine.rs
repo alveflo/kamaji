@@ -9,7 +9,7 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm};
+use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm, LAST_COLUMN};
 use crate::client::{ClientError, DaemonClient};
 use crate::dir_select::{self, RootCheck};
 use crate::theme::Theme;
@@ -164,15 +164,6 @@ impl Engine {
         }
     }
 
-    /// Apply a column move to the currently-selected ticket.
-    #[allow(dead_code)]
-    pub fn move_selected(&mut self, target: Status) -> Result<Effect> {
-        let Some(ticket) = self.app.selected_ticket().cloned() else {
-            return Ok(Effect::None);
-        };
-        self.apply_move(ticket, target)
-    }
-
     /// Apply a column move to a ticket identified by id (used by the Move modal
     /// so the move targets the ticket the modal was opened for, independent of
     /// the current cursor).
@@ -289,275 +280,304 @@ impl Engine {
     }
 
     /// Single entry point for key handling. Returns an Effect for the main loop.
+    /// Takes ownership of the modal (replacing it with `None`) so each per-variant
+    /// handler can re-arm the modal it owns without borrow conflicts; a handler
+    /// that wants to stay open puts its (possibly mutated) modal back.
     pub fn on_key(&mut self, key: KeyEvent) -> Result<Effect> {
-        // Take ownership of the modal to avoid borrow conflicts.
         let modal = std::mem::replace(&mut self.app.modal, Modal::None);
         match modal {
             Modal::None => self.on_board_key(key),
-            Modal::Form(mut form) => {
-                match key.code {
-                    KeyCode::Esc => {} // close (modal already None)
-                    KeyCode::Enter => {
-                        if !form.title.trim().is_empty() {
-                            return self.submit_form(&form);
-                        } else {
-                            self.app.modal = Modal::Form(form);
-                            self.app.set_error("Title is required");
-                        }
-                    }
-                    KeyCode::Tab => {
-                        form.next_field();
-                        self.app.modal = Modal::Form(form);
-                    }
-                    KeyCode::BackTab => {
-                        form.prev_field();
-                        self.app.modal = Modal::Form(form);
-                    }
-                    KeyCode::Left if form.field == FormField::Agent => {
-                        form.cycle_agent(false);
-                        self.app.modal = Modal::Form(form);
-                    }
-                    KeyCode::Right if form.field == FormField::Agent => {
-                        form.cycle_agent(true);
-                        self.app.modal = Modal::Form(form);
-                    }
-                    KeyCode::Left | KeyCode::Right if form.field == FormField::Background => {
-                        form.toggle_background();
-                        self.app.modal = Modal::Form(form);
-                    }
-                    KeyCode::Char(' ') if form.field == FormField::Background => {
-                        form.toggle_background();
-                        self.app.modal = Modal::Form(form);
-                    }
-                    KeyCode::Backspace => {
-                        form.backspace();
-                        self.app.modal = Modal::Form(form);
-                    }
-                    KeyCode::Char(c) => {
-                        form.input_char(c);
-                        self.app.modal = Modal::Form(form);
-                    }
-                    _ => {
-                        self.app.modal = Modal::Form(form);
-                    }
+            Modal::Form(form) => self.handle_form_key(key, form),
+            Modal::Move { ticket_id, target } => self.handle_move_key(key, ticket_id, target),
+            Modal::ConfirmDone { ticket_ids } => self.handle_confirm_done_key(key, ticket_ids),
+            Modal::ConfirmDelete { ticket_id } => self.handle_confirm_delete_key(key, ticket_id),
+            Modal::Help => Ok(Effect::None), // any key closes
+            Modal::ThemePicker { selected, original } => {
+                self.handle_theme_picker_key(key, selected, original)
+            }
+            Modal::AgentPicker { selected } => self.handle_agent_picker_key(key, selected),
+            Modal::WorktreeLocation(form) => self.handle_worktree_location_key(key, form),
+        }
+    }
+
+    /// Mark `ticket_ids` done through the daemon. `cleanup` selects between the
+    /// two ConfirmDone outcomes: `true` terminates the session and removes the
+    /// worktree, `false` marks done but leaves them in place. Either way the
+    /// multi-selection is cleared and the board refreshed.
+    fn close_tickets(&mut self, ticket_ids: &[i64], cleanup: bool) -> Result<Effect> {
+        for id in ticket_ids {
+            if let Err(e) = self.client.done_ticket(*id, cleanup) {
+                self.note_client_error(&e);
+                self.app
+                    .set_error(format!("could not complete #{id}: {e:?}"));
+            }
+        }
+        self.app.clear_selection();
+        self.refresh_from_client()?;
+        Ok(Effect::None)
+    }
+
+    fn handle_form_key(&mut self, key: KeyEvent, mut form: TicketForm) -> Result<Effect> {
+        match key.code {
+            KeyCode::Esc => {} // close (modal already None)
+            KeyCode::Enter => {
+                if !form.title.trim().is_empty() {
+                    return self.submit_form(&form);
+                } else {
+                    self.app.modal = Modal::Form(form);
+                    self.app.set_error("Title is required");
                 }
+            }
+            KeyCode::Tab => {
+                form.next_field();
+                self.app.modal = Modal::Form(form);
+            }
+            KeyCode::BackTab => {
+                form.prev_field();
+                self.app.modal = Modal::Form(form);
+            }
+            KeyCode::Left if form.field == FormField::Agent => {
+                form.cycle_agent(false);
+                self.app.modal = Modal::Form(form);
+            }
+            KeyCode::Right if form.field == FormField::Agent => {
+                form.cycle_agent(true);
+                self.app.modal = Modal::Form(form);
+            }
+            KeyCode::Left | KeyCode::Right if form.field == FormField::Background => {
+                form.toggle_background();
+                self.app.modal = Modal::Form(form);
+            }
+            KeyCode::Char(' ') if form.field == FormField::Background => {
+                form.toggle_background();
+                self.app.modal = Modal::Form(form);
+            }
+            KeyCode::Backspace => {
+                form.backspace();
+                self.app.modal = Modal::Form(form);
+            }
+            KeyCode::Char(c) => {
+                form.input_char(c);
+                self.app.modal = Modal::Form(form);
+            }
+            _ => {
+                self.app.modal = Modal::Form(form);
+            }
+        }
+        Ok(Effect::None)
+    }
+
+    fn handle_move_key(
+        &mut self,
+        key: KeyEvent,
+        ticket_id: i64,
+        mut target: Status,
+    ) -> Result<Effect> {
+        match key.code {
+            KeyCode::Esc => Ok(Effect::None),
+            KeyCode::Left => {
+                let i = Status::all().iter().position(|s| *s == target).unwrap_or(0);
+                target = Status::all()[i.saturating_sub(1)];
+                self.app.modal = Modal::Move { ticket_id, target };
                 Ok(Effect::None)
             }
-            Modal::Move {
-                ticket_id,
-                mut target,
-            } => match key.code {
-                KeyCode::Esc => Ok(Effect::None),
-                KeyCode::Left => {
-                    let i = Status::all().iter().position(|s| *s == target).unwrap();
-                    target = Status::all()[i.saturating_sub(1)];
-                    self.app.modal = Modal::Move { ticket_id, target };
+            KeyCode::Right => {
+                let i = Status::all().iter().position(|s| *s == target).unwrap_or(0);
+                target = Status::all()[(i + 1).min(LAST_COLUMN)];
+                self.app.modal = Modal::Move { ticket_id, target };
+                Ok(Effect::None)
+            }
+            KeyCode::Enter => {
+                if target == Status::Done {
+                    self.app.modal = Modal::ConfirmDone {
+                        ticket_ids: vec![ticket_id],
+                    };
                     Ok(Effect::None)
+                } else {
+                    self.move_ticket(ticket_id, target)
                 }
-                KeyCode::Right => {
-                    let i = Status::all().iter().position(|s| *s == target).unwrap();
-                    target = Status::all()[(i + 1).min(3)];
-                    self.app.modal = Modal::Move { ticket_id, target };
-                    Ok(Effect::None)
-                }
-                KeyCode::Enter => {
-                    if target == Status::Done {
-                        self.app.modal = Modal::ConfirmDone {
-                            ticket_ids: vec![ticket_id],
-                        };
-                        Ok(Effect::None)
-                    } else {
-                        self.move_ticket(ticket_id, target)
-                    }
-                }
-                _ => {
-                    self.app.modal = Modal::Move { ticket_id, target };
-                    Ok(Effect::None)
-                }
-            },
-            Modal::ConfirmDone { ticket_ids } => match key.code {
-                KeyCode::Char('y') => {
-                    // 'y' closes with cleanup (terminate session, remove worktree).
-                    for id in &ticket_ids {
-                        if let Err(e) = self.client.done_ticket(*id, true) {
-                            self.note_client_error(&e);
-                            self.app
-                                .set_error(format!("could not complete #{id}: {e:?}"));
-                        }
-                    }
-                    self.app.clear_selection();
-                    self.refresh_from_client()?;
-                    Ok(Effect::None)
-                }
-                KeyCode::Char('n') => {
-                    // 'n' marks done but leaves the session/worktree in place.
-                    for id in &ticket_ids {
-                        if let Err(e) = self.client.done_ticket(*id, false) {
-                            self.note_client_error(&e);
-                            self.app
-                                .set_error(format!("could not complete #{id}: {e:?}"));
-                        }
-                    }
-                    self.app.clear_selection();
-                    self.refresh_from_client()?;
-                    Ok(Effect::None)
-                }
-                _ => {
-                    // Esc cancels: restore the modal-less board but keep the
-                    // selection so the user can retry.
-                    Ok(Effect::None)
-                }
-            },
-            Modal::ConfirmDelete { ticket_id } => match key.code {
-                KeyCode::Char('y') => {
-                    if let Err(e) = self.client.delete_ticket(ticket_id) {
-                        self.note_client_error(&e);
-                        self.app
-                            .set_error(format!("could not delete #{ticket_id}: {e:?}"));
-                    }
-                    self.refresh_from_client()?;
-                    Ok(Effect::None)
-                }
-                _ => Ok(Effect::None),
-            },
-            Modal::Help => Ok(Effect::None), // any key closes
-            Modal::ThemePicker {
-                mut selected,
-                original,
-            } => match key.code {
-                KeyCode::Esc => {
-                    self.app.theme = Theme::ALL[original]();
-                    Ok(Effect::None)
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    selected = selected.saturating_sub(1);
-                    self.app.theme = Theme::ALL[selected]();
-                    self.app.modal = Modal::ThemePicker { selected, original };
-                    Ok(Effect::None)
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    selected = (selected + 1).min(Theme::ALL.len() - 1);
-                    self.app.theme = Theme::ALL[selected]();
-                    self.app.modal = Modal::ThemePicker { selected, original };
-                    Ok(Effect::None)
-                }
-                KeyCode::Enter => {
-                    let chosen = self.app.theme;
-                    match self.client.update_config(Some(chosen.name), None, None) {
-                        Ok(cfg) => {
-                            self.config = cfg;
-                            self.app.set_info(format!("theme: {}", chosen.label));
-                        }
-                        Err(e) => {
-                            // Persisting failed: revert the live theme to the original so
-                            // what's shown matches what will load next launch.
-                            self.note_client_error(&e);
-                            self.app.theme = Theme::ALL[original]();
-                            self.app.set_error(format!("could not save theme: {e:?}"));
-                        }
-                    }
-                    Ok(Effect::None)
-                }
-                _ => {
-                    self.app.modal = Modal::ThemePicker { selected, original };
-                    Ok(Effect::None)
-                }
-            },
-            Modal::AgentPicker { mut selected } => match key.code {
-                KeyCode::Esc => Ok(Effect::None), // close without saving
-                KeyCode::Up | KeyCode::Char('k') => {
-                    selected = selected.saturating_sub(1);
-                    self.app.modal = Modal::AgentPicker { selected };
-                    Ok(Effect::None)
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    selected = (selected + 1).min(Agent::all().len() - 1);
-                    self.app.modal = Modal::AgentPicker { selected };
-                    Ok(Effect::None)
-                }
-                KeyCode::Enter => {
-                    let chosen = Agent::all()[selected];
-                    match self.client.update_config(None, Some(chosen.as_str()), None) {
-                        Ok(cfg) => {
-                            self.config = cfg;
-                            self.app
-                                .set_info(format!("default agent: {}", chosen.label()));
-                        }
-                        Err(e) => {
-                            self.note_client_error(&e);
-                            self.app
-                                .set_error(format!("could not save default agent: {e:?}"));
-                        }
-                    }
-                    Ok(Effect::None)
-                }
-                _ => {
-                    self.app.modal = Modal::AgentPicker { selected };
-                    Ok(Effect::None)
-                }
-            },
-            Modal::WorktreeLocation(mut form) => {
-                match key.code {
-                    KeyCode::Esc => {
-                        // Esc dismisses a pending create-confirm first; only a
-                        // second Esc (nothing pending) closes the modal.
-                        if !form.dir.escape() {
-                            self.app.modal = Modal::WorktreeLocation(form);
-                        }
-                    }
-                    KeyCode::Tab => {
-                        if !form.dir.suggestions.is_empty() {
-                            form.dir.accept_suggestion();
-                        }
-                        self.app.modal = Modal::WorktreeLocation(form);
-                    }
-                    KeyCode::Up => {
-                        form.dir.move_suggestion(-1);
-                        self.app.modal = Modal::WorktreeLocation(form);
-                    }
-                    KeyCode::Down => {
-                        form.dir.move_suggestion(1);
-                        self.app.modal = Modal::WorktreeLocation(form);
-                    }
-                    KeyCode::Backspace => {
-                        form.dir.backspace();
-                        self.app.modal = Modal::WorktreeLocation(form);
-                    }
-                    KeyCode::Enter => {
-                        if form.dir.pending_create.is_some() {
-                            // Second Enter: create the missing directory, then save.
-                            match form.dir.confirm_create() {
-                                Ok(Some(path)) => self.save_worktree_location(&path),
-                                Ok(None) => self.app.modal = Modal::WorktreeLocation(form),
-                                Err(e) => {
-                                    form.error = Some(format!("Couldn't create directory: {e}"));
-                                    self.app.modal = Modal::WorktreeLocation(form);
-                                }
-                            }
-                        } else {
-                            match dir_select::check_root(form.dir.resolved()) {
-                                RootCheck::Ready(path) => self.save_worktree_location(&path),
-                                RootCheck::NeedsConfirm(path) => {
-                                    form.error = None;
-                                    form.dir.pending_create = Some(path);
-                                    self.app.modal = Modal::WorktreeLocation(form);
-                                }
-                                RootCheck::Invalid(msg) => {
-                                    form.error = Some(msg);
-                                    self.app.modal = Modal::WorktreeLocation(form);
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        form.dir.input_char(c);
-                        self.app.modal = Modal::WorktreeLocation(form);
-                    }
-                    _ => self.app.modal = Modal::WorktreeLocation(form),
-                }
+            }
+            _ => {
+                self.app.modal = Modal::Move { ticket_id, target };
                 Ok(Effect::None)
             }
         }
+    }
+
+    fn handle_confirm_done_key(&mut self, key: KeyEvent, ticket_ids: Vec<i64>) -> Result<Effect> {
+        match key.code {
+            // 'y' closes with cleanup (terminate session, remove worktree).
+            KeyCode::Char('y') => self.close_tickets(&ticket_ids, true),
+            // 'n' marks done but leaves the session/worktree in place.
+            KeyCode::Char('n') => self.close_tickets(&ticket_ids, false),
+            // Esc cancels: restore the modal-less board but keep the selection
+            // so the user can retry.
+            _ => Ok(Effect::None),
+        }
+    }
+
+    fn handle_confirm_delete_key(&mut self, key: KeyEvent, ticket_id: i64) -> Result<Effect> {
+        match key.code {
+            KeyCode::Char('y') => {
+                if let Err(e) = self.client.delete_ticket(ticket_id) {
+                    self.note_client_error(&e);
+                    self.app
+                        .set_error(format!("could not delete #{ticket_id}: {e:?}"));
+                }
+                self.refresh_from_client()?;
+                Ok(Effect::None)
+            }
+            _ => Ok(Effect::None),
+        }
+    }
+
+    fn handle_theme_picker_key(
+        &mut self,
+        key: KeyEvent,
+        mut selected: usize,
+        original: usize,
+    ) -> Result<Effect> {
+        match key.code {
+            KeyCode::Esc => {
+                self.app.theme = Theme::ALL[original]();
+                Ok(Effect::None)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = selected.saturating_sub(1);
+                self.app.theme = Theme::ALL[selected]();
+                self.app.modal = Modal::ThemePicker { selected, original };
+                Ok(Effect::None)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected = (selected + 1).min(Theme::ALL.len() - 1);
+                self.app.theme = Theme::ALL[selected]();
+                self.app.modal = Modal::ThemePicker { selected, original };
+                Ok(Effect::None)
+            }
+            KeyCode::Enter => {
+                let chosen = self.app.theme;
+                match self.client.update_config(Some(chosen.name), None, None) {
+                    Ok(cfg) => {
+                        self.config = cfg;
+                        self.app.set_info(format!("theme: {}", chosen.label));
+                    }
+                    Err(e) => {
+                        // Persisting failed: revert the live theme to the original so
+                        // what's shown matches what will load next launch.
+                        self.note_client_error(&e);
+                        self.app.theme = Theme::ALL[original]();
+                        self.app.set_error(format!("could not save theme: {e:?}"));
+                    }
+                }
+                Ok(Effect::None)
+            }
+            _ => {
+                self.app.modal = Modal::ThemePicker { selected, original };
+                Ok(Effect::None)
+            }
+        }
+    }
+
+    fn handle_agent_picker_key(&mut self, key: KeyEvent, mut selected: usize) -> Result<Effect> {
+        match key.code {
+            KeyCode::Esc => Ok(Effect::None), // close without saving
+            KeyCode::Up | KeyCode::Char('k') => {
+                selected = selected.saturating_sub(1);
+                self.app.modal = Modal::AgentPicker { selected };
+                Ok(Effect::None)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                selected = (selected + 1).min(Agent::all().len() - 1);
+                self.app.modal = Modal::AgentPicker { selected };
+                Ok(Effect::None)
+            }
+            KeyCode::Enter => {
+                let chosen = Agent::all()[selected];
+                match self.client.update_config(None, Some(chosen.as_str()), None) {
+                    Ok(cfg) => {
+                        self.config = cfg;
+                        self.app
+                            .set_info(format!("default agent: {}", chosen.label()));
+                    }
+                    Err(e) => {
+                        self.note_client_error(&e);
+                        self.app
+                            .set_error(format!("could not save default agent: {e:?}"));
+                    }
+                }
+                Ok(Effect::None)
+            }
+            _ => {
+                self.app.modal = Modal::AgentPicker { selected };
+                Ok(Effect::None)
+            }
+        }
+    }
+
+    fn handle_worktree_location_key(
+        &mut self,
+        key: KeyEvent,
+        mut form: WorktreeForm,
+    ) -> Result<Effect> {
+        match key.code {
+            KeyCode::Esc => {
+                // Esc dismisses a pending create-confirm first; only a
+                // second Esc (nothing pending) closes the modal.
+                if !form.dir.escape() {
+                    self.app.modal = Modal::WorktreeLocation(form);
+                }
+            }
+            KeyCode::Tab => {
+                if !form.dir.suggestions.is_empty() {
+                    form.dir.accept_suggestion();
+                }
+                self.app.modal = Modal::WorktreeLocation(form);
+            }
+            KeyCode::Up => {
+                form.dir.move_suggestion(-1);
+                self.app.modal = Modal::WorktreeLocation(form);
+            }
+            KeyCode::Down => {
+                form.dir.move_suggestion(1);
+                self.app.modal = Modal::WorktreeLocation(form);
+            }
+            KeyCode::Backspace => {
+                form.dir.backspace();
+                self.app.modal = Modal::WorktreeLocation(form);
+            }
+            KeyCode::Enter => {
+                if form.dir.pending_create.is_some() {
+                    // Second Enter: create the missing directory, then save.
+                    match form.dir.confirm_create() {
+                        Ok(Some(path)) => self.save_worktree_location(&path),
+                        Ok(None) => self.app.modal = Modal::WorktreeLocation(form),
+                        Err(e) => {
+                            form.error = Some(format!("Couldn't create directory: {e}"));
+                            self.app.modal = Modal::WorktreeLocation(form);
+                        }
+                    }
+                } else {
+                    match dir_select::check_root(form.dir.resolved()) {
+                        RootCheck::Ready(path) => self.save_worktree_location(&path),
+                        RootCheck::NeedsConfirm(path) => {
+                            form.error = None;
+                            form.dir.pending_create = Some(path);
+                            self.app.modal = Modal::WorktreeLocation(form);
+                        }
+                        RootCheck::Invalid(msg) => {
+                            form.error = Some(msg);
+                            self.app.modal = Modal::WorktreeLocation(form);
+                        }
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                form.dir.input_char(c);
+                self.app.modal = Modal::WorktreeLocation(form);
+            }
+            _ => self.app.modal = Modal::WorktreeLocation(form),
+        }
+        Ok(Effect::None)
     }
 
     /// Persist a chosen worktree location through the daemon and toast the
@@ -956,7 +976,11 @@ mod tests {
             .create_ticket(e.app.project.id, "t", "", None, Agent::Claude)
             .unwrap();
         e.refresh_from_client().unwrap();
-        assert_eq!(e.move_selected(Status::Review).unwrap(), Effect::None);
+        let selected = e.app.selected_ticket().cloned().unwrap();
+        assert_eq!(
+            e.apply_move(selected, Status::Review).unwrap(),
+            Effect::None
+        );
         assert_eq!(e.client.get_ticket(t.id).unwrap().status, Status::Review);
         assert_eq!(e.app.tickets[0].status, Status::Review);
     }

@@ -77,7 +77,7 @@ impl Status {
             Status::Done => "Done",
         }
     }
-    pub fn all() -> [Status; 4] {
+    pub const fn all() -> [Status; 4] {
         [
             Status::Todo,
             Status::InProgress,
