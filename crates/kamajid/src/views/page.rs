@@ -1,8 +1,9 @@
-//! The full HTML document shell: head (the six design-system stylesheets +
-//! vendored Datastar module + viewport), a flex shell of the Slack-style
-//! workspace rail (project selection lives here now) beside a `.main` column
-//! holding the topbar (breadcrumb + empty search slot + "+ New"), the board, and
-//! an empty modal mount. `data-init` opens the `/ui/events` SSE stream (RC.6 has
+//! The full HTML document shell: head (the design-system stylesheets +
+//! vendored Datastar module + the search-slice module + viewport), a flex shell
+//! of the Slack-style workspace rail (project selection lives here now) beside a
+//! `.main` column holding the topbar (breadcrumb + live-search box + "+ New"),
+//! the board, and an empty modal mount. `data-init` opens the `/ui/events` SSE
+//! stream (RC.6 has
 //! no `on-load` event; `data-init` runs once when the element is first
 //! processed). Parameterized bindings use a colon (`data-on:click`).
 
@@ -42,8 +43,10 @@ pub fn page(
                 link rel="stylesheet" href="/assets/sidebar.css";
                 link rel="stylesheet" href="/assets/modal.css";
                 link rel="stylesheet" href="/assets/board.css";
+                link rel="stylesheet" href="/assets/search.css";
                 link rel="stylesheet" href="/assets/terminal.css";
                 script type="module" src="/assets/datastar.js" {}
+                script type="module" src="/assets/search.js" {}
             }
             body class="rail-open" data-init="@get('/ui/events')" {
                 (super::sidebar::rail(projects, project.id, attention))
@@ -53,7 +56,23 @@ pub fn page(
                             span class=(format!("crumb-dot c{active_c}")) {}
                             span class="crumb-name" { (project.name) }
                         }
-                        div class="search-slot" {}
+                        div class="search-slot" {
+                            div class="search-wrap" {
+                                svg class="search-ico" width="13" height="13"
+                                    viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2.3" stroke-linecap="round" {
+                                    circle cx="11" cy="11" r="7" {}
+                                    line x1="20.5" y1="20.5" x2="16.5" y2="16.5" {}
+                                }
+                                input id="search" class="search" type="search"
+                                      placeholder="Search tickets…" autocomplete="off"
+                                      aria-label="Search tickets";
+                                button class="search-clear" type="button"
+                                       aria-label="Clear search" { "✕" }
+                                span class="search-kbd kbd" { "/" }
+                            }
+                        }
+                        span class="search-count" aria-live="polite" {}
                         span class="spacer" {}
                         button class="new-ticket"
                                data-on:click=(PreEscaped(format!("@get('/ui/tickets/new?project={}')", project.id))) {
@@ -147,6 +166,40 @@ mod tests {
         assert!(
             !html.contains(r#"id="project-select""#),
             "old switcher select must be gone:\n{html}"
+        );
+    }
+
+    #[test]
+    fn topbar_fills_the_search_slot_and_links_search_assets() {
+        // Slice 4 owns the topbar search markup + its CSS/JS. The foundation left
+        // an empty `.search-slot`; this fills it and links the assets.
+        let p = project(1, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"href="/assets/search.css""#),
+            "search css link:\n{html}"
+        );
+        assert!(
+            html.contains(r#"src="/assets/search.js""#),
+            "search js module:\n{html}"
+        );
+        assert!(
+            html.contains(r#"id="search""#),
+            "search input id (focused by `/`):\n{html}"
+        );
+        assert!(
+            html.contains(r#"placeholder="Search tickets"#),
+            "search placeholder:\n{html}"
+        );
+        assert!(html.contains("search-clear"), "✕ clear button:\n{html}");
+        assert!(
+            html.contains(r#"class="search-count""#),
+            "results total slot:\n{html}"
+        );
+        // The slot the foundation left must no longer be empty.
+        assert!(
+            !html.contains(r#"<div class="search-slot"></div>"#),
+            "search slot must be filled, not empty:\n{html}"
         );
     }
 
