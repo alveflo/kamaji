@@ -179,7 +179,6 @@ mod tests {
             initial_prompt: Some("do".into()),
             agent: Agent::Codex,
             status: kamaji_core::models::Status::Todo,
-            position: 0,
             session_name: None,
             worktree_path: None,
             branch: None,

@@ -1,6 +1,6 @@
-//! SQLite persistence for projects and tickets: the schema, lightweight
-//! additive migrations (`PRAGMA table_info` column-adds), and the CRUD/query
-//! helpers the daemon uses as its single source of truth.
+//! SQLite persistence for projects and tickets: the schema, lightweight column
+//! migrations (`PRAGMA table_info` checks), and the CRUD/query helpers the
+//! daemon uses as its single source of truth.
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -24,7 +24,6 @@ CREATE TABLE IF NOT EXISTS tickets (
     initial_prompt TEXT,
     agent          TEXT NOT NULL,
     status         TEXT NOT NULL DEFAULT 'todo',
-    position       INTEGER NOT NULL DEFAULT 0,
     session_name   TEXT,
     worktree_path  TEXT,
     branch         TEXT,
@@ -61,6 +60,13 @@ fn is_identifier_safe(s: &str) -> bool {
 /// declaration fragment and cannot be identifier-checked, so it relies entirely
 /// on the trusted-literal contract.
 fn add_column_if_missing(conn: &Connection, table: &str, col: &str, decl: &str) -> Result<()> {
+    if !column_exists(conn, table, col)? {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])?;
+    }
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool> {
     debug_assert!(is_identifier_safe(table), "untrusted table name: {table:?}");
     debug_assert!(is_identifier_safe(col), "untrusted column name: {col:?}");
     let present = conn
@@ -68,8 +74,12 @@ fn add_column_if_missing(conn: &Connection, table: &str, col: &str, decl: &str) 
         .query_map([], |r| r.get::<_, String>(1))?
         .filter_map(std::result::Result::ok)
         .any(|name| name == col);
-    if !present {
-        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"), [])?;
+    Ok(present)
+}
+
+fn drop_column_if_present(conn: &Connection, table: &str, col: &str) -> Result<()> {
+    if column_exists(conn, table, col)? {
+        conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {col}"), [])?;
     }
     Ok(())
 }
@@ -104,6 +114,12 @@ const MIGRATIONS: &[fn(&Connection) -> Result<()>] = &[
             "instrumented",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        Ok(())
+    },
+    // v2: remove the unused ticket ordering column. It was always left at its
+    // default value, so list ordering was already effectively id order.
+    |conn| {
+        drop_column_if_present(conn, "tickets", "position")?;
         Ok(())
     },
 ];
@@ -171,7 +187,6 @@ fn row_to_ticket(row: &Row) -> rusqlite::Result<Ticket> {
         initial_prompt: row.get("initial_prompt")?,
         agent: parse_col(&agent, "agent")?,
         status: parse_col(&status, "status")?,
-        position: row.get("position")?,
         session_name: row.get("session_name")?,
         worktree_path: worktree.map(PathBuf::from),
         branch: row.get("branch")?,
@@ -267,7 +282,7 @@ impl Db {
     pub fn list_tickets(&self, project_id: i64) -> Result<Vec<Ticket>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT * FROM tickets WHERE project_id = ?1 ORDER BY position, id")?;
+            .prepare("SELECT * FROM tickets WHERE project_id = ?1 ORDER BY id")?;
         let rows = stmt.query_map([project_id], row_to_ticket)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
@@ -498,8 +513,9 @@ mod tests {
     }
 
     #[test]
-    fn migrate_adds_missing_columns_and_is_idempotent() {
-        // A pre-migration tickets table (no auto_reviewed / instrumented).
+    fn migrate_drops_position_adds_missing_columns_and_is_idempotent() {
+        // A pre-migration tickets table with the obsolete position column and
+        // no auto_reviewed / instrumented columns.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE tickets (
@@ -526,6 +542,21 @@ mod tests {
             .collect();
         assert!(cols.contains(&"auto_reviewed".to_string()));
         assert!(cols.contains(&"instrumented".to_string()));
+        assert!(!cols.contains(&"position".to_string()));
+    }
+
+    #[test]
+    fn new_schema_has_no_ticket_position_column() {
+        let db = db();
+        let cols: Vec<String> = db
+            .conn
+            .prepare("PRAGMA table_info(tickets)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .collect();
+        assert!(!cols.contains(&"position".to_string()));
     }
 
     #[test]
