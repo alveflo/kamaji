@@ -59,6 +59,8 @@ fn prepare_with_argv(
     ticket: &Ticket,
     argv: Vec<String>,
 ) -> Result<Prepared> {
+    ensure_agent_command(&argv)?;
+
     let root = project.root_dir.clone();
     if !git::is_git_repo(&root) {
         bail!("project root is not a git repository: {}", root.display());
@@ -88,7 +90,7 @@ fn prepare_with_argv(
         &config.zellij_bar,
         zellij_config::detect_default_layout().as_deref(),
     );
-    let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv, bar);
+    let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv, bar)?;
     let layout_path = layout_file(&name, &kdl)?;
     Ok(Prepared {
         name,
@@ -96,6 +98,13 @@ fn prepare_with_argv(
         worktree,
         instrumented,
     })
+}
+
+fn ensure_agent_command(argv: &[String]) -> Result<()> {
+    if argv.is_empty() {
+        bail!("{}", layout::EMPTY_COMMAND_CONFIG_ERROR);
+    }
+    Ok(())
 }
 
 /// Everything needed to launch a project's "main" session — a workspace not
@@ -271,6 +280,50 @@ mod tests {
                 .as_deref(),
             Some("kamaji-1-a")
         );
+    }
+
+    #[test]
+    fn prepare_session_rejects_empty_agent_command_as_config_error() {
+        let mut config = Config::default();
+        config.agents.claude.no_prompt = Vec::new();
+
+        let project = Project {
+            id: 1,
+            name: "proj".into(),
+            root_dir: PathBuf::from("/definitely/not/a/git/repo"),
+            default_agent: None,
+            created_at: String::new(),
+        };
+        let ticket = Ticket {
+            id: 1,
+            project_id: project.id,
+            title: "ticket".into(),
+            description: String::new(),
+            initial_prompt: None,
+            agent: Agent::Claude,
+            status: Status::Todo,
+            position: 0,
+            session_name: None,
+            worktree_path: None,
+            branch: None,
+            auto_reviewed: false,
+            instrumented: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let err = match prepare_session(
+            &project,
+            &config,
+            std::path::Path::new("/tmp/kamaji-state"),
+            &ticket,
+        ) {
+            Ok(_) => panic!("empty agent command should be rejected"),
+            Err(e) => e.to_string(),
+        };
+
+        assert!(err.contains("config error: agent command must not be empty"));
+        assert!(err.contains("no_prompt"));
     }
 
     fn project(id: i64, root: PathBuf, default_agent: Option<Agent>) -> Project {

@@ -2,6 +2,14 @@
 //! ([`BarStyle`]) and keeping the agent command out of the per-tab template so
 //! newly-created tabs open a plain shell.
 
+use anyhow::{bail, Result};
+
+pub const EMPTY_COMMAND_CONFIG_ERROR: &str = concat!(
+    "config error: agent command must not be empty; ",
+    "set at least a program in the selected agent's command config ",
+    "(with_prompt, no_prompt, or resume)"
+);
+
 pub(crate) fn kdl_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -60,11 +68,13 @@ fn tab_template(bar: BarStyle) -> &'static str {
 ///
 /// The agent command lives inside an explicit `tab` so it runs only in the
 /// first tab; new tabs (Ctrl+T n) inherit the bars-only template and open a
-/// plain shell via `children`. `command` must be non-empty.
-pub fn render_layout(cwd: &str, command: &[String], bar: BarStyle) -> String {
-    let program = kdl_escape(&command[0]);
+/// plain shell via `children`. Returns a config error if `command` is empty.
+pub fn render_layout(cwd: &str, command: &[String], bar: BarStyle) -> Result<String> {
+    let Some((program, args)) = command.split_first() else {
+        bail!("{}", EMPTY_COMMAND_CONFIG_ERROR);
+    };
+    let program = kdl_escape(program);
     let cwd_esc = kdl_escape(cwd);
-    let args = &command[1..];
     let pane = if args.is_empty() {
         format!("        pane command=\"{program}\" cwd=\"{cwd_esc}\"\n")
     } else {
@@ -77,7 +87,9 @@ pub fn render_layout(cwd: &str, command: &[String], bar: BarStyle) -> String {
         )
     };
     let template = tab_template(bar);
-    format!("layout {{\n{template}    tab {{\n{pane}    }}\n}}\n")
+    Ok(format!(
+        "layout {{\n{template}    tab {{\n{pane}    }}\n}}\n"
+    ))
 }
 
 /// Render a zellij KDL layout that opens a plain shell in `cwd` with no command,
@@ -96,7 +108,7 @@ mod tests {
 
     #[test]
     fn no_args_layout() {
-        let out = render_layout("/wt", &["claude".to_string()], BarStyle::Default);
+        let out = render_layout("/wt", &["claude".to_string()], BarStyle::Default).unwrap();
         assert_eq!(
             out,
             "\
@@ -124,7 +136,8 @@ layout {
             "/wt",
             &["claude".to_string(), "fix the bug".to_string()],
             BarStyle::Default,
-        );
+        )
+        .unwrap();
         assert_eq!(
             out,
             "\
@@ -150,15 +163,24 @@ layout {
 
     #[test]
     fn escapes_quotes() {
-        let out = render_layout("/w\"t", &["claude".to_string()], BarStyle::Default);
+        let out = render_layout("/w\"t", &["claude".to_string()], BarStyle::Default).unwrap();
         assert!(out.contains("cwd=\"/w\\\"t\""));
+    }
+
+    #[test]
+    fn empty_command_is_config_error() {
+        let err = render_layout("/wt", &[], BarStyle::Default)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("config error: agent command must not be empty"));
+        assert!(err.contains("no_prompt"));
     }
 
     /// Compact style mirrors zellij 0.43's compact layout: a single-line
     /// `compact-bar` below the tab's panes, and no tab-bar/status-bar.
     #[test]
     fn compact_layout_uses_compact_bar() {
-        let out = render_layout("/wt", &["claude".to_string()], BarStyle::Compact);
+        let out = render_layout("/wt", &["claude".to_string()], BarStyle::Compact).unwrap();
         assert_eq!(
             out,
             "\
@@ -181,7 +203,7 @@ layout {
     /// only content is `children`, so new tabs open a plain shell (issue #2).
     #[test]
     fn none_layout_has_no_bars() {
-        let out = render_layout("/wt", &["claude".to_string()], BarStyle::None);
+        let out = render_layout("/wt", &["claude".to_string()], BarStyle::None).unwrap();
         assert_eq!(
             out,
             "\
@@ -206,7 +228,8 @@ layout {
     #[test]
     fn agent_runs_only_in_first_tab() {
         for bar in [BarStyle::Default, BarStyle::Compact, BarStyle::None] {
-            let out = render_layout("/wt", &["claude".to_string(), "do it".to_string()], bar);
+            let out =
+                render_layout("/wt", &["claude".to_string(), "do it".to_string()], bar).unwrap();
             let (template, rest) = out
                 .split_once("    tab {")
                 .expect("layout must contain an explicit tab block");
@@ -261,7 +284,7 @@ layout {
     /// they vanish.
     #[test]
     fn includes_tab_and_status_bars() {
-        let out = render_layout("/wt", &["claude".to_string()], BarStyle::Default);
+        let out = render_layout("/wt", &["claude".to_string()], BarStyle::Default).unwrap();
         assert!(out.contains("plugin location=\"tab-bar\""));
         assert!(out.contains("plugin location=\"status-bar\""));
     }
