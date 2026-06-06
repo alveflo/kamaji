@@ -412,14 +412,17 @@ mod tests {
     fn missing_theme_defaults_to_catppuccin() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        // Write a config that predates the theme key by stripping it out.
+        // Write a config that predates the theme key by stripping it out. Match the
+        // exact top-level key (`theme = …`) so we don't also strip `web_theme`,
+        // which merely shares the substring.
+        let is_top_level_theme = |l: &str| l.trim_start().starts_with("theme =");
         let text = toml::to_string_pretty(&Config::default())
             .unwrap()
             .lines()
-            .filter(|l| !l.trim_start().starts_with("theme"))
+            .filter(|l| !is_top_level_theme(l))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!text.contains("theme"));
+        assert!(!text.lines().any(is_top_level_theme));
         fs::write(&path, text).unwrap();
         let loaded = load_from(&path).unwrap();
         assert_eq!(loaded.theme, "catppuccin");
@@ -428,6 +431,26 @@ mod tests {
     #[test]
     fn default_config_theme_is_catppuccin() {
         assert_eq!(Config::default().theme, "catppuccin");
+    }
+
+    #[test]
+    fn default_web_theme_is_auto() {
+        assert_eq!(DaemonConfig::default().web_theme, "auto");
+    }
+
+    #[test]
+    fn missing_web_theme_defaults_to_auto() {
+        // A config predating the key (its line stripped) still loads, defaulting
+        // web_theme to "auto" so existing installs change nothing.
+        let text = toml::to_string_pretty(&Config::default())
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("web_theme"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("web_theme"));
+        let loaded: Config = toml::from_str(&text).unwrap();
+        assert_eq!(loaded.daemon.web_theme, "auto");
     }
 
     #[test]

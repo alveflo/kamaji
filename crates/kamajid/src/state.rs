@@ -38,13 +38,18 @@ pub struct AppState {
 impl AppState {
     pub fn new(db: Db, config: Config) -> Self {
         let (tx, _rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        // `web_theme = "match"` tints the browser terminal to the board palette;
+        // every other value (incl. "auto" and explicit zellij theme names) leaves
+        // xterm's default palette — only the in-config zellij theme, if any, applies.
+        let mut proxy = ZellijProxy::new();
+        proxy.set_inject_xterm_theme(config.daemon.web_theme.trim() == "match");
         AppState {
             db: Arc::new(Mutex::new(db)),
             config: Arc::new(TokioRwLock::new(config)),
             tx,
             state_dir: Arc::new(kamaji_core::detect::default_state_dir()),
             zellij_web: Arc::new(ZellijWeb::new()),
-            zellij_proxy: Arc::new(ZellijProxy::new()),
+            zellij_proxy: Arc::new(proxy),
             proxy_base: Arc::new(DEFAULT_PROXY_BASE.to_string()),
             sessions: Arc::new(RealSessionDriver),
         }

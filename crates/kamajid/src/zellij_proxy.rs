@@ -15,8 +15,9 @@
 //!
 //! The proxy also rewrites a couple of zellij's served JS assets in flight: the
 //! reconnect module (see [`RECONNECT_SHIM`]) and `terminal.js`, into which it
-//! splices a bundled Nerd Font (see [`nerd_font_terminal_js`]) so the embedded
-//! xterm terminal renders icon glyphs instead of tofu.
+//! splices a bundled Nerd Font and (when `web_theme = "match"`) the board's
+//! palette (see [`rewrite_terminal_js`]) so the embedded xterm terminal renders
+//! icon glyphs instead of tofu and matches the board's colors.
 
 use std::sync::Arc;
 
@@ -62,9 +63,26 @@ const NERD_FONT_PATH: &str = "/kamaji-assets/nerd-font.woff2";
 /// woff2. zellij web renders the terminal with xterm.js configured for a bare
 /// `"Monospace"` family, which has no Private-Use-Area glyphs, so Nerd Font icons
 /// fall back to tofu. We bundle this patched font and rewrite `terminal.js`
-/// ([`nerd_font_terminal_js`]) to load and use it.
+/// ([`rewrite_terminal_js`]) to load and use it.
 const NERD_FONT_WOFF2: &[u8] =
     include_bytes!("proxy_assets/CaskaydiaCoveNerdFontMono-Regular.woff2");
+
+/// The xterm.js `theme` object (a JS object literal) that matches the kamaji
+/// board's palette — Catppuccin Mocha with the board's darker base background
+/// (`--bg #16161f`). Injected into `terminal.js` only when `web_theme = "match"`
+/// (see [`ZellijProxy::inject_xterm_theme`]), so the browser terminal's default
+/// background and ANSI palette line up with the board around it. Values mirror
+/// `crates/kamajid/src/assets/tokens.css`; the three colors absent there
+/// (yellow/cyan/magenta) come from Catppuccin Mocha, which the tokens already are.
+const KAMAJI_XTERM_THEME: &str = r##"{
+            background: "#16161f", foreground: "#cdd6f4",
+            cursor: "#89b4fa", cursorAccent: "#16161f",
+            selectionBackground: "rgba(137,180,250,0.28)",
+            black: "#45475a", red: "#f38ba8", green: "#a6e3a1", yellow: "#f9e2af",
+            blue: "#89b4fa", magenta: "#f5c2e7", cyan: "#94e2d5", white: "#bac2de",
+            brightBlack: "#585b70", brightRed: "#f38ba8", brightGreen: "#a6e3a1", brightYellow: "#f9e2af",
+            brightBlue: "#89b4fa", brightMagenta: "#f5c2e7", brightCyan: "#94e2d5", brightWhite: "#a6adc8"
+        }"##;
 
 /// Reverse proxy state: the upstream `zellij web` bases plus the cached session
 /// cookie obtained by logging in once with the token.
@@ -74,6 +92,11 @@ pub struct ZellijProxy {
     http: reqwest::Client,
     /// `session_token=<uuid>` — the authenticating cookie, set once.
     cookie: Mutex<Option<String>>,
+    /// When true (`web_theme = "match"`), splice [`KAMAJI_XTERM_THEME`] into the
+    /// rewritten `terminal.js` so the browser terminal matches the board palette.
+    /// When false (`"auto"` / an explicit zellij theme name), the terminal keeps
+    /// xterm's default palette — only the in-config zellij theme, if any, applies.
+    inject_xterm_theme: bool,
 }
 
 impl ZellijProxy {
@@ -95,7 +118,14 @@ impl ZellijProxy {
                 .build()
                 .expect("reqwest client"),
             cookie: Mutex::new(None),
+            inject_xterm_theme: false,
         }
+    }
+
+    /// Set whether the rewritten `terminal.js` carries the kamaji xterm theme.
+    /// Call at startup from `web_theme` before the proxy is shared.
+    pub fn set_inject_xterm_theme(&mut self, inject: bool) {
+        self.inject_xterm_theme = inject;
     }
 
     /// Ensure we hold a `session_token` cookie, logging in with `token` if not.
@@ -335,11 +365,13 @@ const NERD_FONT_BOOTSTRAP: &str = r#"
 /// If `path` is zellij web's `terminal.js` *and* it still configures the bare
 /// `"Monospace"` xterm family this rewrite was written against, return a version
 /// that (1) prepends kamaji's bundled Nerd Font to the family and (2) splices in
-/// [`NERD_FONT_BOOTSTRAP`] to load that font and rebuild the WebGL atlas.
+/// [`NERD_FONT_BOOTSTRAP`] to load that font and rebuild the WebGL atlas — plus,
+/// when `inject_theme` is set (`web_theme = "match"`), (3) splices [`KAMAJI_XTERM_THEME`]
+/// into the `new Terminal({…})` options so the terminal matches the board palette.
 /// Otherwise `None`, and the asset is forwarded unchanged — failing *safe* so a
 /// future zellij that restructures `terminal.js` keeps working (just without the
-/// icon font). Re-verify this rewrite after a zellij bump.
-fn nerd_font_terminal_js(path: &str, body: &[u8]) -> Option<String> {
+/// icon font/theme). Re-verify this rewrite after a zellij bump.
+fn rewrite_terminal_js(path: &str, body: &[u8], inject_theme: bool) -> Option<String> {
     if path != "/assets/terminal.js" {
         return None;
     }
@@ -351,7 +383,7 @@ fn nerd_font_terminal_js(path: &str, body: &[u8]) -> Option<String> {
     if !body.contains(FAMILY_ANCHOR) || !body.contains(FOCUS_ANCHOR) {
         return None;
     }
-    let rewritten = body
+    let mut rewritten = body
         .replacen(
             FAMILY_ANCHOR,
             &format!("fontFamily: \"{NERD_FONT_FAMILY}, Monospace\""),
@@ -362,6 +394,20 @@ fn nerd_font_terminal_js(path: &str, body: &[u8]) -> Option<String> {
             &format!("{FOCUS_ANCHOR}{NERD_FONT_BOOTSTRAP}"),
             1,
         );
+    // Optionally tint the terminal to the board palette by adding a `theme:`
+    // property to the xterm options. Anchored on the line the font rewrite just
+    // touched, so it lands inside `new Terminal({…})`. Its own gate keeps it
+    // fail-safe independent of the font anchors above.
+    if inject_theme {
+        let family_line = format!("fontFamily: \"{NERD_FONT_FAMILY}, Monospace\",");
+        if rewritten.contains(&family_line) {
+            rewritten = rewritten.replacen(
+                &family_line,
+                &format!("{family_line}\n        theme: {KAMAJI_XTERM_THEME},"),
+                1,
+            );
+        }
+    }
     Some(rewritten)
 }
 
@@ -467,7 +513,7 @@ async fn http_proxy(
         if let Some(shim) = reconnect_shim(&path, &body_bytes) {
             return js_response(shim);
         }
-        if let Some(js) = nerd_font_terminal_js(&path, &body_bytes) {
+        if let Some(js) = rewrite_terminal_js(&path, &body_bytes, proxy.inject_xterm_theme) {
             return js_response(js);
         }
 
@@ -711,7 +757,7 @@ mod tests {
 
     #[test]
     fn rewrites_terminal_js_to_use_the_bundled_nerd_font() {
-        let out = nerd_font_terminal_js("/assets/terminal.js", STUB_TERMINAL_JS.as_bytes())
+        let out = rewrite_terminal_js("/assets/terminal.js", STUB_TERMINAL_JS.as_bytes(), false)
             .expect("terminal.js with the known anchors is rewritten");
         // The bare Monospace family now leads with the bundled Nerd Font.
         assert!(out.contains(&format!("fontFamily: \"{NERD_FONT_FAMILY}, Monospace\"")));
@@ -729,22 +775,54 @@ mod tests {
         let focus = out.find("term.focus();").expect("focus anchor kept");
         let face = out.find("new FontFace").expect("bootstrap present");
         assert!(focus < face, "bootstrap is injected after term.focus()");
+        // With inject_theme=false (auto), no xterm theme is added.
+        assert!(
+            !out.contains("theme:"),
+            "no xterm theme injected in auto mode"
+        );
+    }
+
+    /// `web_theme = "match"` additionally splices the board palette into the
+    /// xterm options, on top of the always-on font rewrite.
+    #[test]
+    fn injects_the_board_xterm_theme_when_requested() {
+        let off = rewrite_terminal_js("/assets/terminal.js", STUB_TERMINAL_JS.as_bytes(), false)
+            .expect("rewritten");
+        let on = rewrite_terminal_js("/assets/terminal.js", STUB_TERMINAL_JS.as_bytes(), true)
+            .expect("rewritten");
+        assert!(!off.contains("theme:"), "auto: no theme");
+        assert!(on.contains("theme:"), "match: theme present");
+        assert!(
+            on.contains("#16161f") && on.contains("#cdd6f4"),
+            "match: theme carries the board palette (bg + fg)"
+        );
+        // The theme sits inside the Terminal options, after the font family.
+        let family = on.find("fontFamily:").expect("family present");
+        let theme = on.find("theme:").expect("theme present");
+        assert!(
+            family < theme,
+            "theme follows fontFamily inside new Terminal({{…}})"
+        );
+        // Font rewrite still happens in match mode too.
+        assert!(on.contains("new FontFace"), "match: font still loaded");
     }
 
     /// All-or-nothing: a restructured terminal.js missing either anchor is
     /// forwarded unchanged rather than half-rewritten (font set but never loaded).
+    /// True even when a theme injection was requested.
     #[test]
     fn leaves_terminal_js_untouched_without_known_anchors() {
         assert!(
-            nerd_font_terminal_js(
+            rewrite_terminal_js(
                 "/assets/terminal.js",
-                b"const term = new Terminal({ fontFamily: \"Monospace\" });"
+                b"const term = new Terminal({ fontFamily: \"Monospace\" });",
+                true
             )
             .is_none(),
-            "missing the focus anchor => not rewritten"
+            "missing the focus anchor => not rewritten, even with theme requested"
         );
         assert!(
-            nerd_font_terminal_js("/assets/index.js", STUB_TERMINAL_JS.as_bytes()).is_none(),
+            rewrite_terminal_js("/assets/index.js", STUB_TERMINAL_JS.as_bytes(), true).is_none(),
             "wrong path => not rewritten"
         );
     }
