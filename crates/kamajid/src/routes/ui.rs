@@ -12,7 +12,7 @@ use kamaji_core::session;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::views;
-use crate::views::confirm::{ticket_confirm, ConfirmAction};
+use crate::views::confirm::{delete_done_confirm, ticket_confirm, ConfirmAction};
 use crate::views::modal::ticket_form;
 
 #[derive(Deserialize)]
@@ -100,6 +100,13 @@ pub struct ConfirmQuery {
 /// button. An unknown `action` fails query deserialization → 400.
 pub async fn confirm_ticket(Path(id): Path<i64>, Query(q): Query<ConfirmQuery>) -> Markup {
     ticket_confirm(id, q.action)
+}
+
+/// `GET /ui/projects/:id/confirm-delete-done` → the confirmation modal for
+/// clearing the project's whole Done column. Render-only: the bulk
+/// `DELETE /projects/:id/done-tickets` fires from the modal's Confirm button.
+pub async fn confirm_delete_done(Path(project_id): Path<i64>) -> Markup {
+    delete_done_confirm(project_id)
 }
 
 /// `GET /ui/projects/new` → the create-project modal fragment. There is no

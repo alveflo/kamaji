@@ -99,6 +99,13 @@
 }
 .sessions-btn:active { transform: translateY(1px); }
 
+/* topbar "Clear Done" — a ghost button that warms to a destructive red on hover */
+.clear-done-btn:hover {
+  color: var(--danger, #f38ba8);
+  border-color: color-mix(in srgb, var(--danger, #f38ba8) 35%, transparent);
+  background: color-mix(in srgb, var(--danger, #f38ba8) 10%, transparent);
+}
+
 /* ----------------------------------------------------------------------------
    Board grid (prototype version — flex:1 inside .main)
    -------------------------------------------------------------------------- */

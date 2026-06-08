@@ -281,6 +281,80 @@ async fn deleting_a_ticket_patches_a_remove() {
 }
 
 #[tokio::test]
+async fn clearing_done_patches_a_remove_per_done_card() {
+    use kamaji_core::models::{Agent, Status};
+    let (base, state) = spawn().await;
+    let (pid, done_a, done_b) = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let a = db.create_ticket(p.id, "done-a", "", None, Agent::Claude)?;
+            let b = db.create_ticket(p.id, "done-b", "", None, Agent::Claude)?;
+            db.set_ticket_status(a.id, Status::Done)?;
+            db.set_ticket_status(b.id, Status::Done)?;
+            Ok((p.id, a.id, b.id))
+        })
+        .await
+        .unwrap();
+
+    let mut stream = connect_ui_events(&base).await;
+    for _ in 0..4 {
+        let _ = read_patch(&mut stream).await;
+    } // drain the snapshot
+
+    reqwest::Client::new()
+        .delete(format!("{base}/projects/{pid}/done-tickets"))
+        .send()
+        .await
+        .unwrap();
+
+    let p1 = read_patch(&mut stream).await;
+    assert!(p1.contains("mode remove"), "first is a remove:\n{p1}");
+    assert!(
+        p1.contains(&format!("#card-{done_a}")),
+        "targets first done card:\n{p1}"
+    );
+    let p2 = read_patch(&mut stream).await;
+    assert!(p2.contains("mode remove"), "second is a remove:\n{p2}");
+    assert!(
+        p2.contains(&format!("#card-{done_b}")),
+        "targets second done card:\n{p2}"
+    );
+}
+
+#[tokio::test]
+async fn clear_done_confirm_modal_hits_bulk_delete() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            Ok(db
+                .create_project("p", std::path::Path::new("/tmp/p"), None)?
+                .id)
+        })
+        .await
+        .unwrap();
+    let body = reqwest::get(format!("{base}/ui/projects/{pid}/confirm-delete-done"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "fragment rooted at #modal for morph-by-id:\n{body}"
+    );
+    assert!(
+        body.contains(&format!(
+            "fetch('/projects/{pid}/done-tickets',{{method:'DELETE'}})"
+        )),
+        "confirm hits the bulk delete endpoint:\n{body}"
+    );
+    assert!(
+        body.contains("Delete all done tickets?"),
+        "names the bulk action:\n{body}"
+    );
+}
+
+#[tokio::test]
 async fn new_ticket_modal_renders_form() {
     let (base, state) = spawn().await;
     let pid = state

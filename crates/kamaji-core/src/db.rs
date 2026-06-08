@@ -373,6 +373,25 @@ impl Db {
             .execute("DELETE FROM tickets WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    /// Delete every ticket in the Done column for `project_id`, returning the
+    /// ids of the rows removed (in id order) so callers can emit one
+    /// `ticket.deleted` per card. Like [`Self::delete_ticket`], this only
+    /// removes the rows — it does not tear down any worktree/zellij session a
+    /// ticket may still own.
+    pub fn delete_done_tickets(&self, project_id: i64) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM tickets WHERE project_id = ?1 AND status = ?2 ORDER BY id")?;
+        let ids = stmt
+            .query_map(params![project_id, Status::Done.as_str()], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        self.conn.execute(
+            "DELETE FROM tickets WHERE project_id = ?1 AND status = ?2",
+            params![project_id, Status::Done.as_str()],
+        )?;
+        Ok(ids)
+    }
 }
 
 #[cfg(test)]
@@ -426,6 +445,66 @@ mod tests {
         assert_eq!(db.list_tickets(p.id).unwrap().len(), 1);
         db.delete_ticket(t.id).unwrap();
         assert_eq!(db.list_tickets(p.id).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn delete_done_tickets_removes_only_done_and_returns_their_ids() {
+        let db = db();
+        let p = db
+            .create_project("p", &PathBuf::from("/tmp/p"), None)
+            .unwrap();
+        // Other projects' Done tickets must be untouched (scoped by project_id).
+        let other = db
+            .create_project("other", &PathBuf::from("/tmp/other"), None)
+            .unwrap();
+        let other_done = db
+            .create_ticket(other.id, "other-done", "", None, Agent::Claude)
+            .unwrap();
+        db.set_ticket_status(other_done.id, Status::Done).unwrap();
+
+        let todo = db
+            .create_ticket(p.id, "todo", "", None, Agent::Claude)
+            .unwrap();
+        let done_a = db
+            .create_ticket(p.id, "done-a", "", None, Agent::Claude)
+            .unwrap();
+        let done_b = db
+            .create_ticket(p.id, "done-b", "", None, Agent::Claude)
+            .unwrap();
+        let review = db
+            .create_ticket(p.id, "review", "", None, Agent::Claude)
+            .unwrap();
+        db.set_ticket_status(done_a.id, Status::Done).unwrap();
+        db.set_ticket_status(done_b.id, Status::Done).unwrap();
+        db.set_ticket_status(review.id, Status::Review).unwrap();
+
+        let deleted = db.delete_done_tickets(p.id).unwrap();
+        assert_eq!(deleted, vec![done_a.id, done_b.id]);
+
+        // Only the non-Done tickets of this project survive.
+        let remaining: Vec<i64> = db
+            .list_tickets(p.id)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(remaining, vec![todo.id, review.id]);
+
+        // The other project's Done ticket is left intact.
+        assert!(db.get_ticket(other_done.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn delete_done_tickets_on_empty_done_column_is_a_noop() {
+        let db = db();
+        let p = db
+            .create_project("p", &PathBuf::from("/tmp/p"), None)
+            .unwrap();
+        db.create_ticket(p.id, "todo", "", None, Agent::Claude)
+            .unwrap();
+        let deleted = db.delete_done_tickets(p.id).unwrap();
+        assert!(deleted.is_empty());
+        assert_eq!(db.list_tickets(p.id).unwrap().len(), 1);
     }
 
     #[test]

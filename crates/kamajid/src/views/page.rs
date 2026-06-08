@@ -91,6 +91,10 @@ pub fn page(
                                data-on:click=(PreEscaped("@get('/ui/sessions/manage')")) {
                             "Sessions"
                         }
+                        button class="sessions-btn clear-done-btn"
+                               data-on:click=(PreEscaped(format!("@get('/ui/projects/{}/confirm-delete-done')", project.id))) {
+                            "Clear Done"
+                        }
                         button class="new-ticket"
                                data-on:click=(PreEscaped(format!("@get('/ui/tickets/new?project={}')", project.id))) {
                             "+ New"
@@ -276,6 +280,21 @@ mod tests {
             html.contains("@get('/ui/sessions/manage')"),
             "sessions button opens the manage modal:\n{html}"
         );
+    }
+
+    #[test]
+    fn topbar_has_clear_done_button_opening_the_confirm_modal() {
+        let p = project(5, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"class="sessions-btn clear-done-btn""#),
+            "clear-done button present:\n{html}"
+        );
+        assert!(
+            html.contains("@get('/ui/projects/5/confirm-delete-done')"),
+            "clear-done button opens the project's confirm modal:\n{html}"
+        );
+        assert!(html.contains("Clear Done"), "button label:\n{html}");
     }
 
     #[test]
