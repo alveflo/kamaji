@@ -1319,3 +1319,89 @@ async fn editing_and_deleting_emit_sse_events() {
     assert_eq!(n2, "ticket.deleted");
     assert_eq!(d2["id"], tid);
 }
+
+#[tokio::test]
+async fn delete_done_tickets_removes_done_column_and_returns_count() {
+    use kamaji_core::models::{Agent, Status};
+    let (base, state) = spawn().await;
+    let (pid, todo_id, done_a, done_b) = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let todo = db.create_ticket(p.id, "todo", "", None, Agent::Claude)?;
+            let a = db.create_ticket(p.id, "done-a", "", None, Agent::Claude)?;
+            let b = db.create_ticket(p.id, "done-b", "", None, Agent::Claude)?;
+            db.set_ticket_status(a.id, Status::Done)?;
+            db.set_ticket_status(b.id, Status::Done)?;
+            Ok((p.id, todo.id, a.id, b.id))
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .delete(format!("{base}/projects/{pid}/done-tickets"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["deleted"], 2);
+
+    // The two Done tickets are gone; the Todo one survives.
+    let remaining: Vec<serde_json::Value> = reqwest::Client::new()
+        .get(format!("{base}/projects/{pid}/tickets"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ids: Vec<i64> = remaining
+        .iter()
+        .map(|t| t["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, vec![todo_id]);
+    assert!(!ids.contains(&done_a) && !ids.contains(&done_b));
+}
+
+#[tokio::test]
+async fn delete_done_tickets_emits_one_deleted_event_per_card() {
+    use kamaji_core::models::{Agent, Status};
+    let (base, state) = spawn().await;
+    let (pid, done_a, done_b) = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let a = db.create_ticket(p.id, "done-a", "", None, Agent::Claude)?;
+            let b = db.create_ticket(p.id, "done-b", "", None, Agent::Claude)?;
+            db.set_ticket_status(a.id, Status::Done)?;
+            db.set_ticket_status(b.id, Status::Done)?;
+            Ok((p.id, a.id, b.id))
+        })
+        .await
+        .unwrap();
+
+    let mut stream = connect_events(&base).await;
+    reqwest::Client::new()
+        .delete(format!("{base}/projects/{pid}/done-tickets"))
+        .send()
+        .await
+        .unwrap();
+
+    // One ticket.deleted per removed card, in id order.
+    let (n1, d1) = read_named_event(&mut stream, "ticket.deleted").await;
+    assert_eq!(n1, "ticket.deleted");
+    assert_eq!(d1["id"], done_a);
+    let (n2, d2) = read_named_event(&mut stream, "ticket.deleted").await;
+    assert_eq!(n2, "ticket.deleted");
+    assert_eq!(d2["id"], done_b);
+}
+
+#[tokio::test]
+async fn delete_done_tickets_on_missing_project_is_404() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::Client::new()
+        .delete(format!("{base}/projects/999/done-tickets"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}

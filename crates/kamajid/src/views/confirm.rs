@@ -52,6 +52,20 @@ pub fn ticket_confirm(id: i64, action: ConfirmAction) -> Markup {
     confirm_dialog(heading, &message, confirm_label, &action_js, danger)
 }
 
+/// The confirmation modal for clearing a project's whole Done column
+/// (`GET /ui/projects/:id/confirm-delete-done`). Pure: `project_id -> Markup`.
+/// Confirm fires the bulk `DELETE /projects/:id/done-tickets`; the removed cards
+/// disappear over SSE and the modal clears on success.
+pub fn delete_done_confirm(project_id: i64) -> Markup {
+    confirm_dialog(
+        "Delete all done tickets?",
+        "Permanently delete every ticket in the Done column? This cannot be undone. Worktrees and zellij sessions are not torn down.",
+        "Delete all",
+        &format!("fetch('/projects/{project_id}/done-tickets',{{method:'DELETE'}})"),
+        true,
+    )
+}
+
 /// Generic confirmation modal chrome. `action_js` is a bare `fetch(...)`
 /// expression; this wraps it so the mount is cleared only on a 2xx. `danger`
 /// styles the confirm button as `btn-danger` (destructive) vs `btn-primary`.
@@ -165,6 +179,31 @@ mod tests {
 
     /// The confirm action clears the mount only on a 2xx; a failure leaves the
     /// dialog open. The card change itself arrives over /ui/events.
+    #[test]
+    fn delete_done_confirm_warns_and_hits_bulk_delete() {
+        let html = delete_done_confirm(9).into_string();
+        assert!(
+            html.starts_with(r#"<div id="modal">"#),
+            "fragment rooted at #modal for morph-by-id:\n{html}"
+        );
+        assert!(
+            html.contains("Delete all done tickets?"),
+            "heading names the bulk action:\n{html}"
+        );
+        assert!(
+            html.contains("This cannot be undone."),
+            "warns it is irreversible:\n{html}"
+        );
+        assert!(
+            html.contains("fetch('/projects/9/done-tickets',{method:'DELETE'})"),
+            "confirm hits the bulk delete endpoint:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="btn btn-danger""#),
+            "confirm is the danger button:\n{html}"
+        );
+    }
+
     #[test]
     fn confirm_clears_modal_only_on_success() {
         let html = ticket_confirm(5, ConfirmAction::Done).into_string();

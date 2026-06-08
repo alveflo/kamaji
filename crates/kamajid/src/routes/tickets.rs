@@ -6,7 +6,7 @@ use axum::Json;
 use kamaji_core::events::Event;
 use kamaji_core::models::{Agent, Status, Ticket};
 use kamaji_core::session;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -187,6 +187,38 @@ pub async fn delete(
     }
     state.emit(Event::TicketDeleted { id });
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The body of `DELETE /projects/:id/done-tickets`: how many cards were removed.
+#[derive(Serialize)]
+pub struct DeleteDoneResponse {
+    pub deleted: usize,
+}
+
+/// `DELETE /projects/:id/done-tickets` → remove every ticket in the project's
+/// Done column in one shot. Emits one `ticket.deleted` per removed card so each
+/// board client drops it from the DOM. Like the single-ticket DELETE, this does
+/// NOT tear down any worktree/zellij session the tickets may still own. 404 if
+/// the project does not exist; an empty Done column is a no-op success.
+pub async fn delete_done(
+    State(state): State<AppState>,
+    Path(project_id): Path<i64>,
+) -> Result<Json<DeleteDoneResponse>, ApiError> {
+    let deleted = state
+        .with_db(move |db| {
+            if db.get_project(project_id)?.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(db.delete_done_tickets(project_id)?))
+        })
+        .await?;
+    let deleted = deleted.ok_or(ApiError::NotFound)?;
+    for id in &deleted {
+        state.emit(Event::TicketDeleted { id: *id });
+    }
+    Ok(Json(DeleteDoneResponse {
+        deleted: deleted.len(),
+    }))
 }
 
 /// `POST /tickets/:id/start` → create the ticket's worktree + agent session in
