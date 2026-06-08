@@ -212,6 +212,38 @@ address.
 > `zellij … --create-background` no-op. Spawned zellij commands scrub `ZELLIJ*`
 > from their environment to avoid this.
 
+### Reboot persistence & autostart
+
+Agent sessions survive a reboot without any explicit save step, because every
+piece of state they need outlives the reboot:
+
+- **zellij sessions** — zellij serializes each session (layout + the command in
+  each pane) to its cache folder (`~/.cache/zellij`) once per second. After a
+  reboot they appear in `zellij list-sessions` as `EXITED - attach to resurrect`.
+  kamaji *depends* on this, so the config it generates for created sessions
+  forces `session_serialization true` (alongside `web_sharing "on"`) in
+  `kamaji-core::zellij_config` — a user who disabled serialization would
+  otherwise silently lose persistence.
+- **the ticket → session mapping** — the SQLite DB in `~/.local/share/kamaji/`.
+- **the agent's work** — the git worktree on disk.
+
+Everything volatile is regenerated: the pid/addr files in the runtime dir and
+the single-use layout / web-config files under `$TMPDIR`.
+
+Recovery is the *existing* attach path, not new machinery: `reconcile` keeps a
+ticket's `session_name` as long as the name is still listed (an `EXITED` stub
+counts), and opening the ticket runs `resurrect_session` — which relaunches the
+agent's configured `resume` argv (`claude resume`, `codex resume --last`, …) in
+the original worktree. The conversation continues.
+
+The one thing that does **not** restart itself is the daemon (and therefore the
+browser board on :8755). `make install-service` installs a release `kamajid` to
+`~/.local/bin` and a **systemd user unit** (`packaging/systemd/kamajid.service`)
+that `enable --now`s the daemon and enables lingering, so the board is back up
+automatically after login — and after a cold boot, before any interactive login.
+(`zellij web` still spawns lazily on first attach, so it needs no unit of its
+own.)
+
 ---
 
 ## zellij web + the reverse proxy
