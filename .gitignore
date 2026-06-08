@@ -5,3 +5,6 @@
 # runners). Lasting browser scripts live in crates/kamajid/smoke/, not here.
 /*.mjs
 /scratch/
+
+# stray rustc probe artifacts
+*.rlib

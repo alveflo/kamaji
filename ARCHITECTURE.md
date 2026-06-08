@@ -299,6 +299,22 @@ kamaji is localhost-first but built so a remote/internet-facing mode is
 
 ---
 
+## Container mode
+
+Native (daemon + agents on the host) remains the default and is unchanged. As an
+opt-in alternative, a `kamaji up`/`down` launcher runs the whole daemon (board,
+proxy, managed `zellij web`, all agent sessions) inside one container — the
+sandbox boundary for "agents with root, host protected." It is a
+transport/packaging layer over the same daemon: the board binds `0.0.0.0` (via
+the image CMD, so the native config bind is untouched) and publishes 8755/8756
+(8082 stays internal); project roots and worktree dirs are bind-mounted at
+identical paths (so worktree links and XDG paths resolve on both sides); a state
+marker in the runtime dir tells the client to connect to the container instead of
+spawning a local daemon, and `kamaji status` shows which mode is active. See
+`docs/superpowers/specs/2026-06-06-containerize-kamaji-design.md`.
+
+---
+
 ## Build, run, test
 
 ```sh

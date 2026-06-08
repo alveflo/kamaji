@@ -7,6 +7,7 @@
 mod app;
 mod cli;
 mod client;
+mod container;
 mod daemon;
 mod dir_select;
 mod engine;
@@ -83,6 +84,10 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        cli::Command::Up(args) => container::up(&args),
+        cli::Command::Down => container::down(),
+        cli::Command::Logs => container::logs(),
+        cli::Command::Status => container::status(),
     }
 }
 
