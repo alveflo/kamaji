@@ -10,6 +10,36 @@ use kamaji_core::config::Config;
 use kamaji_core::paths;
 
 use crate::client::DaemonClient;
+use crate::container::state::ContainerState;
+
+/// What to do given the container-state marker and a health check.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ContainerResolution {
+    /// Connect to this base URL (a healthy container daemon).
+    Connect(String),
+    /// A container is recorded but unreachable — the user should run `kamaji up`.
+    Down,
+    /// No container recorded; fall through to normal local discovery.
+    None,
+}
+
+/// Pure decision: with a recorded container, probe its board; otherwise no-op.
+pub fn resolve_container(
+    state: Option<ContainerState>,
+    healthy: impl Fn(&str) -> bool,
+) -> ContainerResolution {
+    match state {
+        Some(st) => {
+            let base = format!("http://{}", st.board_addr);
+            if healthy(&base) {
+                ContainerResolution::Connect(base)
+            } else {
+                ContainerResolution::Down
+            }
+        }
+        None => ContainerResolution::None,
+    }
+}
 
 /// Paths to the pidfile + addrfile under the runtime dir.
 pub fn runtime_files() -> Option<(PathBuf, PathBuf)> {
@@ -94,8 +124,9 @@ fn health_responds(http: &reqwest::blocking::Client, base: &str) -> bool {
 }
 
 /// Poll `<base>/healthz` every ~50ms until 200 or the deadline. Bounded.
-#[cfg(test)]
-fn wait_for_health(base: &str, timeout: Duration) -> std::result::Result<DaemonClient, String> {
+/// Used by container mode to wait on the published board port (which has no
+/// addrfile), and by tests.
+pub fn wait_for_health(base: &str, timeout: Duration) -> std::result::Result<DaemonClient, String> {
     let deadline = Instant::now() + timeout;
     let http = health_client()?;
     while Instant::now() < deadline {
@@ -198,7 +229,9 @@ fn spawn_detached(bin: &Path, addr: &str) -> std::io::Result<()> {
 /// Ensure a healthy daemon and return a connected client. Tries an existing
 /// daemon; else lock-acquires (winner spawns + health-waits + writes addr;
 /// loser health-waits on the addrfile). Bounded retry on a lost race whose
-/// winner crashed. `forced_addr` (from `--daemon`) skips spawning entirely.
+/// winner crashed. `forced_addr` (from `--daemon`) skips spawning entirely. If
+/// `kamaji up` recorded a containerized daemon, connects to it (or reports it
+/// down) instead of the local spawn logic below.
 pub fn ensure_daemon(
     config: &Config,
     forced_addr: Option<&str>,
@@ -208,6 +241,27 @@ pub fn ensure_daemon(
         let base = base_url(addr);
         return DaemonClient::connect(base).map_err(|e| format!("--daemon {addr}: {e:?}"));
     }
+
+    // Container mode: if `kamaji up` recorded a containerized daemon, connect to
+    // it (or report it down) instead of auto-spawning a local one.
+    match resolve_container(crate::container::state::load(), |base| {
+        reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(300))
+            .build()
+            .ok()
+            .and_then(|c| c.get(format!("{base}/healthz")).send().ok())
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+    }) {
+        ContainerResolution::Connect(base) => {
+            return DaemonClient::connect(base).map_err(|e| format!("{e:?}"));
+        }
+        ContainerResolution::Down => {
+            return Err("kamaji container is not responding — run `kamaji up`".into());
+        }
+        ContainerResolution::None => {}
+    }
+
     let (pidfile, addrfile) = runtime_files().ok_or("cannot determine runtime dir")?;
     let bind = config.daemon.bind.clone();
     for _attempt in 0..2 {
@@ -334,6 +388,38 @@ mod tests {
         let res = wait_for_health("http://127.0.0.1:1", std::time::Duration::from_millis(300));
         assert!(res.is_err());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn container_resolution_connects_when_healthy() {
+        let st = crate::container::state::ContainerState {
+            name: "kamaji".into(),
+            board_addr: "127.0.0.1:8755".into(),
+            runtime: "podman".into(),
+        };
+        let got = resolve_container(Some(st), |base| base == "http://127.0.0.1:8755");
+        assert!(matches!(got, ContainerResolution::Connect(ref b) if b == "http://127.0.0.1:8755"));
+    }
+
+    #[test]
+    fn container_resolution_errors_when_present_but_unhealthy() {
+        let st = crate::container::state::ContainerState {
+            name: "kamaji".into(),
+            board_addr: "127.0.0.1:8755".into(),
+            runtime: "podman".into(),
+        };
+        assert!(matches!(
+            resolve_container(Some(st), |_| false),
+            ContainerResolution::Down
+        ));
+    }
+
+    #[test]
+    fn container_resolution_absent_is_no_container() {
+        assert!(matches!(
+            resolve_container(None, |_| true),
+            ContainerResolution::None
+        ));
     }
 
     #[test]

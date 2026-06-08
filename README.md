@@ -88,6 +88,36 @@ kamaji checks for new releases on launch. When one is available the status bar
 shows `New version vX.Y.Z available — press u to update`; press `u` to download
 and replace the binary in place, then restart.
 
+## Container mode (sandboxed agents)
+
+There are two ways to run kamaji: **native** (the default — daemon and agents on
+your host, exactly as before) and **sandboxed**, where the daemon, zellij, and
+every agent run inside one container so an agent can have **root inside the box**
+without risking your host. Container mode is opt-in via `kamaji up`. Rootless
+**Podman** is recommended (container-root maps to your unprivileged user); Docker
+also works.
+
+```sh
+kamaji            # native (default): daemon + agents on the host, as always
+kamaji up         # opt in: run daemon + zellij + agents inside the sandbox
+# open http://127.0.0.1:8755
+kamaji status     # which mode am I in? + board URL
+kamaji down       # stop the sandbox (data preserved; next `kamaji` runs native)
+kamaji logs       # follow container logs
+```
+
+`kamaji up` reads your registered projects and bind-mounts each project root
+(and its worktree dir) at identical paths, mounts your agent credentials, sets
+resource limits, and binds the board to the published port. To add a new project, register it in the browser/TUI, then re-run `kamaji up` —
+it recreates the container to pick up the new project's bind-mount (running
+agent sessions persist via the worktrees and zellij-cache volume, and resume).
+
+In container mode the browser board is the terminal surface — open it and use a
+ticket's inline terminal. (The TUI can drive the board over HTTP, but its
+Enter-to-attach opens a local `zellij` session, so it isn't used for attaching
+to in-container agents in v1.) v1 targets Linux hosts. Raw `podman`/`docker`
+equivalents live in [`deploy/`](deploy/).
+
 ## Features
 
 - Four-column board: **Todo → In Progress → Review → Done**
