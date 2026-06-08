@@ -1,4 +1,4 @@
-//! The inline terminal panel: a near-fullscreen "terminal window" modal that
+//! The inline terminal panel: a resizable, movable "terminal window" modal that
 //! embeds a ticket's `zellij` session in an iframe (served through the
 //! authenticating reverse proxy, so no token prompt). Rooted at `#modal` so
 //! Datastar's `@get` morph-by-id drops it into the page mount.
@@ -6,8 +6,13 @@
 //! Dense-redesign look (Slice 5): a title bar with a live-dot + `#id` + task
 //! name on the left and an ✕ close upper-right; the black terminal body (the
 //! real session iframe); a zellij-style status bar (running indicator + session
-//! name + agent label) along the bottom. View + CSS only — proxy unchanged.
-//! Bindings use the RC.6 colon form.
+//! name + agent label) along the bottom. Bindings use the RC.6 colon form.
+//!
+//! The window opens near-fullscreen but can be **resized** from any edge/corner
+//! grip (`.term-rh[data-dir]`) and **moved** by dragging the title bar — driven
+//! by `assets/term-resize.js`, which persists the geometry. zellij web reflows
+//! the embedded session on its own when the iframe element changes size, so the
+//! proxy is unchanged; this is view + CSS + that one client script.
 //!
 //! Deliberately NO Escape-to-close: the embedded terminal captures the keyboard
 //! and Escape is a vital terminal key (vim, menus, …) — closing the panel on it
@@ -18,6 +23,10 @@ use maud::{html, Markup, PreEscaped};
 
 /// JS that clears the `#modal` mount, closing the panel.
 const CLOSE_JS: &str = "document.getElementById('modal').replaceChildren()";
+
+/// The eight edge/corner resize grips, by compass direction. `term-resize.js`
+/// reads each grip's `data-dir` to know which edges to move.
+const RESIZE_DIRS: [&str; 8] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
 
 /// Render the terminal panel for ticket `id` titled `title`, run by `agent` in
 /// session `session_name`, embedding `src` (the proxy iframe URL,
@@ -42,6 +51,11 @@ pub fn terminal_panel(id: i64, title: &str, agent: Agent, session_name: &str, sr
                     }
                     span class="term-session" { (session_name) }
                     span class="term-agent" { (agent.label()) }
+                }
+                // Edge/corner resize grips — wired up by term-resize.js. Kept
+                // inside the modal's clipped box so the rounded corners survive.
+                @for dir in RESIZE_DIRS {
+                    div class=(format!("term-rh term-rh-{dir}")) data-dir=(dir) {}
                 }
             }
         }
@@ -136,6 +150,26 @@ mod tests {
         let html = panel();
         assert!(!html.contains("keydown"), "no keydown handler:\n{html}");
         assert!(!html.contains("Escape"), "no Escape handler:\n{html}");
+    }
+
+    /// The window carries eight edge/corner resize grips (one per compass
+    /// direction), each tagged with a `data-dir` that `term-resize.js` reads.
+    #[test]
+    fn has_eight_resize_handles_with_directions() {
+        let html = panel();
+        for dir in ["n", "s", "e", "w", "ne", "nw", "se", "sw"] {
+            assert!(
+                html.contains(&format!(
+                    r#"class="term-rh term-rh-{dir}" data-dir="{dir}""#
+                )),
+                "resize grip for {dir}:\n{html}"
+            );
+        }
+        assert_eq!(
+            html.matches("term-rh ").count(),
+            8,
+            "exactly eight grips:\n{html}"
+        );
     }
 
     #[test]
