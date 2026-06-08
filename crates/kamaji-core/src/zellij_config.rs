@@ -113,6 +113,40 @@ pub fn ensure_web_sharing_on(kdl: &str) -> String {
     out
 }
 
+/// Return `kdl` with session serialization forced on: drop any existing
+/// uncommented top-level `session_serialization` node and append a single
+/// canonical `session_serialization true`. zellij defaults this on, but a user
+/// who set `session_serialization false` would silently break kamaji's
+/// reboot-persistence: kamaji relies on zellij serializing each session to its
+/// cache folder so that, after a restart, the session is listed as resurrectable
+/// and `resurrect_session` can relaunch the agent (see the daemon's attach path).
+/// Every session kamaji creates therefore forces it on, the same way it forces
+/// `web_sharing`.
+///
+/// Tolerant by design (same lightweight line scan as [`ensure_web_sharing_on`]):
+/// commented lines are inert and kept; dropping then re-appending guarantees
+/// exactly one active node. `session_serialization` takes a bare KDL boolean
+/// (`true`/`false`), so — unlike the string-valued `web_sharing`/`theme` nodes —
+/// only a whitespace delimiter is accepted after the key.
+pub fn ensure_session_serialization_on(kdl: &str) -> String {
+    let mut out = String::with_capacity(kdl.len() + 28);
+    for line in kdl.lines() {
+        let trimmed = line.trim_start();
+        let active_serialization = !trimmed.starts_with("//")
+            && !trimmed.starts_with("/-")
+            && trimmed
+                .strip_prefix("session_serialization")
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace()));
+        if active_serialization {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("session_serialization true\n");
+    out
+}
+
 /// Resolve the configured `web_theme` value into the zellij theme name to force
 /// on browser sessions, or `None` to leave the user's config untouched.
 /// `"auto"` (and empty) → `None` (respect the user's file). `"match"` → the
@@ -165,15 +199,17 @@ pub fn web_sharing_config_file() -> Option<&'static Path> {
 }
 
 /// Pure derivation of the session config from the user's zellij `base` config and
-/// the configured `web_theme`: always forces `web_sharing "on"`, and — unless
-/// `web_theme` is `"auto"` — forces the resolved theme onto the chrome (layer 1).
-/// `"auto"` leaves the user's own theme untouched. Split out from the IO in
-/// [`build_web_sharing_config_file`] so the whole policy is unit-testable.
+/// the configured `web_theme`: always forces `web_sharing "on"` and
+/// `session_serialization true`, and — unless `web_theme` is `"auto"` — forces
+/// the resolved theme onto the chrome (layer 1). `"auto"` leaves the user's own
+/// theme untouched. Split out from the IO in [`build_web_sharing_config_file`] so
+/// the whole policy is unit-testable.
 fn derive_web_config(base: &str, web_theme: &str) -> String {
     let with_sharing = ensure_web_sharing_on(base);
+    let with_serialization = ensure_session_serialization_on(&with_sharing);
     match resolve_web_theme(web_theme) {
-        Some(theme) => ensure_theme(&with_sharing, theme),
-        None => with_sharing,
+        Some(theme) => ensure_theme(&with_serialization, theme),
+        None => with_serialization,
     }
 }
 
@@ -243,6 +279,78 @@ mod tests {
         let out = ensure_web_sharing_on("web_sharing_foo \"x\"\n");
         assert!(out.contains("web_sharing_foo \"x\""));
         assert_eq!(active_web_sharing_lines(&out), vec!["web_sharing \"on\""]);
+    }
+
+    /// Count the active (uncommented) `session_serialization` nodes in some KDL.
+    fn active_session_serialization_lines(kdl: &str) -> Vec<&str> {
+        kdl.lines()
+            .map(str::trim_start)
+            .filter(|l| {
+                !l.starts_with("//")
+                    && !l.starts_with("/-")
+                    && l.strip_prefix("session_serialization")
+                        .is_some_and(|r| r.starts_with(|c: char| c.is_whitespace()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn session_serialization_added_to_empty_config() {
+        assert_eq!(
+            ensure_session_serialization_on(""),
+            "session_serialization true\n"
+        );
+    }
+
+    #[test]
+    fn session_serialization_replaces_existing_value_leaving_exactly_one() {
+        // A user who disabled serialization must be overridden, with no duplicate.
+        let out =
+            ensure_session_serialization_on("theme \"gruvbox\"\nsession_serialization false\n");
+        assert_eq!(
+            active_session_serialization_lines(&out),
+            vec!["session_serialization true"]
+        );
+        // Unrelated config is preserved.
+        assert!(out.contains("theme \"gruvbox\""));
+    }
+
+    #[test]
+    fn session_serialization_preserves_commented_lines_and_stays_single() {
+        let out = ensure_session_serialization_on("// session_serialization false\nkeybinds {}\n");
+        assert!(out.contains("// session_serialization false"));
+        assert!(out.contains("keybinds {}"));
+        assert_eq!(
+            active_session_serialization_lines(&out),
+            vec!["session_serialization true"]
+        );
+    }
+
+    #[test]
+    fn session_serialization_ignores_keys_that_only_share_a_prefix() {
+        // `session_serialization_foo` is a different key and must be left untouched.
+        let out = ensure_session_serialization_on("session_serialization_foo \"x\"\n");
+        assert!(out.contains("session_serialization_foo \"x\""));
+        assert_eq!(
+            active_session_serialization_lines(&out),
+            vec!["session_serialization true"]
+        );
+    }
+
+    #[test]
+    fn derive_web_config_always_forces_session_serialization() {
+        // Whatever the user's setting (or absence), the derived session config
+        // forces serialization on — kamaji's reboot-resurrection contract.
+        let from_empty = derive_web_config("", "auto");
+        assert_eq!(
+            active_session_serialization_lines(&from_empty),
+            vec!["session_serialization true"]
+        );
+        let from_disabled = derive_web_config("session_serialization false\n", "auto");
+        assert_eq!(
+            active_session_serialization_lines(&from_disabled),
+            vec!["session_serialization true"]
+        );
     }
 
     /// Count the active (uncommented) `theme` nodes in some KDL.

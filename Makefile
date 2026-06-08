@@ -15,9 +15,17 @@ BOARD_URL   := http://127.0.0.1:8755
 RUNTIME_DIR := $(or $(XDG_RUNTIME_DIR),$(XDG_CACHE_HOME),$(HOME)/.cache)
 PID_FILE    := $(RUNTIME_DIR)/kamaji/kamajid.pid
 
+# Autostart (systemd user service): install a release kamajid to ~/.local/bin and
+# a user unit so the board comes back automatically after login / reboot.
+RELEASE_BIN := target/release/kamajid
+BINDIR      := $(HOME)/.local/bin
+UNIT_SRC    := packaging/systemd/kamajid.service
+UNIT_DIR    := $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/systemd/user
+UNIT_DEST   := $(UNIT_DIR)/kamajid.service
+
 .DEFAULT_GOAL := help
 
-.PHONY: help start stop restart status logs
+.PHONY: help start stop restart status logs install-service uninstall-service
 
 help: ## List the daemon control targets
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -49,3 +57,20 @@ status: ## Report whether the daemon is responding
 
 logs: ## Follow the daemon log
 	@tail -f $(LOG)
+
+install-service: ## Install kamajid as a systemd user service (auto-starts on login/boot)
+	cargo build --release -p kamajid
+	@install -Dm755 $(RELEASE_BIN) $(BINDIR)/kamajid
+	@install -Dm644 $(UNIT_SRC) $(UNIT_DEST)
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now kamajid.service
+	@loginctl enable-linger 2>/dev/null \
+	  && echo "lingering enabled — kamajid will also start at boot, before login" \
+	  || echo "note: run 'sudo loginctl enable-linger $$(id -un)' to start kamajid at boot (before login)"
+	@echo "kamajid installed to $(BINDIR)/kamajid and running — board $(BOARD_URL)"
+
+uninstall-service: ## Stop and remove the kamajid systemd user service
+	-@systemctl --user disable --now kamajid.service 2>/dev/null
+	-@rm -f $(UNIT_DEST)
+	@systemctl --user daemon-reload
+	@echo "kamajid service removed ($(BINDIR)/kamajid left in place)"

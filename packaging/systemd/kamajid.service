@@ -1,0 +1,24 @@
+[Unit]
+Description=kamaji daemon — Kanban board, SSE event bus, and zellij web proxy
+Documentation=https://github.com/alveflo/kamaji
+# Loopback-only service; ordering after the user session graph is harmless and
+# ensures $XDG_RUNTIME_DIR etc. exist when we start.
+After=default.target
+
+[Service]
+Type=simple
+# Serves the board on 127.0.0.1:8755 and the zellij-web reverse proxy on :8756.
+# Installed by `make install-service` to ~/.local/bin/kamajid.
+ExecStart=%h/.local/bin/kamajid serve
+# A systemd user manager starts with a minimal PATH; make sure the daemon can
+# find the `zellij` binary (and kamajid itself) regardless of the login shell.
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+# The board is a long-lived process; bring it back if it ever crashes.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+# `systemctl --user enable` hooks this into login startup; combined with
+# `loginctl enable-linger` it also comes up at boot, before any interactive
+# login — so resurrectable zellij sessions are reachable after a reboot.
+WantedBy=default.target
