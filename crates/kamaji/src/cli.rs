@@ -704,7 +704,6 @@ mod tests {
             initial_prompt: None,
             agent: Agent::Claude,
             status: kamaji_core::models::Status::InProgress,
-            position: 0,
             session_name: None,
             worktree_path,
             branch: None,

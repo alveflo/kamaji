@@ -12,6 +12,12 @@
 //! cookie, and injects it into every upstream request (HTTP and the WebSocket
 //! handshake). The browser never needs the cookie or sees the prompt: zellij
 //! renders `window.is_authenticated = true` and connects straight through.
+//!
+//! The proxy also rewrites a couple of zellij's served JS assets in flight: the
+//! reconnect module (see [`RECONNECT_SHIM`]) and `terminal.js`, into which it
+//! splices a bundled Nerd Font and (when `web_theme = "match"`) the board's
+//! palette (see [`rewrite_terminal_js`]) so the embedded xterm terminal renders
+//! icon glyphs instead of tofu and matches the board's colors.
 
 use std::sync::Arc;
 
@@ -20,7 +26,7 @@ use axum::extract::ws::{CloseFrame as AxClose, Message as AxMsg, WebSocket, WebS
 use axum::extract::State;
 use axum::http::{header, HeaderName, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::any;
+use axum::routing::{any, get};
 use axum::Router;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
@@ -36,10 +42,47 @@ const DEFAULT_UPSTREAM_HTTP: &str = "http://127.0.0.1:8082";
 /// traffic uses WebSockets and static assets are fetched with empty GET bodies.
 const MAX_PROXY_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
-/// Only `/assets/connection.js` is buffered, because kamaji may replace that one
-/// zellij asset with a reconnect shim. Bound it separately so a bad upstream
-/// cannot force an unbounded allocation on this exceptional path.
-const MAX_RECONNECT_ASSET_BYTES: usize = 1024 * 1024;
+/// Only the handful of JS assets kamaji rewrites in flight (`connection.js`,
+/// `terminal.js` — see [`is_rewritable_asset`]) are buffered, since rewriting
+/// needs the whole body. Bound it separately so a bad upstream cannot force an
+/// unbounded allocation on these exceptional paths.
+const MAX_REWRITABLE_ASSET_BYTES: usize = 1024 * 1024;
+
+/// Family name kamaji's bundled Nerd Font is registered under, in both the
+/// rewritten `terminal.js` xterm config and the `FontFace` it constructs. It is
+/// an arbitrary label that only has to match between those two — the glyphs come
+/// from [`NERD_FONT_WOFF2`], not from any font of this name on the client.
+const NERD_FONT_FAMILY: &str = "CaskaydiaCove Nerd Font Mono";
+
+/// Same-origin path the proxy serves [`NERD_FONT_WOFF2`] at, referenced by the
+/// `FontFace` URL injected into `terminal.js`. It sits outside zellij's own
+/// `/assets/` and `/ws/` namespaces so it cannot collide with an upstream route.
+const NERD_FONT_PATH: &str = "/kamaji-assets/nerd-font.woff2";
+
+/// CaskaydiaCove Nerd Font Mono (Cascadia Code, Nerd-Font-patched), Regular, as
+/// woff2. zellij web renders the terminal with xterm.js configured for a bare
+/// `"Monospace"` family, which has no Private-Use-Area glyphs, so Nerd Font icons
+/// fall back to tofu. We bundle this patched font and rewrite `terminal.js`
+/// ([`rewrite_terminal_js`]) to load and use it.
+const NERD_FONT_WOFF2: &[u8] =
+    include_bytes!("proxy_assets/CaskaydiaCoveNerdFontMono-Regular.woff2");
+
+/// The xterm.js `theme` object (a JS object literal) that matches the kamaji
+/// board's palette — Catppuccin Mocha with the board's darker base background
+/// (`--bg #16161f`). Injected into `terminal.js` only when `web_theme = "match"`
+/// (see [`ZellijProxy::inject_xterm_theme`]), so the browser terminal's default
+/// background and ANSI palette line up with the board around it. Values mirror
+/// `crates/kamajid/src/assets/tokens.css`; the three colors absent there
+/// (yellow/cyan/magenta) come from Catppuccin Mocha, which the tokens already are.
+const KAMAJI_XTERM_THEME: &str = r##"{
+            background: "#16161f", foreground: "#cdd6f4",
+            cursor: "#89b4fa", cursorAccent: "#16161f",
+            selectionBackground: "rgba(137,180,250,0.28)",
+            black: "#45475a", red: "#f38ba8", green: "#a6e3a1", yellow: "#f9e2af",
+            blue: "#89b4fa", magenta: "#f5c2e7", cyan: "#94e2d5", white: "#bac2de",
+            brightBlack: "#585b70", brightRed: "#f38ba8", brightGreen: "#a6e3a1", brightYellow: "#f9e2af",
+            brightBlue: "#89b4fa", brightMagenta: "#f5c2e7", brightCyan: "#94e2d5", brightWhite: "#a6adc8"
+        }"##;
 
 /// Reverse proxy state: the upstream `zellij web` bases plus the cached session
 /// cookie obtained by logging in once with the token.
@@ -49,6 +92,11 @@ pub struct ZellijProxy {
     http: reqwest::Client,
     /// `session_token=<uuid>` — the authenticating cookie, set once.
     cookie: Mutex<Option<String>>,
+    /// When true (`web_theme = "match"`), splice [`KAMAJI_XTERM_THEME`] into the
+    /// rewritten `terminal.js` so the browser terminal matches the board palette.
+    /// When false (`"auto"` / an explicit zellij theme name), the terminal keeps
+    /// xterm's default palette — only the in-config zellij theme, if any, applies.
+    inject_xterm_theme: bool,
 }
 
 impl ZellijProxy {
@@ -70,7 +118,14 @@ impl ZellijProxy {
                 .build()
                 .expect("reqwest client"),
             cookie: Mutex::new(None),
+            inject_xterm_theme: false,
         }
+    }
+
+    /// Set whether the rewritten `terminal.js` carries the kamaji xterm theme.
+    /// Call at startup from `web_theme` before the proxy is shared.
+    pub fn set_inject_xterm_theme(&mut self, inject: bool) {
+        self.inject_xterm_theme = inject;
     }
 
     /// Ensure we hold a `session_token` cookie, logging in with `token` if not.
@@ -119,8 +174,23 @@ impl Default for ZellijProxy {
 pub fn router(proxy: Arc<ZellijProxy>) -> Router {
     Router::new()
         .route("/ws/*rest", any(ws_handler))
+        .route(NERD_FONT_PATH, get(serve_nerd_font))
         .fallback(any(http_proxy))
         .with_state(proxy)
+}
+
+/// Serve the bundled Nerd Font woff2 ([`NERD_FONT_WOFF2`]) the rewritten
+/// `terminal.js` loads. Immutable + far-future cache: the bytes only change when
+/// kamaji ships a new binary, and the URL is internal to this proxy.
+async fn serve_nerd_font() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "font/woff2"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        NERD_FONT_WOFF2,
+    )
+        .into_response()
 }
 
 /// Hop-by-hop headers (RFC 7230 §6.1) plus framing headers we must not forward.
@@ -265,6 +335,101 @@ fn reconnect_shim(path: &str, body: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// xterm bootstrap kamaji splices into zellij web's `terminal.js` immediately
+/// after `term.focus();`. zellij constructs the `Terminal` before any webfont is
+/// loaded, and the WebGL renderer rasterizes its glyph atlas from whatever font
+/// is resolved at that instant — so a font loaded *later* never reaches already
+/// cached cells. This loads the bundled Nerd Font via the CSS Font Loading API,
+/// then rebuilds the WebGL atlas (and repaints) once it is ready, so the icon
+/// (Private-Use-Area) glyphs render instead of first-paint tofu. Everything is
+/// guarded: a missing `webglAddon`/method or a failed load degrades to the
+/// comma-fallback `Monospace`, never a thrown error. (See the xterm webfont
+/// first-load caveat zellij's own index.html links: xtermjs/xterm.js#5164.)
+///
+/// Kept in sync with [`NERD_FONT_FAMILY`]/[`NERD_FONT_PATH`] by a unit test.
+const NERD_FONT_BOOTSTRAP: &str = r#"
+    // Injected by the kamaji reverse proxy — load the bundled Nerd Font, then
+    // rebuild the WebGL glyph atlas so Private-Use-Area icon glyphs repaint with
+    // it instead of the first-paint fallback. See
+    // crates/kamajid/src/zellij_proxy.rs (NERD_FONT_BOOTSTRAP).
+    try {
+        const kamajiFont = new FontFace("CaskaydiaCove Nerd Font Mono", 'url("/kamaji-assets/nerd-font.woff2") format("woff2")');
+        kamajiFont.load().then((loaded) => {
+            document.fonts.add(loaded);
+            try { webglAddon.clearTextureAtlas(); } catch (e) {}
+            try { term.refresh(0, term.rows - 1); } catch (e) {}
+        }).catch(() => {});
+    } catch (e) {}
+"#;
+
+/// If `path` is zellij web's `terminal.js` *and* it still configures the bare
+/// `"Monospace"` xterm family this rewrite was written against, return a version
+/// that (1) prepends kamaji's bundled Nerd Font to the family and (2) splices in
+/// [`NERD_FONT_BOOTSTRAP`] to load that font and rebuild the WebGL atlas — plus,
+/// when `inject_theme` is set (`web_theme = "match"`), (3) splices [`KAMAJI_XTERM_THEME`]
+/// into the `new Terminal({…})` options so the terminal matches the board palette.
+/// Otherwise `None`, and the asset is forwarded unchanged — failing *safe* so a
+/// future zellij that restructures `terminal.js` keeps working (just without the
+/// icon font/theme). Re-verify this rewrite after a zellij bump.
+fn rewrite_terminal_js(path: &str, body: &[u8], inject_theme: bool) -> Option<String> {
+    if path != "/assets/terminal.js" {
+        return None;
+    }
+    let body = std::str::from_utf8(body).ok()?;
+    // Both anchors must be present, else a restructured terminal.js would be
+    // half-rewritten (font set but never loaded, or vice versa). All-or-nothing.
+    const FAMILY_ANCHOR: &str = "fontFamily: \"Monospace\"";
+    const FOCUS_ANCHOR: &str = "term.focus();";
+    if !body.contains(FAMILY_ANCHOR) || !body.contains(FOCUS_ANCHOR) {
+        return None;
+    }
+    let mut rewritten = body
+        .replacen(
+            FAMILY_ANCHOR,
+            &format!("fontFamily: \"{NERD_FONT_FAMILY}, Monospace\""),
+            1,
+        )
+        .replacen(
+            FOCUS_ANCHOR,
+            &format!("{FOCUS_ANCHOR}{NERD_FONT_BOOTSTRAP}"),
+            1,
+        );
+    // Optionally tint the terminal to the board palette by adding a `theme:`
+    // property to the xterm options. Anchored on the line the font rewrite just
+    // touched, so it lands inside `new Terminal({…})`. Its own gate keeps it
+    // fail-safe independent of the font anchors above.
+    if inject_theme {
+        let family_line = format!("fontFamily: \"{NERD_FONT_FAMILY}, Monospace\",");
+        if rewritten.contains(&family_line) {
+            rewritten = rewritten.replacen(
+                &family_line,
+                &format!("{family_line}\n        theme: {KAMAJI_XTERM_THEME},"),
+                1,
+            );
+        }
+    }
+    Some(rewritten)
+}
+
+/// Paths whose response body kamaji rewrites in flight, so they must be buffered
+/// (bounded) rather than streamed. Everything else streams straight through.
+fn is_rewritable_asset(path: &str) -> bool {
+    matches!(path, "/assets/connection.js" | "/assets/terminal.js")
+}
+
+/// A JS response with the content-type browsers require for an ES module, used
+/// for every in-flight asset rewrite ([`RECONNECT_SHIM`], [`nerd_font_terminal_js`]).
+fn js_response(body: impl Into<Body>) -> Response {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        body.into(),
+    )
+        .into_response()
+}
+
 async fn limited_upstream_bytes(
     upstream: reqwest::Response,
     limit: usize,
@@ -331,8 +496,8 @@ async fn http_proxy(
 
     let status = upstream.status();
     let headers = upstream.headers().clone();
-    if path == "/assets/connection.js" {
-        let body_bytes = match limited_upstream_bytes(upstream, MAX_RECONNECT_ASSET_BYTES).await {
+    if is_rewritable_asset(&path) {
+        let body_bytes = match limited_upstream_bytes(upstream, MAX_REWRITABLE_ASSET_BYTES).await {
             Ok(b) => b,
             Err(UpstreamBodyError::TooLarge) => {
                 return (StatusCode::BAD_GATEWAY, "upstream asset too large").into_response()
@@ -342,21 +507,17 @@ async fn http_proxy(
             }
         };
 
-        // Swap zellij web's reconnect module for our instant/bounded one, if this
-        // is it. We re-derive the content headers (the body changed), so this
-        // also drops any upstream content-encoding/length that would no longer
-        // match.
+        // Apply any in-flight rewrite. Each re-derives content headers (the body
+        // changed), so a JS response also drops the upstream
+        // content-encoding/length that would no longer match.
         if let Some(shim) = reconnect_shim(&path, &body_bytes) {
-            return (
-                [(
-                    header::CONTENT_TYPE,
-                    "application/javascript; charset=utf-8",
-                )],
-                shim,
-            )
-                .into_response();
+            return js_response(shim);
+        }
+        if let Some(js) = rewrite_terminal_js(&path, &body_bytes, proxy.inject_xterm_theme) {
+            return js_response(js);
         }
 
+        // Buffered but not rewritten (marker gate failed) — forward the bytes.
         let mut builder = Response::builder().status(status);
         for (k, v) in headers.iter() {
             // Drop framing headers (axum re-derives them) and upstream Set-Cookie —
@@ -584,6 +745,102 @@ mod tests {
         assert!(reconnect_shim("/assets/connection.js", b"export const x = 1;").is_none());
     }
 
+    /// A trimmed stand-in for zellij web's `terminal.js` carrying the two anchors
+    /// the Nerd Font rewrite keys off: the bare `"Monospace"` xterm family and the
+    /// `term.focus();` line the font bootstrap is spliced in after.
+    const STUB_TERMINAL_JS: &str = "export function initTerminal() { \
+        const term = new Terminal({ fontFamily: \"Monospace\", allowProposedApi: true }); \
+        const webglAddon = new WebglAddon.WebglAddon(); \
+        term.open(document.getElementById(\"terminal\")); \
+        term.focus(); \
+        return { term }; }";
+
+    #[test]
+    fn rewrites_terminal_js_to_use_the_bundled_nerd_font() {
+        let out = rewrite_terminal_js("/assets/terminal.js", STUB_TERMINAL_JS.as_bytes(), false)
+            .expect("terminal.js with the known anchors is rewritten");
+        // The bare Monospace family now leads with the bundled Nerd Font.
+        assert!(out.contains(&format!("fontFamily: \"{NERD_FONT_FAMILY}, Monospace\"")));
+        assert!(
+            !out.contains("fontFamily: \"Monospace\""),
+            "the bare family is replaced, not appended to"
+        );
+        // The font-load + atlas-rebuild bootstrap is spliced in, after focus.
+        assert!(out.contains("new FontFace"), "font is loaded");
+        assert!(out.contains("clearTextureAtlas"), "WebGL atlas is rebuilt");
+        assert!(
+            out.contains(NERD_FONT_PATH),
+            "points at the proxy-served font"
+        );
+        let focus = out.find("term.focus();").expect("focus anchor kept");
+        let face = out.find("new FontFace").expect("bootstrap present");
+        assert!(focus < face, "bootstrap is injected after term.focus()");
+        // With inject_theme=false (auto), no xterm theme is added.
+        assert!(
+            !out.contains("theme:"),
+            "no xterm theme injected in auto mode"
+        );
+    }
+
+    /// `web_theme = "match"` additionally splices the board palette into the
+    /// xterm options, on top of the always-on font rewrite.
+    #[test]
+    fn injects_the_board_xterm_theme_when_requested() {
+        let off = rewrite_terminal_js("/assets/terminal.js", STUB_TERMINAL_JS.as_bytes(), false)
+            .expect("rewritten");
+        let on = rewrite_terminal_js("/assets/terminal.js", STUB_TERMINAL_JS.as_bytes(), true)
+            .expect("rewritten");
+        assert!(!off.contains("theme:"), "auto: no theme");
+        assert!(on.contains("theme:"), "match: theme present");
+        assert!(
+            on.contains("#16161f") && on.contains("#cdd6f4"),
+            "match: theme carries the board palette (bg + fg)"
+        );
+        // The theme sits inside the Terminal options, after the font family.
+        let family = on.find("fontFamily:").expect("family present");
+        let theme = on.find("theme:").expect("theme present");
+        assert!(
+            family < theme,
+            "theme follows fontFamily inside new Terminal({{…}})"
+        );
+        // Font rewrite still happens in match mode too.
+        assert!(on.contains("new FontFace"), "match: font still loaded");
+    }
+
+    /// All-or-nothing: a restructured terminal.js missing either anchor is
+    /// forwarded unchanged rather than half-rewritten (font set but never loaded).
+    /// True even when a theme injection was requested.
+    #[test]
+    fn leaves_terminal_js_untouched_without_known_anchors() {
+        assert!(
+            rewrite_terminal_js(
+                "/assets/terminal.js",
+                b"const term = new Terminal({ fontFamily: \"Monospace\" });",
+                true
+            )
+            .is_none(),
+            "missing the focus anchor => not rewritten, even with theme requested"
+        );
+        assert!(
+            rewrite_terminal_js("/assets/index.js", STUB_TERMINAL_JS.as_bytes(), true).is_none(),
+            "wrong path => not rewritten"
+        );
+    }
+
+    /// The bootstrap is a raw string literal; guard it against drifting out of
+    /// sync with the family/path constants the font route and xterm config share.
+    #[test]
+    fn bootstrap_references_the_font_family_and_path() {
+        assert!(NERD_FONT_BOOTSTRAP.contains(NERD_FONT_FAMILY));
+        assert!(NERD_FONT_BOOTSTRAP.contains(NERD_FONT_PATH));
+    }
+
+    /// The bundled font is a real woff2 so the browser can actually load it.
+    #[test]
+    fn bundled_font_is_a_woff2() {
+        assert_eq!(&NERD_FONT_WOFF2[..4], b"wOF2", "woff2 magic");
+    }
+
     /// End-to-end through the proxy router against a mock `zellij web`: the
     /// reconnect module is swapped for the shim (with a JS content-type), while a
     /// sibling asset is forwarded byte-for-byte.
@@ -647,7 +904,67 @@ mod tests {
             .text()
             .await
             .unwrap();
+        // This stub lacks the Nerd Font anchors, so it is buffered but forwarded
+        // unchanged — proving the rewrite path fails safe.
         assert_eq!(term, "export const TERMINAL = 1;", "untouched passthrough");
+    }
+
+    /// End-to-end through the proxy router: a real-shaped `terminal.js` comes back
+    /// rewritten to load the bundled Nerd Font, and the font itself is served by
+    /// the proxy's own route (not forwarded upstream).
+    #[tokio::test]
+    async fn rewrites_terminal_js_and_serves_the_font() {
+        use axum::routing::get;
+
+        let upstream =
+            Router::new().route("/assets/terminal.js", get(|| async { STUB_TERMINAL_JS }));
+        let up_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = up_listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(up_listener, upstream).await.unwrap() });
+
+        let proxy = Arc::new(ZellijProxy::with_upstream(&format!("http://{up_addr}")));
+        let px_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let px_addr = px_listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(px_listener, router(proxy)).await.unwrap() });
+
+        let client = reqwest::Client::new();
+        let base = format!("http://{px_addr}");
+
+        // terminal.js is rewritten to use the bundled Nerd Font.
+        let term = client
+            .get(format!("{base}/assets/terminal.js"))
+            .send()
+            .await
+            .unwrap();
+        assert!(term
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("javascript"));
+        let term_body = term.text().await.unwrap();
+        assert!(term_body.contains(NERD_FONT_FAMILY), "family injected");
+        assert!(
+            term_body.contains("new FontFace"),
+            "font bootstrap injected"
+        );
+
+        // The font is served by the proxy's own route, with a woff2 content-type —
+        // never forwarded to (and 404'd by) the upstream.
+        let font = client
+            .get(format!("{base}{NERD_FONT_PATH}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(font.status(), StatusCode::OK);
+        assert_eq!(
+            font.headers().get(header::CONTENT_TYPE).unwrap(),
+            "font/woff2"
+        );
+        let bytes = font.bytes().await.unwrap();
+        assert_eq!(&bytes[..4], b"wOF2", "served a real woff2");
+        assert!(bytes.len() > 1000, "served the whole font");
     }
 
     #[tokio::test]

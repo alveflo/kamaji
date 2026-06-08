@@ -226,6 +226,7 @@ theme = "catppuccin"
 bind = "127.0.0.1:8755"
 log_format = "human"   # "human" or "json"
 log_level = "info"
+web_theme = "auto"     # "auto" | "match" | a zellij theme name
 
 [agents.claude]
 with_prompt = ["claude", "{prompt}"]
@@ -254,6 +255,7 @@ resume = ["copilot", "--continue"]
 | `theme` | Colorscheme: `catppuccin` (default), `tokyonight`, `gruvbox`, `nord`, or `default` (uses your terminal's own 16 colors). Switch live from the board with `t` (the choice is saved back here). Unknown names fall back to `catppuccin`. |
 | `daemon.bind` | Address the daemon binds the board + HTTP/SSE API on (default `127.0.0.1:8755`). The terminal proxy binds the next port up. |
 | `daemon.log_format` | Daemon log format: `human` (default) or `json`. |
+| `daemon.web_theme` | Colorscheme for the browser zellij-web sessions. `auto` (default) respects your own zellij config — kamaji injects nothing. `match` pulls sessions toward the board's palette: it forces the built-in `catppuccin-mocha` theme on zellij's chrome **and** applies the board palette to the browser terminal. Any other value is a zellij theme name to force on the chrome. Forcing a theme is session-wide (also recolors the TUI view) and takes effect for sessions created after a daemon restart. |
 | `daemon.log_level` | Daemon log filter (default `info`). Overridable at runtime with the `KAMAJID_LOG` env var. |
 | `agents.<name>.with_prompt` | Argv array used when the ticket has an initial prompt. `{prompt}` is replaced with the prompt text. |
 | `agents.<name>.no_prompt` | Argv array used when no initial prompt is set. |

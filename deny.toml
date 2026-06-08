@@ -10,6 +10,11 @@ unused-ignored-advisory = "deny"
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# The workspace's internal crates link by path only (e.g. `kamaji-core = { path
+# = "../kamaji-core" }`), which Cargo treats as a `*` version requirement. Allow
+# wildcards for those local path deps while still denying them for external
+# crates (the case the wildcard check actually guards against).
+allow-wildcard-paths = true
 highlight = "simplest-path"
 workspace-default-features = "allow"
 external-default-features = "allow"

@@ -28,7 +28,9 @@ pub fn router(state: AppState) -> Router {
         .route("/ui/tickets/cancel", get(routes::ui::cancel_ticket))
         .route("/ui/projects/new", get(routes::ui::new_project))
         .route("/ui/tickets/:id/edit", get(routes::ui::edit_ticket))
+        .route("/ui/tickets/:id/confirm", get(routes::ui::confirm_ticket))
         .route("/ui/tickets/:id/terminal", get(routes::ui::terminal))
+        .route("/ui/sessions/manage", get(routes::ui::manage_sessions))
         .route(
             "/config",
             get(routes::config::get_config).patch(routes::config::patch_config),
@@ -69,6 +71,12 @@ pub fn router(state: AppState) -> Router {
             "/tickets/:id/attach",
             axum::routing::post(routes::tickets::attach),
         )
+        .route(
+            "/sessions/delete",
+            axum::routing::post(routes::sessions::delete),
+        )
+        .route("/manifest.webmanifest", get(routes::pwa::manifest))
+        .route("/sw.js", get(routes::pwa::service_worker))
         .route("/assets/*path", get(routes::assets::serve))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)

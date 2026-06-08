@@ -3,6 +3,8 @@ pub mod config;
 pub mod events;
 pub mod healthz;
 pub mod projects;
+pub mod pwa;
+pub mod sessions;
 pub mod tickets;
 pub mod ui;
 pub mod ui_events;

@@ -118,7 +118,6 @@ pub struct Ticket {
     pub initial_prompt: Option<String>,
     pub agent: Agent,
     pub status: Status,
-    pub position: i64,
     pub session_name: Option<String>,
     pub worktree_path: Option<PathBuf>,
     pub branch: Option<String>,
@@ -210,7 +209,6 @@ mod tests {
             initial_prompt: Some("do it".into()),
             agent: Agent::Claude,
             status: Status::InProgress,
-            position: 0,
             session_name: Some("kamaji-7-add-login".into()),
             worktree_path: Some(std::path::PathBuf::from("/wt")),
             branch: Some("kamaji-7-add-login".into()),
@@ -226,5 +224,6 @@ mod tests {
         assert_eq!(v["session_name"], "kamaji-7-add-login");
         assert_eq!(v["worktree_path"], "/wt");
         assert_eq!(v["instrumented"], true);
+        assert!(v.get("position").is_none());
     }
 }

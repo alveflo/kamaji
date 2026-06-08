@@ -24,6 +24,11 @@ pub trait SessionDriver: Send + Sync {
 
     /// Create a detached session named `name` running `layout_path` from `cwd`.
     fn create_background(&self, name: &str, layout_path: &Path, cwd: &Path) -> anyhow::Result<()>;
+
+    /// Raw `zellij list-sessions` output, or `None` if zellij couldn't be asked.
+    /// Mirrors [`kamaji_core::zellij::list_sessions`]; behind the seam so the
+    /// session-management routes are testable with a canned list.
+    fn list_sessions(&self) -> Option<String>;
 }
 
 /// The production driver: delegates to `kamaji_core::zellij`.
@@ -49,6 +54,10 @@ impl SessionDriver for RealSessionDriver {
     fn create_background(&self, name: &str, layout_path: &Path, cwd: &Path) -> anyhow::Result<()> {
         kamaji_core::zellij::create_session_background(name, layout_path, cwd)
     }
+
+    fn list_sessions(&self) -> Option<String> {
+        kamaji_core::zellij::list_sessions()
+    }
 }
 
 /// One recorded `create_background` call, capturing the rendered layout's
@@ -64,6 +73,7 @@ pub struct CreatedSession {
 /// `terminate`/`create_background` record their calls for later assertions.
 pub struct FakeSessionDriver {
     live: bool,
+    sessions: Option<String>,
     created: Mutex<Vec<CreatedSession>>,
     terminated: Mutex<Vec<String>>,
 }
@@ -75,9 +85,16 @@ impl FakeSessionDriver {
     pub fn new(live: bool) -> Self {
         FakeSessionDriver {
             live,
+            sessions: None,
             created: Mutex::new(Vec::new()),
             terminated: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Set the canned `list-sessions` output this fake reports.
+    pub fn with_sessions(mut self, list: &str) -> Self {
+        self.sessions = Some(list.to_string());
+        self
     }
 
     /// The recorded `create_background` calls, in order.
@@ -122,6 +139,10 @@ impl SessionDriver for FakeSessionDriver {
             });
         Ok(())
     }
+
+    fn list_sessions(&self) -> Option<String> {
+        self.sessions.clone()
+    }
 }
 
 #[cfg(test)]
@@ -154,5 +175,19 @@ mod tests {
     #[test]
     fn fake_live_reports_live() {
         assert!(FakeSessionDriver::new(true).is_session_live("x"));
+    }
+
+    #[test]
+    fn fake_returns_configured_session_list() {
+        // Default: no list (models "couldn't ask zellij").
+        let d = FakeSessionDriver::new(true);
+        assert_eq!(d.list_sessions(), None);
+
+        // Configured list is returned verbatim.
+        let d = FakeSessionDriver::new(true).with_sessions("kamaji-1-x [Created 1h ago]\n");
+        assert_eq!(
+            d.list_sessions().as_deref(),
+            Some("kamaji-1-x [Created 1h ago]\n")
+        );
     }
 }

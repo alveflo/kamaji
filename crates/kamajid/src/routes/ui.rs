@@ -7,10 +7,12 @@ use maud::Markup;
 use serde::Deserialize;
 
 use kamaji_core::models::{Status, Ticket};
+use kamaji_core::session;
 
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::views;
+use crate::views::confirm::{ticket_confirm, ConfirmAction};
 use crate::views::modal::ticket_form;
 
 #[derive(Deserialize)]
@@ -87,6 +89,19 @@ pub async fn cancel_ticket() -> Markup {
     views::modal::modal_closed()
 }
 
+#[derive(Deserialize)]
+pub struct ConfirmQuery {
+    pub action: ConfirmAction,
+}
+
+/// `GET /ui/tickets/:id/confirm?action=done|delete` → the in-page confirmation
+/// modal fragment for a destructive card action (replacing the browser's native
+/// `confirm()`). Render-only: the actual command fires from the modal's Confirm
+/// button. An unknown `action` fails query deserialization → 400.
+pub async fn confirm_ticket(Path(id): Path<i64>, Query(q): Query<ConfirmQuery>) -> Markup {
+    ticket_confirm(id, q.action)
+}
+
 /// `GET /ui/projects/new` → the create-project modal fragment. There is no
 /// project yet, so the segmented agent control defaults to the config default.
 /// Submit reuses `POST /projects`; on success the page navigates to the new
@@ -136,4 +151,26 @@ pub async fn terminal(
         &info.session_name,
         &src,
     ))
+}
+
+/// `GET /ui/sessions/manage` → the session-cleanup modal fragment. Snapshots
+/// `zellij list-sessions` (through the session-driver seam, off the async
+/// runtime since it shells out), classifies each `kamaji-*` session against the
+/// DB, and renders the modal. When zellij can't be queried the modal shows an
+/// explanatory note rather than erroring.
+pub async fn manage_sessions(State(state): State<AppState>) -> Result<Markup, ApiError> {
+    let st = state.clone();
+    let list = tokio::task::spawn_blocking(move || st.sessions().list_sessions())
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("list-sessions task panicked: {e}")))?;
+    let reachable = list.is_some();
+    let entries = match list {
+        Some(list) => {
+            state
+                .with_db(move |db| session::classify_sessions(db, &list))
+                .await?
+        }
+        None => Vec::new(),
+    };
+    Ok(views::sessions::sessions_modal(&entries, reachable))
 }

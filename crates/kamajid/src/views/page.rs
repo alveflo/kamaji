@@ -38,16 +38,28 @@ pub fn page(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "kamaji — " (project.name) }
+                link rel="manifest" href="/manifest.webmanifest";
+                meta name="theme-color" content="#16161f";
+                link rel="icon" href="/assets/favicon.svg";
+                link rel="apple-touch-icon" href="/assets/apple-touch-icon.png";
+                meta name="apple-mobile-web-app-capable" content="yes";
+                meta name="apple-mobile-web-app-status-bar-style" content="black-translucent";
+                meta name="apple-mobile-web-app-title" content="kamaji";
                 link rel="stylesheet" href="/assets/tokens.css";
                 link rel="stylesheet" href="/assets/layout.css";
                 link rel="stylesheet" href="/assets/sidebar.css";
                 link rel="stylesheet" href="/assets/modal.css";
+                link rel="stylesheet" href="/assets/sessions.css";
                 link rel="stylesheet" href="/assets/board.css";
                 link rel="stylesheet" href="/assets/search.css";
                 link rel="stylesheet" href="/assets/terminal.css";
                 script type="module" src="/assets/datastar.js" {}
                 script defer src="/assets/board-dnd.js" {}
                 script type="module" src="/assets/search.js" {}
+                script type="module" src="/assets/keybindings.js" {}
+                script {
+                    (PreEscaped("if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); }); }"))
+                }
             }
             body class="rail-open" data-init="@get('/ui/events')" {
                 (super::sidebar::rail(projects, project.id, attention))
@@ -75,6 +87,10 @@ pub fn page(
                         }
                         span class="search-count" aria-live="polite" {}
                         span class="spacer" {}
+                        button class="sessions-btn"
+                               data-on:click=(PreEscaped("@get('/ui/sessions/manage')")) {
+                            "Sessions"
+                        }
                         button class="new-ticket"
                                data-on:click=(PreEscaped(format!("@get('/ui/tickets/new?project={}')", project.id))) {
                             "+ New"
@@ -134,8 +150,38 @@ mod tests {
             "board drag-and-drop script:\n{html}"
         );
         assert!(
+            html.contains(r#"src="/assets/keybindings.js""#),
+            "global keybindings module:\n{html}"
+        );
+        assert!(
             !html.contains(r#"href="/assets/app.css""#),
             "old monolithic app.css must be gone:\n{html}"
+        );
+    }
+
+    #[test]
+    fn page_head_has_pwa_wiring() {
+        let p = project(1, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"rel="manifest" href="/manifest.webmanifest""#),
+            "manifest link:\n{html}"
+        );
+        assert!(
+            html.contains(r##"name="theme-color" content="#16161f""##),
+            "theme-color meta:\n{html}"
+        );
+        assert!(
+            html.contains(r#"rel="icon" href="/assets/favicon.svg""#),
+            "favicon link:\n{html}"
+        );
+        assert!(
+            html.contains(r#"rel="apple-touch-icon" href="/assets/apple-touch-icon.png""#),
+            "apple-touch-icon link:\n{html}"
+        );
+        assert!(
+            html.contains("serviceWorker.register('/sw.js')"),
+            "sw registration:\n{html}"
         );
     }
 
@@ -205,6 +251,30 @@ mod tests {
         assert!(
             !html.contains(r#"<div class="search-slot"></div>"#),
             "search slot must be filled, not empty:\n{html}"
+        );
+    }
+
+    #[test]
+    fn page_links_sessions_css() {
+        let p = project(1, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"href="/assets/sessions.css""#),
+            "sessions css link:\n{html}"
+        );
+    }
+
+    #[test]
+    fn topbar_has_sessions_button_opening_the_manage_modal() {
+        let p = project(1, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"class="sessions-btn""#),
+            "sessions button present:\n{html}"
+        );
+        assert!(
+            html.contains("@get('/ui/sessions/manage')"),
+            "sessions button opens the manage modal:\n{html}"
         );
     }
 

@@ -426,7 +426,6 @@ mod tests {
             initial_prompt: None,
             agent: Agent::Claude,
             status,
-            position: 0,
             session_name: None,
             worktree_path: None,
             branch: None,

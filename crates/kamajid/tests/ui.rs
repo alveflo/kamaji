@@ -433,6 +433,68 @@ async fn new_ticket_fragment_mounts_and_self_closes() {
     );
 }
 
+/// `GET /ui/tickets/:id/confirm?action=done` serves the Done confirmation modal:
+/// rooted at `#modal` (so `@get` morphs the mount), naming the teardown and
+/// carrying the `/done` command (with the cleanup body) on its Confirm button.
+#[tokio::test]
+async fn confirm_done_modal_renders() {
+    let (base, _state) = spawn().await;
+    let body = reqwest::get(format!("{base}/ui/tickets/42/confirm?action=done"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "morphs the #modal mount:\n{body}"
+    );
+    assert!(
+        body.contains("Mark #42 done and tear down its session?"),
+        "names the teardown:\n{body}"
+    );
+    assert!(
+        body.contains("fetch('/tickets/42/done',{method:'POST'")
+            && body.contains("body:JSON.stringify({cleanup:true})"),
+        "Confirm fires the teardown POST with the cleanup body:\n{body}"
+    );
+}
+
+/// `GET /ui/tickets/:id/confirm?action=delete` serves the Delete confirmation
+/// modal, warning it is irreversible and carrying the DELETE on Confirm.
+#[tokio::test]
+async fn confirm_delete_modal_renders() {
+    let (base, _state) = spawn().await;
+    let body = reqwest::get(format!("{base}/ui/tickets/9/confirm?action=delete"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "morphs the #modal mount:\n{body}"
+    );
+    assert!(
+        body.contains("Delete #9? This cannot be undone."),
+        "warns it is irreversible:\n{body}"
+    );
+    assert!(
+        body.contains("fetch('/tickets/9',{method:'DELETE'})"),
+        "Confirm fires the DELETE:\n{body}"
+    );
+}
+
+/// An unknown `?action=` is rejected (the query enum only accepts done|delete).
+#[tokio::test]
+async fn confirm_modal_rejects_unknown_action() {
+    let (base, _state) = spawn().await;
+    let resp = reqwest::get(format!("{base}/ui/tickets/1/confirm?action=bogus"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "unknown action is a 400");
+}
+
 /// `GET /ui/projects/new` serves the create-project modal fragment: rooted at
 /// `#modal` (so `@get` morphs the mount), composing the shared chrome, and
 /// submitting via `POST /projects`. On success it navigates to the new project
@@ -493,4 +555,59 @@ async fn create_project_via_fragments_endpoint_succeeds() {
         names.iter().any(|p| p.id == id && p.name == "Acme"),
         "created project is listed (rail renders from this list): {names:?}"
     );
+}
+
+/// Boot a daemon whose session driver reports a fixed `list-sessions` output,
+/// and seed one ticket whose session is in that list.
+async fn spawn_with_sessions(list: &str) -> (String, AppState) {
+    let mut state = AppState::new(Db::open_in_memory().unwrap(), Config::default());
+    state.set_session_driver(std::sync::Arc::new(
+        kamajid::session_driver::FakeSessionDriver::new(true).with_sessions(list),
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = kamajid::router(state.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), state)
+}
+
+#[tokio::test]
+async fn manage_sessions_modal_lists_classified_sessions() {
+    let list = "kamaji-1-fix-auth [Created 2h ago]\nkamaji-9-orphan [Created 1h ago]\n";
+    let (base, state) = spawn_with_sessions(list).await;
+    state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let t = db.create_ticket(
+                p.id,
+                "Fix auth",
+                "",
+                None,
+                kamaji_core::models::Agent::Claude,
+            )?;
+            db.set_ticket_session(t.id, "kamaji-1-fix-auth", "/wt", "kamaji-1-fix-auth")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let html = reqwest::get(format!("{base}/ui/sessions/manage"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(html.starts_with(r#"<div id="modal">"#), "{html}");
+    assert!(
+        html.contains(r#"value="kamaji-1-fix-auth""#),
+        "ticket session row:\n{html}"
+    );
+    assert!(html.contains("Fix auth"), "ticket title:\n{html}");
+    assert!(
+        html.contains(r#"value="kamaji-9-orphan""#),
+        "orphan row:\n{html}"
+    );
+    assert!(html.contains("orphan"), "orphan label:\n{html}");
 }

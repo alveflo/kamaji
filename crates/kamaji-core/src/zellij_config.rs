@@ -2,6 +2,7 @@
 //! resolves the configured `zellij_bar` value into a concrete [`BarStyle`] and
 //! scans the user's zellij KDL for its `default_layout` to drive `auto` mode.
 
+use crate::config;
 use crate::layout::BarStyle;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -112,17 +113,68 @@ pub fn ensure_web_sharing_on(kdl: &str) -> String {
     out
 }
 
+/// Resolve the configured `web_theme` value into the zellij theme name to force
+/// on browser sessions, or `None` to leave the user's config untouched.
+/// `"auto"` (and empty) → `None` (respect the user's file). `"match"` → the
+/// built-in `catppuccin-mocha` (the board's palette). Any other value is taken
+/// as a literal zellij theme name to force.
+fn resolve_web_theme(web_theme: &str) -> Option<&str> {
+    match web_theme.trim() {
+        "auto" | "" => None,
+        "match" => Some("catppuccin-mocha"),
+        other => Some(other),
+    }
+}
+
+/// Return `kdl` with its theme forced to `theme_name`: drop any existing
+/// uncommented top-level `theme` node and append a single canonical
+/// `theme "<name>"`. Mirrors [`ensure_web_sharing_on`]'s tolerant line scan, and
+/// like it requires a delimiter after `theme` so the `themes { … }` block that
+/// *defines* custom themes is preserved, not stripped.
+pub fn ensure_theme(kdl: &str, theme_name: &str) -> String {
+    let mut out = String::with_capacity(kdl.len() + theme_name.len() + 12);
+    for line in kdl.lines() {
+        let trimmed = line.trim_start();
+        let active_theme = !trimmed.starts_with("//")
+            && !trimmed.starts_with("/-")
+            && trimmed
+                .strip_prefix("theme")
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace() || c == '"'));
+        if active_theme {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(&format!("theme \"{theme_name}\"\n"));
+    out
+}
+
 /// Path to a kamaji-managed zellij config that mirrors the user's config but
-/// forces `web_sharing "on"`, for use as the `-c` argument when *creating*
-/// sessions (so they are browser-attachable while keeping the user's theme,
-/// keybindings, etc.). Built once per process: zellij reads web settings only at
-/// session/server start ("Requires restart"), so a config change needs a daemon
-/// restart to take effect anyway. Returns `None` only if the file can't be
-/// written, in which case callers create the session without `-c` (preserving
-/// the prior, non-shareable behavior rather than failing the start).
+/// forces `web_sharing "on"` (and, when `web_theme` is not `"auto"`, a theme),
+/// for use as the `-c` argument when *creating* sessions (so they are
+/// browser-attachable while keeping the user's keybindings etc.). Built once per
+/// process: zellij reads web settings only at session/server start ("Requires
+/// restart"), so a config change needs a daemon restart to take effect anyway.
+/// Returns `None` only if the file can't be written, in which case callers
+/// create the session without `-c` (preserving the prior, non-shareable behavior
+/// rather than failing the start).
 pub fn web_sharing_config_file() -> Option<&'static Path> {
     static CFG: OnceLock<Option<PathBuf>> = OnceLock::new();
     CFG.get_or_init(build_web_sharing_config_file).as_deref()
+}
+
+/// Pure derivation of the session config from the user's zellij `base` config and
+/// the configured `web_theme`: always forces `web_sharing "on"`, and — unless
+/// `web_theme` is `"auto"` — forces the resolved theme onto the chrome (layer 1).
+/// `"auto"` leaves the user's own theme untouched. Split out from the IO in
+/// [`build_web_sharing_config_file`] so the whole policy is unit-testable.
+fn derive_web_config(base: &str, web_theme: &str) -> String {
+    let with_sharing = ensure_web_sharing_on(base);
+    match resolve_web_theme(web_theme) {
+        Some(theme) => ensure_theme(&with_sharing, theme),
+        None => with_sharing,
+    }
 }
 
 fn build_web_sharing_config_file() -> Option<PathBuf> {
@@ -131,7 +183,13 @@ fn build_web_sharing_config_file() -> Option<PathBuf> {
     let base = config_file_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
-    let derived = ensure_web_sharing_on(&base);
+    // Read the browser theme policy from kamaji's own config; any read failure
+    // falls back to "auto" (respect the user's zellij theme).
+    let web_theme = config::config_path()
+        .and_then(|p| config::load_from(&p))
+        .map(|c| c.daemon.web_theme)
+        .unwrap_or_else(|_| "auto".to_string());
+    let derived = derive_web_config(&base, &web_theme);
     let dir = std::env::temp_dir().join("kamaji-zellij");
     std::fs::create_dir_all(&dir).ok()?;
     let path = dir.join("web-config.kdl");
@@ -185,6 +243,100 @@ mod tests {
         let out = ensure_web_sharing_on("web_sharing_foo \"x\"\n");
         assert!(out.contains("web_sharing_foo \"x\""));
         assert_eq!(active_web_sharing_lines(&out), vec!["web_sharing \"on\""]);
+    }
+
+    /// Count the active (uncommented) `theme` nodes in some KDL.
+    fn active_theme_lines(kdl: &str) -> Vec<&str> {
+        kdl.lines()
+            .map(str::trim_start)
+            .filter(|l| {
+                !l.starts_with("//")
+                    && !l.starts_with("/-")
+                    && l.strip_prefix("theme")
+                        .is_some_and(|r| r.starts_with(|c: char| c.is_whitespace() || c == '"'))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resolve_web_theme_maps_auto_match_and_explicit() {
+        assert_eq!(
+            resolve_web_theme("auto"),
+            None,
+            "auto respects the user file"
+        );
+        assert_eq!(resolve_web_theme(""), None, "empty behaves like auto");
+        assert_eq!(resolve_web_theme("  auto "), None, "trimmed");
+        assert_eq!(resolve_web_theme("match"), Some("catppuccin-mocha"));
+        assert_eq!(
+            resolve_web_theme("tokyo-night"),
+            Some("tokyo-night"),
+            "an explicit name is forced verbatim"
+        );
+    }
+
+    #[test]
+    fn ensure_theme_replaces_existing_leaving_exactly_one() {
+        // The user's theme is overridden, with no duplicate node left.
+        let out = ensure_theme(
+            "theme \"tokyo-night\"\nweb_sharing \"on\"\n",
+            "catppuccin-mocha",
+        );
+        assert_eq!(active_theme_lines(&out), vec!["theme \"catppuccin-mocha\""]);
+        // Unrelated config is preserved.
+        assert!(out.contains("web_sharing \"on\""));
+    }
+
+    #[test]
+    fn ensure_theme_added_when_absent() {
+        let out = ensure_theme("web_sharing \"on\"\n", "catppuccin-mocha");
+        assert_eq!(active_theme_lines(&out), vec!["theme \"catppuccin-mocha\""]);
+    }
+
+    #[test]
+    fn derive_web_config_auto_respects_user_theme() {
+        // The default: web sharing is forced, but the user's theme is untouched.
+        let out = derive_web_config("theme \"tokyo-night\"\n", "auto");
+        assert_eq!(active_web_sharing_lines(&out), vec!["web_sharing \"on\""]);
+        assert_eq!(
+            active_theme_lines(&out),
+            vec!["theme \"tokyo-night\""],
+            "auto leaves the user's theme as-is"
+        );
+    }
+
+    #[test]
+    fn derive_web_config_match_forces_board_theme() {
+        let out = derive_web_config("theme \"tokyo-night\"\n", "match");
+        assert_eq!(active_web_sharing_lines(&out), vec!["web_sharing \"on\""]);
+        assert_eq!(
+            active_theme_lines(&out),
+            vec!["theme \"catppuccin-mocha\""],
+            "match overrides the user's theme with the board palette"
+        );
+    }
+
+    #[test]
+    fn derive_web_config_explicit_name_is_forced() {
+        let out = derive_web_config("", "gruvbox-dark");
+        assert_eq!(active_web_sharing_lines(&out), vec!["web_sharing \"on\""]);
+        assert_eq!(active_theme_lines(&out), vec!["theme \"gruvbox-dark\""]);
+    }
+
+    #[test]
+    fn ensure_theme_preserves_themes_definition_block_and_comments() {
+        // `themes { … }` *defines* custom themes — it shares the `theme` prefix but
+        // must not be stripped. A commented theme line is inert and kept.
+        let kdl = "// theme \"old\"\nthemes {\n    kamaji {}\n}\ntheme \"gruvbox\"\n";
+        let out = ensure_theme(kdl, "catppuccin-mocha");
+        assert!(out.contains("themes {"), "themes block preserved");
+        assert!(out.contains("kamaji {}"), "themes block body preserved");
+        assert!(out.contains("// theme \"old\""), "commented line preserved");
+        assert_eq!(
+            active_theme_lines(&out),
+            vec!["theme \"catppuccin-mocha\""],
+            "exactly one active theme, the forced one"
+        );
     }
 
     #[test]
