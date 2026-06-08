@@ -57,6 +57,7 @@ pub fn page(
                 script defer src="/assets/board-dnd.js" {}
                 script type="module" src="/assets/search.js" {}
                 script type="module" src="/assets/keybindings.js" {}
+                script defer src="/assets/term-resize.js" {}
                 script {
                     (PreEscaped("if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); }); }"))
                 }
@@ -156,6 +157,10 @@ mod tests {
         assert!(
             html.contains(r#"src="/assets/keybindings.js""#),
             "global keybindings module:\n{html}"
+        );
+        assert!(
+            html.contains(r#"src="/assets/term-resize.js""#),
+            "terminal resize/move script:\n{html}"
         );
         assert!(
             !html.contains(r#"href="/assets/app.css""#),
