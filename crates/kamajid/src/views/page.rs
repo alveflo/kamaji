@@ -62,7 +62,7 @@ pub fn page(
                     (PreEscaped("if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); }); }"))
                 }
             }
-            body class="rail-open" data-init="@get('/ui/events')" {
+            body class="rail-open" data-init=(PreEscaped(format!("@get('/ui/events?project={}')", project.id))) {
                 (super::sidebar::rail(projects, project.id, attention))
                 div class="main" {
                     header class="topbar" {
@@ -196,12 +196,15 @@ mod tests {
 
     #[test]
     fn page_opens_ui_events_on_init() {
-        let p = project(1, "acme");
+        // The SSE stream MUST be scoped to the active project, else its snapshot
+        // re-renders the board for the first project and clobbers the one we are
+        // viewing (the cross-project ticket-leak bug).
+        let p = project(7, "acme");
         let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
         // RC.6: `data-init` (not `data-on-load`) fires once on element processing.
         assert!(
-            html.contains(r#"data-init="@get('/ui/events')""#),
-            "sse hook:\n{html}"
+            html.contains(r#"data-init="@get('/ui/events?project=7')""#),
+            "scoped sse hook:\n{html}"
         );
         assert!(
             !html.contains("data-on-load"),

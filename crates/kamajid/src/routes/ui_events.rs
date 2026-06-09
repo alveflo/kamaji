@@ -12,12 +12,13 @@
 
 use std::convert::Infallible;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use futures::stream::{Stream, StreamExt};
 use kamaji_core::events::Event;
-use kamaji_core::models::{Status, Ticket};
+use kamaji_core::models::{Project, Status, Ticket};
 use maud::Markup;
+use serde::Deserialize;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::routes::ui::group_by_status;
@@ -80,11 +81,16 @@ async fn load_ticket(state: &AppState, id: i64) -> Option<Ticket> {
         .flatten()
 }
 
-/// Render an event into zero or more SSE patch records. Id-only events load the
-/// current ticket(s) from `db`.
-async fn event_to_patches(state: &AppState, ev: Event) -> Vec<SseEvent> {
+/// Render an event into zero or more SSE patch records, scoped to the project
+/// the stream is viewing (`viewed`). Events for any other project produce no
+/// patches so one browser never sees another project's tickets. Id-only events
+/// load the current ticket(s) from `db` (and learn their project that way).
+async fn event_to_patches(state: &AppState, ev: Event, viewed: Option<i64>) -> Vec<SseEvent> {
     match ev {
         Event::TicketCreated(t) => {
+            if Some(t.project_id) != viewed {
+                return Vec::new();
+            }
             // Re-render the WHOLE destination column (default outer-morph by
             // `#col-<status>`) instead of appending a single card. This keeps
             // the column-count header correct and makes the patch idempotent
@@ -102,16 +108,24 @@ async fn event_to_patches(state: &AppState, ev: Event) -> Vec<SseEvent> {
                 .unwrap_or_default();
             vec![patch_column(status, &cols)]
         }
-        Event::TicketUpdated(t) => vec![patch_elements(None, &[card(&t)])],
+        Event::TicketUpdated(t) => {
+            if Some(t.project_id) != viewed {
+                return Vec::new();
+            }
+            vec![patch_elements(None, &[card(&t)])]
+        }
         Event::TicketMoved { id, from, to, .. } => {
             // Re-render BOTH affected columns (fixes counts + relocates the
             // card). Load the moving ticket to learn its project, then list
-            // that project's tickets once.
+            // that project's tickets once. A move in another project is ignored.
             let cols = state
                 .with_db(move |db| {
                     let Some(t) = db.get_ticket(id)? else {
                         return Ok(Vec::new());
                     };
+                    if Some(t.project_id) != viewed {
+                        return Ok(Vec::new());
+                    }
                     let all = db.list_tickets(t.project_id)?;
                     Ok([from, to]
                         .into_iter()
@@ -128,12 +142,15 @@ async fn event_to_patches(state: &AppState, ev: Event) -> Vec<SseEvent> {
                 .map(|(s, ts)| patch_column(s, &ts))
                 .collect()
         }
+        // A deleted ticket carries no project, but its `#card-<id>` only exists
+        // on the board of the project it belonged to; the remove selector is a
+        // no-op on any other project's board, so emit it unconditionally.
         Event::TicketDeleted { id } => vec![patch_remove_card(id)],
         Event::SessionStarted { ticket_id, .. }
         | Event::SessionIdle { ticket_id }
         | Event::SessionExited { ticket_id, .. } => match load_ticket(state, ticket_id).await {
-            Some(t) => vec![patch_elements(None, &[card(&t)])],
-            None => Vec::new(),
+            Some(t) if Some(t.project_id) == viewed => vec![patch_elements(None, &[card(&t)])],
+            _ => Vec::new(),
         },
         // The TUI's per-session activity bullet rides this event; the browser's
         // card chip is derived from the ticket's column, so there is nothing to
@@ -142,24 +159,50 @@ async fn event_to_patches(state: &AppState, ev: Event) -> Vec<SseEvent> {
     }
 }
 
-/// `GET /ui/events` → Datastar element-patch SSE. On connect, emit a one-shot
-/// full-board patch (re-render all four columns) so every (re)connection
-/// self-heals (§4.4), then stream live patches off the broadcast.
+/// The project a board SSE stream is scoped to: `want` (`?project=<id>`) if it
+/// exists, else the first project — mirroring `routes::ui::board`'s selection so
+/// the live stream matches the page render. `None` when the requested id is
+/// unknown or there are no projects (an empty board).
+fn resolve_project_id(want: Option<i64>, projects: &[Project]) -> Option<i64> {
+    match want {
+        Some(id) => projects.iter().find(|p| p.id == id).map(|p| p.id),
+        None => projects.first().map(|p| p.id),
+    }
+}
+
+/// Query for `GET /ui/events`: `?project=<id>` scopes the stream to that board.
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    pub project: Option<i64>,
+}
+
+/// `GET /ui/events` → Datastar element-patch SSE, scoped to `?project=<id>` (the
+/// board the page is showing). On connect, emit a one-shot full-board patch
+/// (re-render all four columns) so every (re)connection self-heals (§4.4), then
+/// stream live patches off the broadcast — both filtered to the viewed project.
 pub async fn events(
     State(state): State<AppState>,
+    Query(q): Query<EventsQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     // Subscribe FIRST so no event between the snapshot read and the live
     // subscription is missed.
     let rx = state.tx.subscribe();
 
-    // Full-board snapshot: render every column for the first project (the board
-    // page shows one project; a future multi-project board re-renders per ?project).
+    // Resolve which project this stream serves once, up front; the snapshot and
+    // every live patch are filtered to it so a browser never sees another
+    // project's tickets (the snapshot used to hardcode the first project).
+    let want = q.project;
+    let viewed = state
+        .with_db(move |db| Ok(resolve_project_id(want, &db.list_projects()?)))
+        .await
+        .unwrap_or(None);
+
+    // Full-board snapshot: render every column for the viewed project.
     let snapshot = {
         let by = state
-            .with_db(|db| {
-                let projects = db.list_projects()?;
-                let tickets = match projects.first() {
-                    Some(p) => db.list_tickets(p.id)?,
+            .with_db(move |db| {
+                let tickets = match viewed {
+                    Some(pid) => db.list_tickets(pid)?,
                     None => Vec::new(),
                 };
                 Ok(group_by_status(tickets))
@@ -178,7 +221,10 @@ pub async fn events(
             async move {
                 match result {
                     Ok(ev) => Some(futures::stream::iter(
-                        event_to_patches(&state, ev).await.into_iter().map(Ok),
+                        event_to_patches(&state, ev, viewed)
+                            .await
+                            .into_iter()
+                            .map(Ok),
                     )),
                     Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
                         tracing::debug!(dropped = n, "UI SSE client lagged");
@@ -196,7 +242,20 @@ pub async fn events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kamaji_core::models::Agent;
+    use kamaji_core::config::Config;
+    use kamaji_core::db::Db;
+    use kamaji_core::models::{Agent, Project};
+    use std::path::{Path, PathBuf};
+
+    fn project(id: i64, name: &str) -> Project {
+        Project {
+            id,
+            name: name.into(),
+            root_dir: PathBuf::from("/tmp/p"),
+            default_agent: Some(Agent::Claude),
+            created_at: String::new(),
+        }
+    }
 
     fn ticket(id: i64, status: Status) -> Ticket {
         Ticket {
@@ -255,5 +314,39 @@ mod tests {
         assert!(!data.contains("mode "), "{data:?}");
         assert!(!data.contains("selector "), "{data:?}");
         assert!(data.contains("card-1"), "{data:?}");
+    }
+
+    /// The connection snapshot must honor `?project=<id>`; only when it is
+    /// absent does it fall back to the first project. Returning the FIRST project
+    /// unconditionally was the cross-project ticket-leak bug.
+    #[test]
+    fn resolve_project_id_honors_request_else_first() {
+        let ps = vec![project(1, "a"), project(2, "b"), project(3, "c")];
+        assert_eq!(resolve_project_id(Some(2), &ps), Some(2), "requested");
+        assert_eq!(resolve_project_id(None, &ps), Some(1), "default = first");
+        assert_eq!(resolve_project_id(Some(99), &ps), None, "unknown id");
+        assert_eq!(resolve_project_id(None, &[]), None, "no projects");
+    }
+
+    /// Live patches must be scoped to the project the browser is viewing: an
+    /// event for another project must produce no patches, while the same event
+    /// for the viewed project must patch the board.
+    #[tokio::test]
+    async fn live_events_are_scoped_to_the_viewed_project() {
+        let db = Db::open_in_memory().unwrap();
+        let pa = db.create_project("a", Path::new("/tmp/a"), None).unwrap();
+        let pb = db.create_project("b", Path::new("/tmp/b"), None).unwrap();
+        let t = db
+            .create_ticket(pa.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        let state = AppState::new(db, Config::default());
+
+        // Viewing project B: a ticket created in A must not touch the board.
+        let other = event_to_patches(&state, Event::TicketCreated(t.clone()), Some(pb.id)).await;
+        assert!(other.is_empty(), "cross-project create must not patch");
+
+        // Viewing project A: the same event re-renders A's column.
+        let same = event_to_patches(&state, Event::TicketCreated(t), Some(pa.id)).await;
+        assert!(!same.is_empty(), "same-project create must patch");
     }
 }
