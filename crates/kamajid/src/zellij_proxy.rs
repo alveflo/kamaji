@@ -419,12 +419,23 @@ fn is_rewritable_asset(path: &str) -> bool {
 
 /// A JS response with the content-type browsers require for an ES module, used
 /// for every in-flight asset rewrite ([`RECONNECT_SHIM`], [`nerd_font_terminal_js`]).
+///
+/// `Cache-Control: no-cache` is essential: the body is *derived* from the running
+/// proxy (the Nerd Font / reconnect / theme rewrites), so a browser must re-fetch
+/// it after every deploy or zellij bump. Without it browsers heuristically cache
+/// the rewritten module and keep executing a stale copy — which silently reverts
+/// the rewrite (e.g. icons fall back to tofu because the cached `terminal.js` runs
+/// the un-rewritten `fontFamily`), surviving `make restart` and even a board hard
+/// reload since the terminal is a cross-origin iframe.
 fn js_response(body: impl Into<Body>) -> Response {
     (
-        [(
-            header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
         body.into(),
     )
         .into_response()
@@ -883,6 +894,16 @@ mod tests {
             .to_str()
             .unwrap()
             .contains("javascript"));
+        // A rewritten asset is derived from the running proxy, so it must not be
+        // heuristically cached — else a stale copy survives deploys (regression:
+        // cached un-rewritten terminal.js reverted the Nerd Font fix).
+        assert_eq!(
+            conn.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache"),
+            "rewritten asset must send Cache-Control: no-cache",
+        );
         let conn_body = conn.text().await.unwrap();
         // The shim is served (its banner + cap), and the upstream stub body is
         // gone — i.e. the asset was replaced, not passed through or appended to.
