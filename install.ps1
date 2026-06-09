@@ -66,12 +66,17 @@ try {
 
     Write-Host "Installing to $InstallDir ..."
     Expand-Archive -Path $zipPath -DestinationPath $tmp -Force
-    $extracted = Join-Path $tmp 'kamaji.exe'
-    if (-not (Test-Path $extracted)) {
-        Fail "archive did not contain a 'kamaji.exe' binary"
-    }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item -Path $extracted -Destination (Join-Path $InstallDir 'kamaji.exe') -Force
+    # The archive ships two binaries: the kamaji.exe TUI and the kamajid.exe
+    # daemon it spawns. Both must be installed together — kamaji.exe alone is a
+    # broken install.
+    foreach ($bin in 'kamaji.exe', 'kamajid.exe') {
+        $extracted = Join-Path $tmp $bin
+        if (-not (Test-Path $extracted)) {
+            Fail "archive did not contain a '$bin' binary"
+        }
+        Copy-Item -Path $extracted -Destination (Join-Path $InstallDir $bin) -Force
+    }
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }

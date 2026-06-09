@@ -75,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run shellcheck
-        run: shellcheck install.sh
+        run: shellcheck install.sh uninstall.sh
 
   smoke:
     name: Browser smoke

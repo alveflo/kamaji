@@ -65,7 +65,8 @@ browser board).
 curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/install.sh | sh
 ```
 
-This downloads a prebuilt binary for your platform to `~/.local/bin`. Override
+This downloads prebuilt binaries for your platform to `~/.local/bin`. Both the
+`kamaji` TUI and the `kamajid` daemon it spawns are installed together. Override
 the location with `KAMAJI_INSTALL_DIR`:
 
 ```sh
@@ -78,15 +79,42 @@ curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/install.sh | KA
 irm https://raw.githubusercontent.com/alveflo/kamaji/main/install.ps1 | iex
 ```
 
-This installs `kamaji.exe` to `%LOCALAPPDATA%\Programs\kamaji` and adds it to
-your user PATH. Override the location with the `KAMAJI_INSTALL_DIR` environment
-variable. kamaji drives `zellij.exe`, so you'll also need
-[zellij for Windows](https://zellij.dev/documentation/installation.html) on
-`PATH`.
+This installs `kamaji.exe` and `kamajid.exe` to `%LOCALAPPDATA%\Programs\kamaji`
+and adds it to your user PATH. Override the location with the
+`KAMAJI_INSTALL_DIR` environment variable. kamaji drives `zellij.exe`, so you'll
+also need [zellij for Windows](https://zellij.dev/documentation/installation.html)
+on `PATH`.
 
 kamaji checks for new releases on launch. When one is available the status bar
 shows `New version vX.Y.Z available — press u to update`; press `u` to download
-and replace the binary in place, then restart.
+and replace both binaries in place, then restart.
+
+### Uninstall
+
+**Linux / macOS:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/uninstall.sh | sh
+```
+
+This stops a running daemon, removes the `kamaji` + `kamajid` binaries, and
+removes the systemd user service (if you installed one with `make
+install-service`). Your data — the board database, config, and cache — is
+**kept** by default; add `--purge` to delete it too:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/alveflo/kamaji/main/uninstall.sh | sh -s -- --purge
+```
+
+**Windows** (PowerShell) — download first so you can pass `-Purge`:
+
+```powershell
+irm https://raw.githubusercontent.com/alveflo/kamaji/main/uninstall.ps1 | iex
+# or, to also delete your data:
+iwr https://raw.githubusercontent.com/alveflo/kamaji/main/uninstall.ps1 -OutFile uninstall.ps1; ./uninstall.ps1 -Purge
+```
+
+Honor the same `KAMAJI_INSTALL_DIR` you installed with.
 
 ## Container mode (sandboxed agents)
 

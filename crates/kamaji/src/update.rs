@@ -75,12 +75,24 @@ pub fn asset_name() -> String {
     format!("kamaji-{}.{}", current_target(), asset_ext())
 }
 
-/// The binary filename packed inside the archive (`kamaji.exe` on Windows).
+/// The TUI binary filename packed inside the archive (`kamaji.exe` on Windows).
 fn bin_name() -> &'static str {
     if cfg!(windows) {
         "kamaji.exe"
     } else {
         "kamaji"
+    }
+}
+
+/// The daemon binary filename packed inside the archive (`kamajid.exe` on
+/// Windows). The release archive carries both binaries so a self-update keeps
+/// `kamaji` and `kamajid` in lockstep — replacing only the TUI would leave it
+/// spawning a stale (or missing) daemon.
+fn daemon_bin_name() -> &'static str {
+    if cfg!(windows) {
+        "kamajid.exe"
+    } else {
+        "kamajid"
     }
 }
 
@@ -240,8 +252,42 @@ pub fn self_update() -> Result<()> {
         anyhow::bail!("release archive did not contain a '{}' binary", bin_name());
     }
 
+    // The daemon ships in the same archive. Replace the `kamajid` sibling next
+    // to the TUI first (before swapping the TUI itself), so a failure here never
+    // leaves an updated `kamaji` paired with an older `kamajid`. If the archive
+    // somehow lacks it we still update the TUI — better than failing outright.
+    let new_daemon = tmp.join(daemon_bin_name());
+    if new_daemon.exists() {
+        let daemon_dest = dir.join(daemon_bin_name());
+        install_binary(&new_daemon, &daemon_dest).context("updating kamajid daemon")?;
+    }
+
     replace_running_exe(&new_bin, &exe)?;
     let _ = std::fs::remove_dir_all(&tmp);
+
+    // Stop any running daemon so the next `kamaji` launch spawns the freshly
+    // updated `kamajid` instead of reusing the old process. Best-effort: a
+    // failure here just means the user keeps the old daemon until they stop it.
+    crate::daemon::stop_running_daemon();
+
+    Ok(())
+}
+
+/// Install `new_bin` at `dest`, handling the case where `dest` is the currently
+/// running daemon. When `dest` already exists we go through
+/// [`replace_running_exe`] (atomic rename on Unix; move-aside on Windows, where
+/// a running binary is locked); otherwise we move it straight into place.
+fn install_binary(new_bin: &Path, dest: &Path) -> Result<()> {
+    if dest.exists() {
+        return replace_running_exe(new_bin, dest);
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(new_bin, std::fs::Permissions::from_mode(0o755))
+            .context("setting executable bit")?;
+    }
+    std::fs::rename(new_bin, dest).context("installing binary")?;
     Ok(())
 }
 
@@ -318,6 +364,10 @@ pub fn cleanup_stale_update() {
     {
         if let Ok(exe) = std::env::current_exe() {
             let _ = std::fs::remove_file(stale_path(&exe));
+            // The daemon swap leaves its own `<kamajid.exe>.old` sibling behind.
+            if let Some(dir) = exe.parent() {
+                let _ = std::fs::remove_file(stale_path(&dir.join(daemon_bin_name())));
+            }
         }
     }
 }
@@ -392,10 +442,12 @@ mod tests {
             assert_eq!(asset_ext(), "zip");
             assert!(name.ends_with(".zip"));
             assert_eq!(bin_name(), "kamaji.exe");
+            assert_eq!(daemon_bin_name(), "kamajid.exe");
         } else {
             assert_eq!(asset_ext(), "tar.gz");
             assert!(name.ends_with(".tar.gz"));
             assert_eq!(bin_name(), "kamaji");
+            assert_eq!(daemon_bin_name(), "kamajid");
         }
     }
 

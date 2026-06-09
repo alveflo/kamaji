@@ -94,6 +94,37 @@ pub fn probe_existing(pidfile: &Path, addrfile: &Path) -> Option<DaemonClient> {
     None
 }
 
+/// Best-effort: stop a running daemon and clear its pidfile/addrfile so the next
+/// launch spawns a fresh one. Used after a self-update so the freshly installed
+/// `kamajid` actually takes over instead of the old process being reused. Every
+/// failure is swallowed — the worst case is the user keeps the old daemon until
+/// they stop it themselves.
+pub fn stop_running_daemon() {
+    let Some((pidfile, addrfile)) = runtime_files() else {
+        return;
+    };
+    if let Some(pid) = read_pid(&pidfile) {
+        kill_pid(pid);
+    }
+    let _ = std::fs::remove_file(&pidfile);
+    let _ = std::fs::remove_file(&addrfile);
+}
+
+/// Signal a daemon process to terminate. Best-effort; a missing process is fine.
+#[cfg(unix)]
+fn kill_pid(pid: i32) {
+    // SIGTERM lets the daemon shut down cleanly (release the port, flush state).
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+}
+#[cfg(not(unix))]
+fn kill_pid(pid: i32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .status();
+}
+
 /// Atomically create the pidfile as a lock (O_CREAT|O_EXCL). Exactly one racer
 /// wins; losers get an `AlreadyExists` error.
 pub fn acquire_lock(pidfile: &Path) -> std::io::Result<()> {

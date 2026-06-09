@@ -64,10 +64,14 @@ fi
 
 printf 'Installing to %s ...\n' "$INSTALL_DIR"
 tar -xzf "${tmp}/${asset}" -C "$tmp"
-[ -f "${tmp}/kamaji" ] || err "archive did not contain a 'kamaji' binary"
 mkdir -p "$INSTALL_DIR"
-mv "${tmp}/kamaji" "${INSTALL_DIR}/kamaji"
-chmod +x "${INSTALL_DIR}/kamaji"
+# The archive ships two binaries: the `kamaji` TUI and the `kamajid` daemon it
+# spawns. Both must land on disk together — `kamaji` alone is a broken install.
+for bin in kamaji kamajid; do
+  [ -f "${tmp}/${bin}" ] || err "archive did not contain a '${bin}' binary"
+  mv "${tmp}/${bin}" "${INSTALL_DIR}/${bin}"
+  chmod +x "${INSTALL_DIR}/${bin}"
+done
 
 printf 'Installed: '
 "${INSTALL_DIR}/kamaji" --version || true
