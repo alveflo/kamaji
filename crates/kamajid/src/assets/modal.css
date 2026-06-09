@@ -313,3 +313,17 @@ dialog.modal {
   box-shadow: 0 0 7px color-mix(in srgb, var(--active) 70%, transparent);
   flex: 0 0 auto;
 }
+
+.config-section {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.7;
+}
+.config-section:first-of-type { margin-top: 0; }
+.config-subsection {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}

@@ -605,6 +605,33 @@ async fn new_project_modal_renders_form() {
     );
 }
 
+/// `GET /ui/config` serves the config-editor modal fragment: rooted at `#modal`
+/// (so `@get` morphs the mount), titled "Settings", and submitting via `PUT
+/// /config` through a plain `fetch()` call.
+#[tokio::test]
+async fn config_modal_renders_form() {
+    let (base, _state) = spawn().await;
+    let body = reqwest::get(format!("{base}/ui/config"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "morphs the #modal mount:\n{body}"
+    );
+    assert!(
+        body.contains(r#"id="config-dialog""#),
+        "carries the config dialog id:\n{body}"
+    );
+    assert!(body.contains("Settings"), "titled Settings:\n{body}");
+    assert!(
+        body.contains("fetch('/config',{method:'PUT'"),
+        "submit PUTs to /config:\n{body}"
+    );
+}
+
 /// End-to-end: the fragment's `POST /projects` body deserializes and creates a
 /// project, and its returned `id` is what the fragment navigates to — so the
 /// rail (which renders from the project list) shows the new tile after the nav.

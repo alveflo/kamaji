@@ -177,8 +177,9 @@ body.rail-open .ws-label { opacity: 1; }
   font-weight: 500;
 }
 
-/* add-project entry */
-.rail-add {
+/* add-project entry and settings gear — identical row layout */
+.rail-add,
+.rail-settings {
   display: flex;
   align-items: center;
   height: 52px;
@@ -186,17 +187,20 @@ body.rail-open .ws-label { opacity: 1; }
   cursor: pointer;
   color: var(--muted);
 }
-.rail-add .ws-tile {
+.rail-add .ws-tile,
+.rail-settings .ws-tile {
   background: transparent;
   border: 1.5px dashed var(--hair-2);
   color: var(--muted);
   font-weight: 400;
   font-size: 18px;
 }
-.rail-add:hover .ws-tile {
+.rail-add:hover .ws-tile,
+.rail-settings:hover .ws-tile {
   border-color: var(--accent);
   color: var(--accent);
 }
-.rail-add .ws-label { color: var(--muted); }
+.rail-add .ws-label,
+.rail-settings .ws-label { color: var(--muted); }
 
 .rail-spacer { flex: 1; }

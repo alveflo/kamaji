@@ -232,6 +232,52 @@ impl Config {
         std::time::Duration::from_secs(self.auto_review.poll_interval_secs.max(1))
     }
 
+    /// Validate a config before it is persisted by the web editor's full
+    /// replace (`PUT /config`). Returns a human-readable message on the first
+    /// failure. `PATCH /config` does not call this — it only ever sets a small
+    /// set of already-constrained fields.
+    pub fn validate(&self) -> Result<(), String> {
+        self.default_agent
+            .parse::<Agent>()
+            .map_err(|e| format!("invalid default_agent: {e}"))?;
+
+        for (name, cmds) in [
+            ("claude", &self.agents.claude),
+            ("codex", &self.agents.codex),
+            ("copilot", &self.agents.copilot),
+        ] {
+            if cmds.with_prompt.is_empty() {
+                return Err(format!("agents.{name}.with_prompt must not be empty"));
+            }
+            if cmds.no_prompt.is_empty() {
+                return Err(format!("agents.{name}.no_prompt must not be empty"));
+            }
+            if !cmds.with_prompt.iter().any(|p| p.contains("{prompt}")) {
+                return Err(format!(
+                    "agents.{name}.with_prompt must contain a {{prompt}} token"
+                ));
+            }
+        }
+
+        self.daemon
+            .bind
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| format!("invalid daemon.bind: {e}"))?;
+
+        if !matches!(self.daemon.log_format.as_str(), "human" | "json") {
+            return Err(format!(
+                "invalid daemon.log_format: {} (expected \"human\" or \"json\")",
+                self.daemon.log_format
+            ));
+        }
+
+        if self.auto_review.poll_interval_secs == 0 {
+            return Err("auto_review.poll_interval_secs must be at least 1".to_string());
+        }
+
+        Ok(())
+    }
+
     /// Absolute worktree directory for `name`, with `{root}` expanded. Returns
     /// `None` when no worktree location has been configured yet.
     pub fn worktree_dir(&self, root: &Path, name: &str) -> Option<PathBuf> {
@@ -580,5 +626,68 @@ mod tests {
         let loaded = load_from(&path).unwrap();
         assert!(loaded.auto_review.enabled);
         assert_eq!(loaded.auto_review.poll_interval_secs, 5);
+    }
+
+    #[test]
+    fn validate_accepts_default_config() {
+        assert!(Config::default().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_default_agent() {
+        let c = Config {
+            default_agent: "ollama".into(),
+            ..Default::default()
+        };
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("default_agent"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_with_prompt() {
+        let mut c = Config::default();
+        c.agents.claude.with_prompt = vec![];
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("with_prompt"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_empty_no_prompt() {
+        let mut c = Config::default();
+        c.agents.codex.no_prompt = vec![];
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("no_prompt"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_with_prompt_missing_placeholder() {
+        let mut c = Config::default();
+        c.agents.claude.with_prompt = vec!["claude".into()];
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("{prompt}"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_unparseable_bind() {
+        let mut c = Config::default();
+        c.daemon.bind = "not-an-addr".into();
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("bind"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_bad_log_format() {
+        let mut c = Config::default();
+        c.daemon.log_format = "xml".into();
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("log_format"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_zero_poll_interval() {
+        let mut c = Config::default();
+        c.auto_review.poll_interval_secs = 0;
+        let err = c.validate().unwrap_err();
+        assert!(err.contains("poll_interval"), "{err}");
     }
 }

@@ -118,6 +118,13 @@ pub async fn new_project(State(state): State<AppState>) -> Markup {
     views::project_form::project_form(default_agent, None)
 }
 
+/// `GET /ui/config` → the config-editor modal fragment, pre-filled from the
+/// daemon's loaded config. Submit PUTs the whole config to `/config`.
+pub async fn config(State(state): State<AppState>) -> Markup {
+    let cfg = state.config_async().await;
+    views::config_form::config_form(&cfg)
+}
+
 /// `GET /ui/tickets/:id/edit` → the edit-ticket modal fragment, prefilled.
 pub async fn edit_ticket(
     State(state): State<AppState>,

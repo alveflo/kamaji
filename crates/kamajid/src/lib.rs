@@ -27,6 +27,7 @@ pub fn router(state: AppState) -> Router {
         .route("/ui/tickets/new", get(routes::ui::new_ticket))
         .route("/ui/tickets/cancel", get(routes::ui::cancel_ticket))
         .route("/ui/projects/new", get(routes::ui::new_project))
+        .route("/ui/config", get(routes::ui::config))
         .route("/ui/tickets/:id/edit", get(routes::ui::edit_ticket))
         .route("/ui/tickets/:id/confirm", get(routes::ui::confirm_ticket))
         .route("/ui/tickets/:id/terminal", get(routes::ui::terminal))
@@ -37,7 +38,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/config",
-            get(routes::config::get_config).patch(routes::config::patch_config),
+            get(routes::config::get_config)
+                .patch(routes::config::patch_config)
+                .put(routes::config::put_config),
         )
         .route(
             "/projects",
