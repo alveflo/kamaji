@@ -239,6 +239,17 @@ a running `kamajid`.
 
 ## Configuration
 
+The browser board has a full **GUI editor** for everything below: click the
+**gear icon at the bottom of the side rail** to open a form covering general
+settings, the per-agent command templates, auto-review, and daemon options.
+Fields that only take effect after a daemon restart are labeled in the form.
+The **TUI** edits only the theme live (press `t`); every other field is changed
+by editing the file directly or via the web editor.
+
+The config file lives at `$XDG_CONFIG_HOME/kamaji/config.toml` (default
+`~/.config/kamaji/config.toml`; Windows uses the native config directory). It is
+written with defaults on first run.
+
 `~/.config/kamaji/config.toml`:
 
 ```toml
