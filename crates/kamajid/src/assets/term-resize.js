@@ -14,17 +14,21 @@
 // pointermove keeps flowing to us.
 //
 // Geometry (left/top/width/height) is persisted to localStorage so a resized
-// window comes back the same on the next attach. Double-clicking the title bar
-// toggles maximize (near-fullscreen) / restore.
+// window comes back the same on the next attach. The title-bar maximize button
+// (and double-clicking the title bar) toggles maximize (near-fullscreen) /
+// restore; the pre-maximize geometry is remembered so restore returns there.
 //
 // The panel is morphed into `#modal` by Datastar SSE, so we watch the mount with
 // a MutationObserver and wire each `.term-modal` as it appears.
 
 (() => {
   const KEY = 'kamaji.term.geom';
+  const RKEY = 'kamaji.term.restore'; // pre-maximize geometry to restore to
   const MIN_W = 360; // keep in sync with .term-modal min-width
   const MIN_H = 220; // keep in sync with .term-modal min-height
   const MARGIN = 16; // matches the CSS default top/left inset
+  const MAX_GLYPH = '⤢';
+  const RESTORE_GLYPH = '⧉';
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -54,6 +58,36 @@
     } catch (_) {}
   }
 
+  function loadRestore() {
+    try {
+      const g = JSON.parse(localStorage.getItem(RKEY));
+      if (g && typeof g.width === 'number' && typeof g.height === 'number') {
+        return g;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function saveRestore(g) {
+    try {
+      localStorage.setItem(RKEY, JSON.stringify(g));
+    } catch (_) {}
+  }
+
+  // Where restore lands when there's no remembered pre-maximize geometry (e.g.
+  // the window opened near-fullscreen and the user hit restore first): a
+  // centered ~70% box.
+  function defaultRestore() {
+    const width = Math.max(MIN_W, Math.round(window.innerWidth * 0.7));
+    const height = Math.max(MIN_H, Math.round(window.innerHeight * 0.7));
+    return {
+      left: Math.round((window.innerWidth - width) / 2),
+      top: Math.round((window.innerHeight - height) / 2),
+      width,
+      height,
+    };
+  }
+
   // Apply a geometry to the modal as inline styles, clamped to the current
   // viewport so a window saved on a larger screen stays on-screen and reachable.
   // Returns the clamped geometry actually applied.
@@ -74,6 +108,44 @@
   function rectOf(modal) {
     const r = modal.getBoundingClientRect();
     return { left: r.left, top: r.top, width: r.width, height: r.height };
+  }
+
+  // --- maximize / restore ----------------------------------------------------
+  // The window is "maximized" when its geometry matches maximized() within a
+  // couple of pixels (the default open state already is — see the CSS).
+  function isMaximized(modal) {
+    const r = rectOf(modal);
+    const m = maximized();
+    const near = (a, b) => Math.abs(a - b) <= 2;
+    return (
+      near(r.left, m.left) &&
+      near(r.top, m.top) &&
+      near(r.width, m.width) &&
+      near(r.height, m.height)
+    );
+  }
+
+  // Reflect the current state on the maximize button: a maximize glyph when the
+  // window can grow, a restore glyph when it's already full.
+  function syncMaxButton(modal) {
+    const btn = modal.querySelector('.term-max');
+    if (!btn) return;
+    const max = isMaximized(modal);
+    btn.textContent = max ? RESTORE_GLYPH : MAX_GLYPH;
+    btn.setAttribute('aria-label', max ? 'Restore terminal' : 'Maximize terminal');
+    btn.title = max ? 'Restore' : 'Maximize';
+  }
+
+  // Maximize if not already full; otherwise restore the remembered pre-maximize
+  // geometry (falling back to a centered box). Persists both sides.
+  function toggleMaximize(modal) {
+    if (isMaximized(modal)) {
+      saveGeom(applyGeom(modal, loadRestore() || defaultRestore()));
+    } else {
+      saveRestore(rectOf(modal));
+      saveGeom(applyGeom(modal, maximized()));
+    }
+    syncMaxButton(modal);
   }
 
   // --- drag shield -----------------------------------------------------------
@@ -99,6 +171,8 @@
       modal.classList.remove('term-resizing');
       hideOverlay();
       if (modal._rzGeom) saveGeom(modal._rzGeom);
+      // A drag may have moved/sized the window in or out of "maximized".
+      syncMaxButton(modal);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -107,7 +181,8 @@
   // --- move (title-bar drag) -------------------------------------------------
   function startMove(e, modal) {
     if (e.button !== 0) return;
-    if (e.target.closest('.term-close')) return; // let the ✕ do its job
+    // Let the title-bar buttons do their own job instead of starting a move.
+    if (e.target.closest('.term-close, .term-max')) return;
     e.preventDefault();
     const start = rectOf(modal);
     const px = e.clientX;
@@ -178,14 +253,27 @@
       h.addEventListener('pointerdown', (e) => startResize(e, modal, h.dataset.dir));
     });
 
+    const maxBtn = modal.querySelector('.term-max');
+    if (maxBtn) {
+      maxBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleMaximize(modal);
+      });
+    }
+
     const bar = modal.querySelector('.term-bar');
     if (bar) {
       bar.addEventListener('pointerdown', (e) => startMove(e, modal));
       bar.addEventListener('dblclick', (e) => {
-        if (e.target.closest('.term-close')) return;
-        saveGeom(applyGeom(modal, maximized()));
+        if (e.target.closest('.term-close, .term-max')) return;
+        toggleMaximize(modal);
       });
     }
+
+    // Match the button's glyph to the geometry just applied (a persisted
+    // geometry may have opened the window maximized, or not).
+    syncMaxButton(modal);
   }
 
   const mount = document.getElementById('modal');

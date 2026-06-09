@@ -4,13 +4,17 @@
 //! Datastar's `@get` morph-by-id drops it into the page mount.
 //!
 //! Dense-redesign look (Slice 5): a title bar with a live-dot + `#id` + task
-//! name on the left and an ✕ close upper-right; the black terminal body (the
-//! real session iframe); a zellij-style status bar (running indicator + session
-//! name + agent label) along the bottom. Bindings use the RC.6 colon form.
+//! name on the left and, upper-right, a ⤢ maximize/restore toggle next to the
+//! ✕ close; the black terminal body (the real session iframe); a zellij-style
+//! status bar (running indicator + session name + agent label) along the
+//! bottom. Bindings use the RC.6 colon form.
 //!
 //! The window opens near-fullscreen but can be **resized** from any edge/corner
-//! grip (`.term-rh[data-dir]`) and **moved** by dragging the title bar — driven
-//! by `assets/term-resize.js`, which persists the geometry. zellij web reflows
+//! grip (`.term-rh[data-dir]`), **moved** by dragging the title bar, and
+//! **maximized/restored** via the ⤢ button (or a title-bar double-click) —
+//! all driven by `assets/term-resize.js`, which persists the geometry. The
+//! maximize button has no inline binding; the script wires its toggle and flips
+//! its glyph. zellij web reflows
 //! the embedded session on its own when the iframe element changes size, so the
 //! proxy is unchanged; this is view + CSS + that one client script.
 //!
@@ -41,6 +45,10 @@ pub fn terminal_panel(id: i64, title: &str, agent: Agent, session_name: &str, sr
                         span class="term-id" { "#" (id) }
                         (PreEscaped("&nbsp; ")) (title)
                     }
+                    // Maximize/restore toggle — wired (and its glyph flipped)
+                    // by term-resize.js, so deliberately no inline binding.
+                    button class="term-max" aria-label="Maximize terminal"
+                           title="Maximize" { "⤢" }
                     button class="term-close" aria-label="Close terminal"
                            data-on:click=(PreEscaped(CLOSE_JS)) { "✕" }
                 }
@@ -123,6 +131,31 @@ mod tests {
         assert!(
             html.contains("Claude Code"),
             "agent label in status bar:\n{html}"
+        );
+    }
+
+    /// A maximize/restore button sits in the title bar, left of the ✕ close.
+    /// It carries no inline binding — `term-resize.js` wires its stateful
+    /// toggle (and flips its glyph) — so it must NOT bind `data-on:click`.
+    #[test]
+    fn title_bar_has_maximize_button_left_of_close() {
+        let html = panel();
+        assert!(
+            html.contains(r#"class="term-max""#),
+            "maximize button present:\n{html}"
+        );
+        assert!(
+            html.contains(r#"aria-label="Maximize terminal""#),
+            "maximize button is labelled:\n{html}"
+        );
+        let max_at = html.find(r#"class="term-max""#).unwrap();
+        let close_at = html.find(r#"class="term-close""#).unwrap();
+        assert!(max_at < close_at, "maximize sits left of close:\n{html}");
+        // The toggle is JS-driven, not an inline Datastar binding.
+        let max_btn = &html[max_at..close_at];
+        assert!(
+            !max_btn.contains("data-on:click"),
+            "maximize has no inline binding (term-resize.js wires it):\n{max_btn}"
         );
     }
 
