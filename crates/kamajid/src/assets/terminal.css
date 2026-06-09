@@ -84,9 +84,12 @@
 }
 .term-id { color: var(--muted); font-weight: 500; }
 
+/* The title-bar icon buttons (maximize + close). The maximize button carries
+   the margin-left:auto, so the pair right-aligns together with the bar's gap
+   between them. */
+.term-max,
 .term-close {
   flex: 0 0 auto;
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -101,6 +104,9 @@
   cursor: pointer;
   transition: color 120ms var(--ease), background 120ms var(--ease);
 }
+.term-max { margin-left: auto; }
+/* neutral hover for maximize; danger-red for close */
+.term-max:hover { color: var(--text); background: var(--hair-2); }
 .term-close:hover { color: #11111b; background: var(--danger); }
 
 .term-frame {
