@@ -94,6 +94,12 @@ pub fn rail(projects: &[Project], active_id: i64, attention: usize) -> Markup {
                 span class="ws-tile" { "+" }
                 span class="ws-label" { "Add project" }
             }
+            // Gear pinned at the rail bottom — opens the config-editor modal by
+            // morphing the `#modal` mount with the `/ui/config` fragment.
+            div class="rail-settings" data-on:click="@get('/ui/config')" {
+                span class="ws-tile" { "⚙" }
+                span class="ws-label" { "Settings" }
+            }
         }
     }
 }
@@ -201,6 +207,21 @@ mod tests {
             !html.contains("data-on-click"),
             "no hyphen binding:\n{html}"
         );
+    }
+
+    #[test]
+    fn settings_gear_present_and_opens_config_modal() {
+        let ps = [project(1, "acme")];
+        let html = rail(&ps, 1, 0).into_string();
+        assert!(
+            html.contains(r#"class="rail-settings""#),
+            "settings row present:\n{html}"
+        );
+        assert!(
+            html.contains(r#"data-on:click="@get('/ui/config')""#),
+            "gear opens the config modal:\n{html}"
+        );
+        assert!(html.contains("Settings"), "settings label:\n{html}");
     }
 
     #[test]
