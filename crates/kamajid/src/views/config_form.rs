@@ -52,7 +52,7 @@ copilot:{{with_prompt:sp('copilot.with_prompt'),no_prompt:sp('copilot.no_prompt'
 auto_review:{{enabled:els['ar_enabled'].checked,poll_interval_secs:parseInt(els['poll_interval_secs'].value,10)||1,patterns:{{codex:nl('patterns.codex'),copilot:nl('patterns.copilot')}}}},\
 daemon:{{bind:els['bind'].value,log_format:els['log_format'].value,log_level:els['log_level'].value,web_theme:els['web_theme'].value}}\
 }};\
-fetch('/config',{{method:'PUT',headers:{{'content-type':'application/json'}},body:JSON.stringify(body)}}).then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}else{{r.text().then(t=>{{document.getElementById('cfg-error').textContent=t}})}}}})"
+fetch('/config',{{method:'PUT',headers:{{'content-type':'application/json'}},body:JSON.stringify(body)}}).then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}else{{r.json().then(j=>{{document.getElementById('cfg-error').textContent=(j&&j.error)?j.error:'Save failed'}}).catch(()=>{{document.getElementById('cfg-error').textContent='Save failed'}})}}}})"
     );
     let escape_handler = format!("if(evt.key==='Escape'){{{CLEAR_MODAL_JS}}}");
     let default_agent = cfg.default_agent();
@@ -220,6 +220,23 @@ mod tests {
         assert!(
             html.contains("fetch('/config',{method:'PUT'"),
             "PUTs to /config:\n{html}"
+        );
+    }
+
+    #[test]
+    fn submit_shows_human_error_on_failure() {
+        let html = config_form(&Config::default()).into_string();
+        assert!(
+            html.contains("r.json().then("),
+            "parses JSON error body:\n{html}"
+        );
+        assert!(
+            html.contains("j.error"),
+            "shows the human error message:\n{html}"
+        );
+        assert!(
+            !html.contains("r.text().then(t=>"),
+            "no raw-text error dump:\n{html}"
         );
     }
 
