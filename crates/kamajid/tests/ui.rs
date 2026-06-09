@@ -625,10 +625,7 @@ async fn config_modal_renders_form() {
         body.contains(r#"id="config-dialog""#),
         "carries the config dialog id:\n{body}"
     );
-    assert!(
-        body.contains("Settings"),
-        "titled Settings:\n{body}"
-    );
+    assert!(body.contains("Settings"), "titled Settings:\n{body}");
     assert!(
         body.contains("fetch('/config',{method:'PUT'"),
         "submit PUTs to /config:\n{body}"
