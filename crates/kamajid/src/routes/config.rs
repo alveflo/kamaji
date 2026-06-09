@@ -1,7 +1,11 @@
-//! Read and partially edit the daemon's loaded configuration. `PATCH /config`
-//! is the single writer: it replaces only the present fields, persists to
-//! `config.toml`, and updates the in-memory copy so a subsequent `GET` reflects
-//! the change.
+//! Read and edit the daemon's loaded configuration.
+//!
+//! - `GET /config` → the currently loaded config.
+//! - `PATCH /config` → partial edit (TUI path): replaces only the present
+//!   fields, persists, updates the in-memory copy.
+//! - `PUT /config` → full-replace (web editor path): validates the complete
+//!   body before persisting; returns 400 with a human message on validation
+//!   failure.
 
 use axum::extract::State;
 use axum::Json;
@@ -59,4 +63,29 @@ pub async fn patch_config(
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("config save task panicked: {e}")))?
         .map_err(ApiError::Internal)?;
     Ok(Json(updated))
+}
+
+/// `PUT /config` → full-replace the daemon's config from a complete `Config`
+/// body. Used by the web config editor, which renders every field from a prior
+/// `GET /config`. Validated (`Config::validate`) before persisting; on failure
+/// returns 400 with a human message the modal shows inline. `PATCH /config`
+/// remains the TUI's partial-edit path and is unaffected.
+pub async fn put_config(
+    State(state): State<AppState>,
+    Json(body): Json<Config>,
+) -> Result<Json<Config>, ApiError> {
+    body.validate().map_err(ApiError::BadRequest)?;
+
+    {
+        let mut guard = state.config.write().await;
+        *guard = body.clone();
+    }
+
+    let path = kamaji_core::config::config_path().map_err(ApiError::Internal)?;
+    let to_save = body.clone();
+    tokio::task::spawn_blocking(move || kamaji_core::config::save_to(&path, &to_save))
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("config save task panicked: {e}")))?
+        .map_err(ApiError::Internal)?;
+    Ok(Json(body))
 }

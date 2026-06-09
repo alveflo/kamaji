@@ -1405,3 +1405,87 @@ async fn delete_done_tickets_on_missing_project_is_404() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 }
+
+#[tokio::test]
+async fn put_config_replaces_and_persists() {
+    // Isolate the config dir so persisting doesn't touch the developer's real
+    // ~/.config/kamaji/config.toml.
+    let tmp = tempfile::tempdir().unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+
+    let (base, _state) = spawn().await;
+    let client = reqwest::Client::new();
+
+    // Fetch the current config to use as the base for a full-replace.
+    let mut cfg: serde_json::Value = client
+        .get(format!("{base}/config"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Mutate two fields: theme and agents.claude.with_prompt.
+    cfg["theme"] = serde_json::json!("nord");
+    cfg["agents"]["claude"]["with_prompt"] = serde_json::json!(["claude", "--foo", "{prompt}"]);
+
+    let resp = client
+        .put(format!("{base}/config"))
+        .json(&cfg)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let returned: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(returned["theme"], "nord");
+    assert_eq!(
+        returned["agents"]["claude"]["with_prompt"],
+        serde_json::json!(["claude", "--foo", "{prompt}"])
+    );
+
+    // A subsequent GET reflects the full-replace (daemon's in-memory copy updated).
+    let cfg2: serde_json::Value = client
+        .get(format!("{base}/config"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cfg2["theme"], "nord");
+    assert_eq!(
+        cfg2["agents"]["claude"]["with_prompt"],
+        serde_json::json!(["claude", "--foo", "{prompt}"])
+    );
+}
+
+#[tokio::test]
+async fn put_config_rejects_invalid_with_400() {
+    // No config dir isolation needed — we expect a 400 before any disk write.
+    let (base, _state) = spawn().await;
+    let client = reqwest::Client::new();
+
+    // Fetch the current config as the base.
+    let mut cfg: serde_json::Value = client
+        .get(format!("{base}/config"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // Set agents.claude.with_prompt to a list without the required {prompt} placeholder.
+    cfg["agents"]["claude"]["with_prompt"] = serde_json::json!(["claude"]);
+
+    let resp = client
+        .put(format!("{base}/config"))
+        .json(&cfg)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["kind"], "bad_request");
+}

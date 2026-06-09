@@ -37,7 +37,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/config",
-            get(routes::config::get_config).patch(routes::config::patch_config),
+            get(routes::config::get_config)
+                .patch(routes::config::patch_config)
+                .put(routes::config::put_config),
         )
         .route(
             "/projects",
