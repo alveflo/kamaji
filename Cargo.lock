@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "kamaji"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "kamaji-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "kamajid"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
