@@ -11,7 +11,15 @@ pub const EMPTY_COMMAND_CONFIG_ERROR: &str = concat!(
 );
 
 pub(crate) fn kdl_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    // Escape KDL's structural characters and the whitespace that would otherwise
+    // be emitted literally. A multi-line initial prompt carries real newlines;
+    // encoding them as `\n` keeps the layout on one line while zellij's KDL
+    // parser still delivers a single argument with the newline intact.
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 /// Which zellij bar UI a generated layout should render.
@@ -165,6 +173,27 @@ layout {
     fn escapes_quotes() {
         let out = render_layout("/w\"t", &["claude".to_string()], BarStyle::Default).unwrap();
         assert!(out.contains("cwd=\"/w\\\"t\""));
+    }
+
+    /// A multi-line initial prompt is passed as one argument with its newlines
+    /// encoded as `\n`, so the layout stays single-line and zellij hands the
+    /// agent a single argument rather than splitting it across KDL rows.
+    #[test]
+    fn escapes_newlines_in_args() {
+        let out = render_layout(
+            "/wt",
+            &["claude".to_string(), "line1\nline2\twith tab".to_string()],
+            BarStyle::Default,
+        )
+        .unwrap();
+        assert!(
+            out.contains("args \"line1\\nline2\\twith tab\""),
+            "newlines/tabs in an arg must be escaped, not emitted raw:\n{out}"
+        );
+        assert!(
+            !out.contains("line1\nline2"),
+            "a raw newline must not leak into the layout:\n{out}"
+        );
     }
 
     #[test]
