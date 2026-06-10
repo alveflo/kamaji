@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use kamaji_core::config::Config;
 use kamaji_core::db::Db;
@@ -33,6 +34,9 @@ pub struct AppState {
     /// Public base URL of the reverse proxy, used to build iframe `src`s.
     proxy_base: Arc<String>,
     sessions: Arc<dyn SessionDriver>,
+    /// When this daemon process constructed its state — used for uptime in
+    /// `GET /diagnostics`.
+    started: Arc<Instant>,
 }
 
 impl AppState {
@@ -52,6 +56,7 @@ impl AppState {
             zellij_proxy: Arc::new(proxy),
             proxy_base: Arc::new(DEFAULT_PROXY_BASE.to_string()),
             sessions: Arc::new(RealSessionDriver),
+            started: Arc::new(Instant::now()),
         }
     }
 
@@ -139,6 +144,11 @@ impl AppState {
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("db task panicked: {e}")))?
         .map_err(ApiError::Internal)
+    }
+
+    /// Seconds since this daemon's state was constructed (process uptime).
+    pub fn uptime_secs(&self) -> u64 {
+        self.started.elapsed().as_secs()
     }
 
     /// Broadcast an event to all SSE subscribers. Returns immediately; a send

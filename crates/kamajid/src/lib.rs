@@ -22,6 +22,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(routes::ui::board))
         .route("/healthz", get(routes::healthz::healthz))
+        .route("/diagnostics", get(routes::diagnostics::diagnostics))
         .route("/events", get(routes::events::events))
         .route("/ui/events", get(routes::ui_events::events))
         .route("/ui/tickets/new", get(routes::ui::new_ticket))
