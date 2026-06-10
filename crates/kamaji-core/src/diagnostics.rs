@@ -133,8 +133,15 @@ fn check_binary(name: &str) -> Check {
     let resolved = resolve_in_path(name, &path_var);
     match Command::new(name).arg("--version").output() {
         Ok(out) if out.status.success() => {
-            let version = String::from_utf8_lossy(&out.stdout);
-            let version = version.lines().next().unwrap_or("").trim();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let version = stdout.lines().next().unwrap_or("").trim();
+            // Some tools print their version to stderr with exit 0; fall back.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let version = if version.is_empty() {
+                stderr.lines().next().unwrap_or("").trim()
+            } else {
+                version
+            };
             let where_ = resolved
                 .as_ref()
                 .map(|p| p.display().to_string())
@@ -313,8 +320,12 @@ mod tests {
     #[test]
     fn newest_log_file_picks_the_kamajid_file() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("kamajid.2026-06-09.log"), b"old").unwrap();
+        std::fs::write(dir.path().join("kamajid.2026-06-08.log"), b"older").unwrap();
         std::fs::write(dir.path().join("unrelated.txt"), b"x").unwrap();
+        // Ensure the second kamajid file has a strictly later mtime so the
+        // "pick newest" selection (not just the prefix filter) is exercised.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.path().join("kamajid.2026-06-09.log"), b"newer").unwrap();
         let chosen = super::newest_log_file(dir.path());
         let name = chosen
             .as_ref()
