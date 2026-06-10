@@ -47,7 +47,7 @@ claude:{{with_prompt:sp('claude.with_prompt'),no_prompt:sp('claude.no_prompt'),r
 codex:{{with_prompt:sp('codex.with_prompt'),no_prompt:sp('codex.no_prompt'),resume:sp('codex.resume')}},\
 copilot:{{with_prompt:sp('copilot.with_prompt'),no_prompt:sp('copilot.no_prompt'),resume:sp('copilot.resume')}}\
 }},\
-auto_review:{{enabled:els['ar_enabled'].checked,poll_interval_secs:parseInt(els['poll_interval_secs'].value,10)||1}},\
+auto_review:{{enabled:els['ar_enabled'].checked,poll_interval_secs:parseInt(els['poll_interval_secs'].value,10)||1,copilot_idle_secs:parseInt(els['copilot_idle_secs'].value,10)||1}},\
 daemon:{{bind:els['bind'].value,log_format:els['log_format'].value,log_level:els['log_level'].value,web_theme:els['web_theme'].value}}\
 }};\
 fetch('/config',{{method:'PUT',headers:{{'content-type':'application/json'}},body:JSON.stringify(body)}}).then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}else{{r.json().then(j=>{{document.getElementById('cfg-error').textContent=(j&&j.error)?j.error:'Save failed'}}).catch(()=>{{document.getElementById('cfg-error').textContent='Save failed'}})}}}})"
@@ -132,6 +132,11 @@ fetch('/config',{{method:'PUT',headers:{{'content-type':'application/json'}},bod
                             label { "Poll interval (seconds)" }
                             input type="number" name="poll_interval_secs" min="1"
                                   value=(cfg.auto_review.poll_interval_secs);
+                        }
+                        div class="field" {
+                            label { "Copilot idle timeout (seconds)" }
+                            input type="number" name="copilot_idle_secs" min="1"
+                                  value=(cfg.auto_review.copilot_idle_secs);
                         }
 
                         h3 class="config-section" { "Daemon" }
@@ -273,6 +278,30 @@ mod tests {
         assert!(
             html.contains("applies after daemon restart"),
             "bind labeled:\n{html}"
+        );
+    }
+
+    #[test]
+    fn auto_review_section_includes_copilot_idle_secs() {
+        use kamaji_core::config::AutoReview;
+        let c = Config {
+            auto_review: AutoReview {
+                copilot_idle_secs: 42,
+                poll_interval_secs: 5,
+                ..AutoReview::default()
+            },
+            ..Default::default()
+        };
+        let html = config_form(&c).into_string();
+        // Input field is present and pre-filled with the current value.
+        assert!(
+            html.contains(r#"name="copilot_idle_secs""#) && html.contains(r#"value="42""#),
+            "copilot_idle_secs input pre-filled:\n{html}"
+        );
+        // Submit JS reads and includes the field.
+        assert!(
+            html.contains("copilot_idle_secs:parseInt(els['copilot_idle_secs'].value,10)"),
+            "submit JS includes copilot_idle_secs:\n{html}"
         );
     }
 
