@@ -68,6 +68,44 @@ pub fn marker_level(path: &Path) -> SignalLevel {
     }
 }
 
+/// Per-session state for the Copilot screen-change detector, held across polls.
+#[derive(Default)]
+pub struct ScreenChangeState {
+    last_hash: Option<u64>,
+    unchanged_count: u32,
+}
+
+/// Screen-change detector (Copilot). kamaji's daemon can't see keystrokes or
+/// raw PTY output — only `zellij dump-screen` each poll — so "is it working?"
+/// is inferred from whether the screen moves: a working TUI redraws (spinner,
+/// streaming output), a finished or input-blocked one is static. A byte-for-byte
+/// identical screen for `idle_after_unchanged` consecutive polls => `Idle`; any
+/// change => `Active`. A failed dump (`None`) => `Unknown` (never moves a ticket)
+/// and leaves state untouched, so a transient blank screen can't force idle.
+pub fn screen_change_level(
+    screen: Option<&str>,
+    state: &mut ScreenChangeState,
+    idle_after_unchanged: u32,
+) -> SignalLevel {
+    let Some(screen) = screen else {
+        return SignalLevel::Unknown;
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    screen.hash(&mut hasher);
+    let hash = hasher.finish();
+    if state.last_hash == Some(hash) {
+        state.unchanged_count = state.unchanged_count.saturating_add(1);
+    } else {
+        state.last_hash = Some(hash);
+        state.unchanged_count = 0;
+    }
+    if state.unchanged_count >= idle_after_unchanged.max(1) {
+        SignalLevel::Idle
+    } else {
+        SignalLevel::Active
+    }
+}
+
 /// Scrape detector. `Idle` only when the buffer matches a configured idle
 /// substring AND is unchanged since the previous poll (stability guard).
 /// `None` screen (dump failed) => Unknown. Empty patterns => never Idle.
@@ -351,5 +389,51 @@ mod tests {
         let out = inject_claude_settings(argv, "/s/m.idle");
         assert_eq!(out.len(), 3);
         assert_eq!(out[1], "--settings");
+    }
+
+    #[test]
+    fn screen_change_changed_screen_is_active() {
+        let mut st = ScreenChangeState::default();
+        assert_eq!(screen_change_level(Some("a"), &mut st, 2), SignalLevel::Active);
+        // Different content => activity, counter resets.
+        assert_eq!(screen_change_level(Some("b"), &mut st, 2), SignalLevel::Active);
+    }
+
+    #[test]
+    fn screen_change_unchanged_below_threshold_is_active() {
+        let mut st = ScreenChangeState::default();
+        // threshold 2: first sight (count 0) and one repeat (count 1) stay Active.
+        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Active);
+        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Active);
+    }
+
+    #[test]
+    fn screen_change_unchanged_at_threshold_is_idle() {
+        let mut st = ScreenChangeState::default();
+        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Active); // count 0
+        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Active); // count 1
+        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Idle); // count 2
+    }
+
+    #[test]
+    fn screen_change_threshold_of_one_idles_on_first_repeat() {
+        let mut st = ScreenChangeState::default();
+        assert_eq!(screen_change_level(Some("x"), &mut st, 1), SignalLevel::Active); // count 0
+        assert_eq!(screen_change_level(Some("x"), &mut st, 1), SignalLevel::Idle); // count 1
+    }
+
+    #[test]
+    fn screen_change_failed_dump_is_unknown() {
+        let mut st = ScreenChangeState::default();
+        assert_eq!(screen_change_level(None, &mut st, 2), SignalLevel::Unknown);
+    }
+
+    #[test]
+    fn screen_change_reactivates_after_idle_when_screen_moves() {
+        let mut st = ScreenChangeState::default();
+        screen_change_level(Some("x"), &mut st, 1); // Active, count 0
+        assert_eq!(screen_change_level(Some("x"), &mut st, 1), SignalLevel::Idle); // count 1
+        // New content => back to Active.
+        assert_eq!(screen_change_level(Some("y"), &mut st, 1), SignalLevel::Active);
     }
 }
