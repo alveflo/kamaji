@@ -49,7 +49,31 @@ pub fn ticket_confirm(id: i64, action: ConfirmAction) -> Markup {
             true,
         ),
     };
-    confirm_dialog(heading, &message, confirm_label, &action_js, danger)
+    confirm_dialog(
+        heading,
+        &message,
+        confirm_label,
+        &action_js,
+        CLEAR_MODAL_JS,
+        danger,
+    )
+}
+
+/// The confirmation modal for deleting a whole project and all of its tickets
+/// (`GET /ui/projects/:id/confirm-delete`). Pure: `project_id -> Markup`. Confirm
+/// fires `DELETE /projects/:id` (which tears down every ticket's session +
+/// worktree daemon-side) and, on success, navigates home — the deleted project's
+/// board would otherwise be stale, so we reload onto the first remaining project.
+pub fn delete_project_confirm(project_id: i64) -> Markup {
+    confirm_dialog(
+        "Delete project?",
+        "Permanently delete this project and every one of its tickets? Their worktrees and zellij sessions are torn down. This cannot be undone.",
+        "Delete project",
+        &format!("fetch('/projects/{project_id}',{{method:'DELETE'}})"),
+        // On success leave the deleted board behind for the first project.
+        "window.location='/'",
+        true,
+    )
 }
 
 /// The confirmation modal for clearing a project's whole Done column
@@ -62,24 +86,29 @@ pub fn delete_done_confirm(project_id: i64) -> Markup {
         "Permanently delete every ticket in the Done column? This cannot be undone. Worktrees and zellij sessions are not torn down.",
         "Delete all",
         &format!("fetch('/projects/{project_id}/done-tickets',{{method:'DELETE'}})"),
+        CLEAR_MODAL_JS,
         true,
     )
 }
 
 /// Generic confirmation modal chrome. `action_js` is a bare `fetch(...)`
-/// expression; this wraps it so the mount is cleared only on a 2xx. `danger`
-/// styles the confirm button as `btn-danger` (destructive) vs `btn-primary`.
+/// expression; this wraps it so `on_success` runs only on a 2xx. Most callers
+/// pass [`CLEAR_MODAL_JS`] (close the modal; the board update arrives over SSE);
+/// project-delete passes a navigation instead, since the deleted board is stale.
+/// `danger` styles the confirm button as `btn-danger` (destructive) vs
+/// `btn-primary`.
 fn confirm_dialog(
     heading: &str,
     message: &str,
     confirm_label: &str,
     action_js: &str,
+    on_success: &str,
     danger: bool,
 ) -> Markup {
-    // Run the command, then clear the mount on success; the board update arrives
-    // over /ui/events. Single-quoted JS only, so the expression is safe inside
-    // the double-quoted, unescaped (PreEscaped) attribute value.
-    let confirm_action = format!("{action_js}.then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}}})");
+    // Run the command, then run `on_success` on a 2xx. Single-quoted JS only, so
+    // the expression is safe inside the double-quoted, unescaped (PreEscaped)
+    // attribute value.
+    let confirm_action = format!("{action_js}.then(r=>{{if(r.ok){{{on_success}}}}})");
     // Escape dismisses the dialog. Bound on the window only while mounted.
     let escape_handler = format!("if(evt.key==='Escape'){{{CLEAR_MODAL_JS}}}");
     let confirm_class = if danger {
@@ -197,6 +226,35 @@ mod tests {
         assert!(
             html.contains("fetch('/projects/9/done-tickets',{method:'DELETE'})"),
             "confirm hits the bulk delete endpoint:\n{html}"
+        );
+        assert!(
+            html.contains(r#"class="btn btn-danger""#),
+            "confirm is the danger button:\n{html}"
+        );
+    }
+
+    #[test]
+    fn delete_project_confirm_warns_navigates_home_and_hits_project_delete() {
+        let html = delete_project_confirm(4).into_string();
+        assert!(
+            html.starts_with(r#"<div id="modal">"#),
+            "fragment rooted at #modal for morph-by-id:\n{html}"
+        );
+        assert!(
+            html.contains("Delete project?"),
+            "heading names the action:\n{html}"
+        );
+        assert!(
+            html.contains("This cannot be undone."),
+            "warns it is irreversible:\n{html}"
+        );
+        assert!(
+            html.contains("fetch('/projects/4',{method:'DELETE'})"),
+            "confirm hits the project DELETE:\n{html}"
+        );
+        assert!(
+            html.contains("if(r.ok){window.location='/'}"),
+            "navigates home on success (the deleted board is stale):\n{html}"
         );
         assert!(
             html.contains(r#"class="btn btn-danger""#),

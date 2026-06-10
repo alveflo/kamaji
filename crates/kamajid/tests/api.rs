@@ -1407,6 +1407,202 @@ async fn delete_done_tickets_on_missing_project_is_404() {
 }
 
 #[tokio::test]
+async fn ui_edit_project_route_renders_the_manage_modal() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            let p = db.create_project("acme", std::path::Path::new("/tmp/acme"), None)?;
+            Ok(p.id)
+        })
+        .await
+        .unwrap();
+
+    let body = reqwest::get(format!("{base}/ui/projects/{pid}/edit"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        body.starts_with(r#"<div id="modal">"#),
+        "rooted at #modal:\n{body}"
+    );
+    assert!(
+        body.contains("Project settings") && body.contains("acme"),
+        "renders the project's settings:\n{body}"
+    );
+    assert!(
+        body.contains(&format!("fetch('/projects/{pid}',{{method:'PATCH'")),
+        "submit edits via PATCH:\n{body}"
+    );
+
+    // The delete-confirm fragment is reachable and hits the project DELETE.
+    let confirm = reqwest::get(format!("{base}/ui/projects/{pid}/confirm-delete"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        confirm.contains(&format!("fetch('/projects/{pid}',{{method:'DELETE'}})")),
+        "confirm hits the project DELETE:\n{confirm}"
+    );
+
+    // A missing project is a 404.
+    let missing = reqwest::get(format!("{base}/ui/projects/999/edit"))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+}
+
+#[tokio::test]
+async fn patch_project_updates_name_root_and_agent() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            let p = db.create_project(
+                "acme",
+                std::path::Path::new("/tmp/acme"),
+                Some(kamaji_core::models::Agent::Claude),
+            )?;
+            Ok(p.id)
+        })
+        .await
+        .unwrap();
+
+    let resp = reqwest::Client::new()
+        .patch(format!("{base}/projects/{pid}"))
+        .json(&serde_json::json!({
+            "name": "acme-renamed",
+            "root_dir": "/tmp/moved",
+            "default_agent": "codex",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["name"], "acme-renamed");
+    assert_eq!(body["root_dir"], "/tmp/moved");
+    assert_eq!(body["default_agent"], "codex");
+
+    // Persisted: a fresh GET reflects the edit.
+    let reread: serde_json::Value = reqwest::Client::new()
+        .get(format!("{base}/projects/{pid}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(reread["name"], "acme-renamed");
+}
+
+#[tokio::test]
+async fn patch_project_can_clear_the_default_agent() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            let p = db.create_project(
+                "p",
+                std::path::Path::new("/tmp/p"),
+                Some(kamaji_core::models::Agent::Claude),
+            )?;
+            Ok(p.id)
+        })
+        .await
+        .unwrap();
+
+    let body: serde_json::Value = reqwest::Client::new()
+        .patch(format!("{base}/projects/{pid}"))
+        .json(&serde_json::json!({ "name": "p", "root_dir": "/tmp/p", "default_agent": null }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        body["default_agent"].is_null(),
+        "omitting the agent clears it back to the global default"
+    );
+}
+
+#[tokio::test]
+async fn patch_project_rejects_empty_name() {
+    let (base, state) = spawn().await;
+    let pid = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            Ok(p.id)
+        })
+        .await
+        .unwrap();
+    let resp = reqwest::Client::new()
+        .patch(format!("{base}/projects/{pid}"))
+        .json(&serde_json::json!({ "name": "  ", "root_dir": "/tmp/p" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn patch_and_delete_missing_project_are_404() {
+    let (base, _state) = spawn().await;
+    let patch = reqwest::Client::new()
+        .patch(format!("{base}/projects/777"))
+        .json(&serde_json::json!({ "name": "ghost", "root_dir": "/tmp/ghost" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(patch.status(), 404);
+    let del = reqwest::Client::new()
+        .delete(format!("{base}/projects/777"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 404);
+}
+
+#[tokio::test]
+async fn delete_project_removes_it_with_its_tickets_and_emits_deleted_events() {
+    use kamaji_core::models::Agent;
+    let (base, state) = spawn().await;
+    let (pid, ta, tb) = state
+        .with_db(|db| {
+            let p = db.create_project("p", std::path::Path::new("/tmp/p"), None)?;
+            let a = db.create_ticket(p.id, "a", "", None, Agent::Claude)?;
+            let b = db.create_ticket(p.id, "b", "", None, Agent::Claude)?;
+            Ok((p.id, a.id, b.id))
+        })
+        .await
+        .unwrap();
+
+    let mut stream = connect_events(&base).await;
+    let resp = reqwest::Client::new()
+        .delete(format!("{base}/projects/{pid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // One ticket.deleted per owned card, in id order.
+    let (_, d1) = read_named_event(&mut stream, "ticket.deleted").await;
+    assert_eq!(d1["id"], ta);
+    let (_, d2) = read_named_event(&mut stream, "ticket.deleted").await;
+    assert_eq!(d2["id"], tb);
+
+    // The project is gone.
+    let get = reqwest::Client::new()
+        .get(format!("{base}/projects/{pid}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.status(), 404);
+}
+
+#[tokio::test]
 async fn put_config_replaces_and_persists() {
     // Isolate the config dir so persisting doesn't touch the developer's real
     // ~/.config/kamaji/config.toml.

@@ -175,6 +175,40 @@ impl DaemonClient {
         )
     }
 
+    /// Edit a project's name, root dir, and default agent (full replace of all
+    /// three). `PATCH /projects/:id`; 400 if the name is empty, 404 if missing.
+    pub fn update_project(
+        &self,
+        id: i64,
+        name: &str,
+        root_dir: &std::path::Path,
+        default_agent: Option<Agent>,
+    ) -> Result<Project> {
+        self.send_json(
+            reqwest::Method::PATCH,
+            &format!("/projects/{id}"),
+            &serde_json::json!({ "name": name, "root_dir": root_dir, "default_agent": default_agent }),
+        )
+    }
+
+    /// Delete a project and all of its tickets (their sessions/worktrees are
+    /// torn down daemon-side). `DELETE /projects/:id`; 404 if missing.
+    pub fn delete_project(&self, id: i64) -> Result<()> {
+        let resp = self
+            .http
+            .delete(format!("{}/projects/{id}", self.base))
+            .send()
+            .map_err(ClientError::Unreachable)?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        match status.as_u16() {
+            404 => Err(ClientError::NotFound),
+            _ => Err(ClientError::Server(String::new())),
+        }
+    }
+
     pub fn create_ticket(
         &self,
         project_id: i64,
@@ -428,6 +462,64 @@ mod tests {
             client.get_ticket(t.id),
             Err(ClientError::NotFound)
         ));
+    }
+
+    #[test]
+    fn update_and_delete_project_via_client() {
+        let base = spawn_daemon();
+        let client = DaemonClient::connect(base).unwrap();
+        let p = client
+            .create_project(
+                "acme",
+                std::path::Path::new("/tmp/acme"),
+                Some(Agent::Claude),
+            )
+            .unwrap();
+
+        let edited = client
+            .update_project(p.id, "acme2", std::path::Path::new("/tmp/acme2"), None)
+            .unwrap();
+        assert_eq!(edited.id, p.id);
+        assert_eq!(edited.name, "acme2");
+        assert_eq!(edited.root_dir, std::path::PathBuf::from("/tmp/acme2"));
+        assert_eq!(edited.default_agent, None);
+
+        // A ticket in the project is removed along with it.
+        let t = client
+            .create_ticket(p.id, "t", "", None, Agent::Claude)
+            .unwrap();
+        client.delete_project(p.id).unwrap();
+        assert!(matches!(
+            client.get_project(p.id),
+            Err(ClientError::NotFound)
+        ));
+        assert!(matches!(
+            client.get_ticket(t.id),
+            Err(ClientError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn update_missing_project_is_not_found() {
+        let base = spawn_daemon();
+        let client = DaemonClient::connect(base).unwrap();
+        assert!(matches!(
+            client.update_project(999, "x", std::path::Path::new("/tmp/x"), None),
+            Err(ClientError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn update_project_empty_name_is_bad_request() {
+        let base = spawn_daemon();
+        let client = DaemonClient::connect(base).unwrap();
+        let p = client
+            .create_project("p", std::path::Path::new("/tmp/p"), None)
+            .unwrap();
+        let err = client
+            .update_project(p.id, "  ", std::path::Path::new("/tmp/p"), None)
+            .unwrap_err();
+        assert!(matches!(err, ClientError::BadRequest(_)));
     }
 
     #[test]

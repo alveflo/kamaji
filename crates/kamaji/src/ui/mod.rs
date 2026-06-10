@@ -52,6 +52,17 @@ pub fn render(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLevel>) 
             modals::render_agent_picker(frame, &app.theme, *selected)
         }
         Modal::WorktreeLocation(form) => modals::render_worktree_location(frame, &app.theme, form),
+        Modal::ProjectSettings(form) => modals::render_project_settings(frame, &app.theme, form),
+        Modal::ConfirmDeleteProject { name, .. } => {
+            modals::render_confirm(
+                frame,
+                &app.theme,
+                "Delete project",
+                &format!(
+                    "Delete '{name}' and all its tickets? Their sessions and worktrees are torn down. [y]es / Esc"
+                ),
+            );
+        }
     }
 }
 
