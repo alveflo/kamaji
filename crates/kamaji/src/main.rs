@@ -10,6 +10,7 @@ mod client;
 mod container;
 mod daemon;
 mod dir_select;
+mod doctor;
 mod engine;
 mod picker;
 mod sse;
