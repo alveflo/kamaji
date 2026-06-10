@@ -8,7 +8,12 @@ use anyhow::{Context, Result};
 use kamaji_core::config::{self, Config};
 use kamaji_core::db::Db;
 use kamaji_core::paths;
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::Layer;
 
 use kamajid::state::AppState;
 
@@ -73,23 +78,76 @@ fn derive_proxy_addr(bind: &str) -> Option<(String, String)> {
     Some((proxy_bind, public_base))
 }
 
-fn init_tracing(config: &Config) {
+/// Initialize tracing with a console layer (as before) **and** a rolling file
+/// layer under `paths::log_dir()` so the daemon's logs survive even when it was
+/// auto-spawned by the TUI with stdout/stderr pointed at /dev/null. Returns the
+/// non-blocking writer guard, which the caller must hold for the process
+/// lifetime (dropping it stops the background log writer). `None` when no log
+/// file could be opened — the console layer still works.
+fn init_tracing(config: &Config) -> Option<WorkerGuard> {
     let filter = EnvFilter::try_from_env("KAMAJID_LOG")
         .or_else(|_| EnvFilter::try_new(&config.daemon.log_level))
         .unwrap_or_else(|_| EnvFilter::new("info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    if config.daemon.log_format == "json" {
-        builder.json().init();
+    let json = config.daemon.log_format == "json";
+
+    // Console layer: human or json, matching the prior behavior.
+    let console = if json {
+        tracing_subscriber::fmt::layer().json().boxed()
     } else {
-        builder.init();
-    }
+        tracing_subscriber::fmt::layer().boxed()
+    };
+
+    // File layer (best-effort): rolling daily, keep the last 5 files, no ANSI.
+    let (file_layer, guard) = match open_log_appender() {
+        Some(appender) => {
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            let layer = if json {
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_ansi(false)
+                    .with_writer(writer)
+                    .boxed()
+            } else {
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(writer)
+                    .boxed()
+            };
+            (Some(layer), Some(guard))
+        }
+        None => (None, None),
+    };
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(console)
+        .with(file_layer)
+        .init();
+    guard
+}
+
+/// Open the rolling log appender under `paths::log_dir()`, creating the dir if
+/// needed. Files are named `kamajid.<date>.log`, daily-rotated, last 5 kept.
+/// Returns `None` (no file logging) if the dir is unavailable or unwritable.
+fn open_log_appender() -> Option<RollingFileAppender> {
+    let dir = paths::log_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix("kamajid")
+        .filename_suffix("log")
+        .max_log_files(5)
+        .build(&dir)
+        .ok()
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = config::load_or_init()?;
     let args = parse_args(&config)?;
-    init_tracing(&config);
+    // Hold the file-log writer guard for the whole process so buffered log
+    // lines are flushed; dropping it would stop the background writer.
+    let _log_guard = init_tracing(&config);
 
     let bind = args.bind.unwrap_or_else(|| config.daemon.bind.clone());
     let db = Db::open(&db_path()?)?;
