@@ -1,14 +1,15 @@
 /* ============================================================================
    kamaji — layout
-   Main flex column, topbar, breadcrumb, spacer, new-ticket button, board grid.
+   Main flex column, topbar (breadcrumb + centered search + actions), buttons,
+   and the four-column board grid.
    ========================================================================== */
 
-/* main flex column — contains topbar + board */
 .main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  height: 100vh;
   overflow: hidden;
 }
 
@@ -18,111 +19,122 @@
 .topbar {
   display: flex;
   align-items: center;
-  gap: 14px;
-  height: 46px;
-  padding: 0 16px;
+  gap: 16px;
+  padding: 13px 22px;
   flex: 0 0 auto;
-  background: linear-gradient(180deg, var(--bg-2), var(--bg));
-  border-bottom: 1px solid var(--hair);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  transition: background .3s, border-color .3s;
 }
 
-/* breadcrumb */
+/* breadcrumb: project dot + name + mono root path */
 .crumb {
   display: flex;
   align-items: center;
   gap: 9px;
+  flex-shrink: 0;
 }
 .crumb-dot {
-  width: 18px;
-  height: 18px;
-  border-radius: 6px;
-  background: linear-gradient(135deg, #89b4fa, #5b7fd6);
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  background: linear-gradient(135deg, #C7B8F5, #9CCDF0);
 }
-/* per-project colour variants — match ws-tile.c1..c4 in sidebar.css */
-.crumb-dot.c1 { background: linear-gradient(135deg, #89b4fa, #5b7fd6); }
-.crumb-dot.c2 { background: linear-gradient(135deg, #cba6f7, #f38ba8); }
-.crumb-dot.c3 { background: linear-gradient(135deg, #fab387, #f9a03f); }
-.crumb-dot.c4 { background: linear-gradient(135deg, #a6e3a1, #5fb37a); }
+/* per-project gradient variants — match ws-tile.c1..c4 in sidebar.css */
+.crumb-dot.c1 { background: linear-gradient(135deg, #C7B8F5, #9CCDF0); }
+.crumb-dot.c2 { background: linear-gradient(135deg, #F6B6A3, #EE9FC0); }
+.crumb-dot.c3 { background: linear-gradient(135deg, #9ADCB9, #86CFD6); }
+.crumb-dot.c4 { background: linear-gradient(135deg, #F4D58A, #F6B6A3); }
 .crumb-name {
-  font-weight: 600;
-  font-size: 14px;
-  letter-spacing: -0.01em;
+  font-weight: 800;
+  font-size: 16.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.crumb-root {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
 }
 
-/* search slot — empty placeholder; Slice 4 fills it */
+/* the centered search box lives in this slot (styled in search.css) */
 .search-slot {
   flex: 1;
-  max-width: 340px;
+  max-width: 460px;
+  margin: 0 auto;
+  min-width: 0;
 }
 
-.spacer { flex: 1; }
+.spacer { flex: 0 1 auto; }
 
-/* topbar primary "+ New" button */
-.new-ticket {
-  height: 28px;
-  padding: 0 12px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #0b0b14;
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: var(--font);
-  display: inline-flex;
+.topbar-right {
+  display: flex;
   align-items: center;
-  gap: 6px;
-}
-.new-ticket:hover { filter: brightness(1.07); }
-.new-ticket:active { transform: translateY(1px); }
-
-/* topbar secondary "Sessions" ghost button */
-.sessions-btn {
-  height: 28px;
-  padding: 0 12px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted, #9aa0aa);
-  background: transparent;
-  border: 1px solid var(--hair, #2a2a33);
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: var(--font);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.sessions-btn:hover {
-  color: var(--text, #e6e6ea);
-  border-color: var(--border, #3a3a44);
-  background: var(--surface-2, #1c1c22);
-}
-.sessions-btn:active { transform: translateY(1px); }
-
-/* topbar "Clear Done" — a ghost button that warms to a destructive red on hover */
-.clear-done-btn:hover {
-  color: var(--danger, #f38ba8);
-  border-color: color-mix(in srgb, var(--danger, #f38ba8) 35%, transparent);
-  background: color-mix(in srgb, var(--danger, #f38ba8) 10%, transparent);
+  gap: 9px;
+  flex-shrink: 0;
 }
 
 /* ----------------------------------------------------------------------------
-   Board grid (prototype version — flex:1 inside .main)
+   Buttons (the topbar uses .new-ticket / .sessions-btn class names; the
+   modal chrome's own .btn lives in modal.css)
+   -------------------------------------------------------------------------- */
+.new-ticket,
+.sessions-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 15px;
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 13.5px;
+  white-space: nowrap;
+  border: none;
+  cursor: pointer;
+  transition: transform .1s, background .15s, box-shadow .15s, color .15s, filter .15s;
+}
+.new-ticket:active,
+.sessions-btn:active { transform: translateY(1px); }
+
+/* primary "+ New" */
+.new-ticket {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(124,91,201,.3);
+}
+.new-ticket:hover { background: var(--primary-hover); box-shadow: 0 4px 14px rgba(124,91,201,.4); }
+
+/* soft secondary buttons (Project, Sessions, Clear Done) */
+.sessions-btn {
+  background: var(--chip-bg);
+  color: var(--ink-soft);
+}
+.sessions-btn:hover { background: var(--surface-hover); color: var(--ink); filter: brightness(.98); }
+
+/* "Clear Done" warms to a destructive tint on hover */
+.clear-done-btn:hover {
+  color: var(--pink-ink);
+  background: color-mix(in oklab, var(--pink) 24%, transparent);
+  filter: none;
+}
+
+/* ----------------------------------------------------------------------------
+   Board grid
    -------------------------------------------------------------------------- */
 .board {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--gap);
-  padding: 18px 16px;
-  align-content: start;
+  grid-template-columns: repeat(4, minmax(264px, 1fr));
+  gap: 15px;
+  padding: 16px 22px 20px;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 @media (max-width: 1080px) {
-  .board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 640px) {
-  .board { grid-template-columns: 1fr; padding: 16px; }
-  .topbar { gap: 12px; padding: 0 12px; }
+  .board { grid-template-columns: repeat(4, minmax(248px, 1fr)); }
 }

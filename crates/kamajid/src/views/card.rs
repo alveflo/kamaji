@@ -13,29 +13,34 @@ use maud::{html, Markup, PreEscaped};
 /// zellij session is running.
 pub fn card(t: &Ticket) -> Markup {
     let dot = if t.session_name.is_some() {
-        "dot live"
+        "sess-dot live"
     } else {
-        "dot idle"
+        "sess-dot idle"
+    };
+    // The status chip mirrors the column: in-progress reads "active", review
+    // "idle", done "done"; Todo carries none. Class drives the pastel colour.
+    let chip: Option<(&str, &str)> = match t.status {
+        Status::InProgress => Some(("active", "active")),
+        Status::Review => Some(("idle", "idle")),
+        Status::Done => Some(("done", "done")),
+        Status::Todo => None,
     };
     html! {
         article id=(format!("card-{}", t.id))
-                class="card"
+                class=(format!("card t-{}", t.agent.as_str()))
                 draggable="true"
                 data-status=(t.status.as_str()) {
-            div class="card-head" {
+            div class="card-top" {
+                span class=(dot) title=[t.session_name.as_ref().map(|_| "Session live")] {}
                 span class="card-id" { "#" (t.id) }
-                span class="card-title" { (t.title) }
-            }
-            div class="card-meta" {
-                span class=(dot) {}
-                span class="agent" { (t.agent.label()) }
-                @if matches!(t.status, Status::InProgress | Status::Review) {
-                    @if t.status == Status::Review {
-                        span class="chip idle" { "idle" }
-                    } @else {
-                        span class="chip active" { "active" }
-                    }
+                @if let Some((cls, label)) = chip {
+                    span class=(format!("status-chip {cls}")) { (label) }
                 }
+            }
+            div class="card-title" { (t.title) }
+            div class="agent-label" {
+                span class="agent-dot" {}
+                span class="agent" { (t.agent.label()) }
             }
             (card_actions(t))
         }
@@ -70,25 +75,25 @@ fn card_actions(t: &Ticket) -> Markup {
     let delete = PreEscaped(format!("@get('/ui/tickets/{id}/confirm?action=delete')"));
     let done = PreEscaped(format!("@get('/ui/tickets/{id}/confirm?action=done')"));
     html! {
-        div class="actions" {
+        div class="card-actions" {
             @match t.status {
                 Status::Todo => {
                     button class="act primary" data-on:click=(PreEscaped(format!("fetch('/tickets/{id}/start', {{method:'POST'}})"))) { "▸ Start" }
                     button class="act" data-on:click=(&edit) { "Edit" }
-                    button class="act danger" data-on:click=(&delete) { "Delete" }
+                    button class="act danger ml" data-on:click=(&delete) { "Delete" }
                 }
                 Status::InProgress => {
                     button class="act primary" data-on:click=(&attach) { "⤢ Attach" }
                     button class="act" data-on:click=(&edit) { "Edit" }
-                    button class="act" data-on:click=(&done) { "✓ Done" }
+                    button class="act go ml" data-on:click=(&done) { "✓ Done" }
                 }
                 Status::Review => {
                     button class="act primary" data-on:click=(&attach) { "⤢ Attach" }
-                    button class="act" data-on:click=(&done) { "✓ Done" }
-                    button class="act" data-on:click=(&edit) { "Edit" }
+                    button class="act go" data-on:click=(&done) { "✓ Done" }
+                    button class="act ml" data-on:click=(&edit) { "Edit" }
                 }
                 Status::Done => {
-                    button class="act danger" data-on:click=(&delete) { "Delete" }
+                    button class="act danger ml" data-on:click=(&delete) { "Delete" }
                 }
             }
         }
@@ -142,11 +147,11 @@ mod tests {
     fn no_session_renders_idle_dot() {
         let html = card(&ticket(1, Status::Todo)).into_string();
         assert!(
-            html.contains(r#"class="dot idle""#),
+            html.contains(r#"class="sess-dot idle""#),
             "idle dot when no session:\n{html}"
         );
         assert!(
-            !html.contains(r#"class="dot live""#),
+            !html.contains(r#"class="sess-dot live""#),
             "no live dot without a session:\n{html}"
         );
     }
@@ -157,17 +162,39 @@ mod tests {
         t.session_name = Some("sess1".into());
         let html = card(&t).into_string();
         assert!(
-            html.contains(r#"class="dot live""#),
+            html.contains(r#"class="sess-dot live""#),
             "live dot when session present:\n{html}"
         );
     }
 
     #[test]
-    fn in_progress_card_shows_active_chip_review_shows_idle() {
+    fn status_chip_reflects_column() {
         let ip = card(&ticket(1, Status::InProgress)).into_string();
-        assert!(ip.contains(r#"class="chip active""#), "active chip:\n{ip}");
+        assert!(
+            ip.contains(r#"class="status-chip active">active"#),
+            "active chip:\n{ip}"
+        );
         let rv = card(&ticket(2, Status::Review)).into_string();
-        assert!(rv.contains(r#"class="chip idle""#), "idle chip:\n{rv}");
+        assert!(
+            rv.contains(r#"class="status-chip idle">idle"#),
+            "idle chip:\n{rv}"
+        );
+        let dn = card(&ticket(3, Status::Done)).into_string();
+        assert!(
+            dn.contains(r#"class="status-chip done">done"#),
+            "done chip:\n{dn}"
+        );
+        let td = card(&ticket(4, Status::Todo)).into_string();
+        assert!(!td.contains("status-chip"), "todo has no chip:\n{td}");
+    }
+
+    #[test]
+    fn card_carries_agent_palette_class() {
+        let html = card(&ticket(1, Status::Todo)).into_string();
+        assert!(
+            html.contains(r#"class="card t-claude""#),
+            "card carries its agent palette class:\n{html}"
+        );
     }
 
     #[test]

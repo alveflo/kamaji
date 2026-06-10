@@ -169,6 +169,35 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn self_hosted_fonts_serve_as_woff2() {
+        // The pastel redesign self-hosts Nunito + JetBrains Mono (no Google Fonts
+        // CDN); rust-embed recurses src/assets/, so they live under fonts/.
+        for font in [
+            "fonts/nunito-400.woff2",
+            "fonts/nunito-700.woff2",
+            "fonts/nunito-800.woff2",
+            "fonts/jetbrainsmono-400.woff2",
+            "fonts/jetbrainsmono-700.woff2",
+        ] {
+            let resp = serve(Path(font.to_string()), HeaderMap::new()).await;
+            assert_eq!(resp.status(), StatusCode::OK, "{font} serves");
+            assert_eq!(
+                header_value(&resp, header::CONTENT_TYPE).as_deref(),
+                Some("font/woff2"),
+                "{font} content-type"
+            );
+            assert!(body_len(resp).await > 0, "{font} has bytes");
+        }
+    }
+
+    #[tokio::test]
+    async fn theme_toggle_module_is_embedded() {
+        let resp = serve(Path("theme.js".to_string()), HeaderMap::new()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_len(resp).await > 0, "theme.js has bytes");
+    }
+
     #[test]
     fn etag_matches_handles_list_wildcard_and_weak_prefix() {
         assert!(etag_matches("\"abc\"", "\"abc\""));

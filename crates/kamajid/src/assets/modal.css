@@ -1,183 +1,11 @@
 /* ============================================================================
-   kamaji — modal
-   Shared chrome for all dialogs + the carried smoke-critical positioning rules.
+   kamaji — modal (pastel)
+   Shared chrome for every dialog (ticket / project / config / confirm /
+   sessions) plus the load-bearing dialog positioning rules.
    ========================================================================== */
 
 /* ----------------------------------------------------------------------------
-   Shared chrome (prototype design system)
-   -------------------------------------------------------------------------- */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  background: rgba(10, 10, 16, 0.62);
-  backdrop-filter: blur(3px);
-}
-.modal-overlay.open { display: flex; }
-
-/* .modal used inside .modal-overlay (later slices) — distinct from dialog.modal */
-.modal-overlay .modal {
-  width: min(440px, calc(100vw - 32px));
-  background: var(--bg-2);
-  border: 1px solid var(--hair-2);
-  border-radius: 11px;
-  box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.85);
-  overflow: hidden;
-  animation: modal-in 0.16s var(--ease);
-}
-
-@keyframes modal-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.985); }
-  to   { opacity: 1; transform: none; }
-}
-
-.modal-head {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 13px 16px;
-  border-bottom: 1px solid var(--hair);
-}
-.modal-title {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text);
-}
-.modal-idpill {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--muted);
-  background: var(--surface);
-  border: 1px solid var(--hair);
-  border-radius: 5px;
-  padding: 1px 6px;
-}
-.modal-close {
-  margin-left: auto;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.modal-close:hover {
-  color: var(--text);
-  background: var(--surface);
-}
-
-.modal-body { padding: 16px; }
-
-.field { margin-bottom: 13px; }
-.field:last-child { margin-bottom: 0; }
-.field > label {
-  display: block;
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-  margin-bottom: 6px;
-}
-.field input,
-.field textarea,
-.field select {
-  width: 100%;
-  box-sizing: border-box;
-  font-family: var(--font);
-  font-size: 13px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--hair-2);
-  border-radius: 6px;
-  padding: 8px 10px;
-  outline: none;
-  transition: border-color 0.12s var(--ease), box-shadow 0.12s var(--ease);
-}
-.field input::placeholder,
-.field textarea::placeholder { color: var(--faint); }
-.field input:focus,
-.field textarea:focus,
-.field select:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.16);
-}
-.field select { cursor: pointer; appearance: none; -webkit-appearance: none; }
-.field textarea { resize: vertical; min-height: 62px; line-height: 1.5; }
-.field input.mono { font-family: var(--mono); font-size: 12px; }
-.field .hint { font-size: 11px; color: var(--muted); margin-top: 5px; }
-
-.req { color: var(--accent); margin-left: 2px; }
-
-.seg {
-  display: inline-flex;
-  background: var(--surface);
-  border: 1px solid var(--hair-2);
-  border-radius: 7px;
-  padding: 2px;
-  gap: 2px;
-}
-.seg button {
-  font-size: 12px;
-  padding: 5px 12px;
-  border: none;
-  background: transparent;
-  color: var(--dim);
-  border-radius: 5px;
-  cursor: pointer;
-  font-family: var(--font);
-}
-.seg button.on {
-  background: var(--surface-2);
-  color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--hair-2);
-}
-
-.modal-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: flex-end;
-  padding: 12px 16px;
-  border-top: 1px solid var(--hair);
-  background: rgba(0, 0, 0, 0.14);
-}
-
-.btn {
-  font-size: 12px;
-  padding: 7px 14px;
-  border-radius: 6px;
-  border: 1px solid var(--hair-2);
-  background: transparent;
-  color: var(--dim);
-  cursor: pointer;
-  font-family: var(--font);
-}
-.btn:hover { color: var(--text); background: var(--surface); }
-.btn-primary {
-  color: #0b0b14;
-  background: var(--accent);
-  border-color: var(--accent);
-  font-weight: 600;
-}
-.btn-primary:hover { filter: brightness(1.06); }
-.btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
-.btn-danger:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
-
-.foot-spacer { flex: 1; }
-
-/* ----------------------------------------------------------------------------
-   Smoke-critical positioning rules (carried from app.css)
-   These three facts are LOAD-BEARING for the regression test — preserve them:
+   Dialog positioning — LOAD-BEARING for the smoke test; preserve these facts:
      1. dialog.modal has position:fixed
      2. #modal:has(dialog.modal)::before paints a non-none backdrop
      3. dialog.modal is centered in the viewport (inset:0; margin:auto)
@@ -189,141 +17,344 @@
   position: fixed;
   inset: 0;
   z-index: 49;
-  background: rgba(17, 17, 27, 0.62);
+  background: var(--overlay);
   backdrop-filter: blur(3px);
+  animation: modal-fade .16s ease;
 }
+@keyframes modal-fade { from { opacity: 0; } }
 
 dialog.modal {
   position: fixed;
   inset: 0;
   margin: auto;
   z-index: 50;
-  color: var(--text);
-  background: var(--bg-2);
-  border: 1px solid var(--hair-2);
-  border-radius: var(--radius);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
   padding: 0;
-  width: min(440px, calc(100vw - 32px));
+  width: min(580px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
   height: fit-content;
-  box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.85),
-              0 0 0 1px rgba(137, 180, 250, 0.08);
-  animation: modal-in 200ms var(--ease) both;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  box-shadow: var(--shadow-pop);
+  animation: modal-pop .22s cubic-bezier(.34,1.45,.6,1);
+}
+@keyframes modal-pop { from { opacity: 0; transform: translateY(12px) scale(.97); } }
+
+/* ----------------------------------------------------------------------------
+   Head / body / foot
+   -------------------------------------------------------------------------- */
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 20px 12px;
+}
+.modal-title { margin: 0; font-size: 19px; font-weight: 800; color: var(--ink); }
+.modal-idpill {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--chip-bg);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+.modal-livedot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--live);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--live) 28%, transparent);
+}
+.modal-close {
+  margin-left: auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-soft);
+  font-size: 16px;
+  transition: background .15s, color .15s;
+}
+.modal-close:hover { background: var(--chip-bg); color: var(--ink); }
+
+.modal-body {
+  padding: 4px 20px 6px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
 }
 
-/* Confirmation-modal message body (Done / Delete). */
-.confirm-message {
-  margin: 0;
-  font-size: var(--t-sm);
-  line-height: 1.5;
-  color: var(--dim);
+.modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 15px 20px 18px;
+  justify-content: flex-end;
 }
+.foot-spacer { flex: 1; }
 
-.form-error {
-  margin-top: 12px;
-  padding: 8px 11px;
-  font-size: var(--t-sm);
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-  border-radius: var(--radius-sm);
+/* ----------------------------------------------------------------------------
+   Fields
+   -------------------------------------------------------------------------- */
+.field { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.field > label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--ink-soft);
+}
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1.5px solid var(--line);
+  background: var(--surface-2);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  outline: none;
+  transition: border-color .15s, background .15s;
+}
+.field input::placeholder,
+.field textarea::placeholder { color: var(--faint); }
+.field input:focus,
+.field textarea:focus,
+.field select:focus { border-color: var(--lav); background: var(--surface); }
+.field select { cursor: pointer; appearance: none; -webkit-appearance: none; }
+.field textarea { resize: vertical; min-height: 58px; line-height: 1.5; }
+.field input.mono,
+.field textarea.mono { font-family: var(--mono); font-size: 13px; }
+.field .hint { font-weight: 700; color: var(--muted); font-size: 11.5px; }
+
+.req { color: var(--pink-ink); margin-left: 2px; }
+
+/* locked (read-only) prompt */
+.field textarea[readonly],
+.field input[readonly] {
+  background: var(--chip-bg);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.field textarea[readonly]:focus,
+.field input[readonly]:focus { border-color: var(--line); }
+.lock-tag {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--lemon-ink);
+  background: color-mix(in oklab, var(--lemon) 35%, var(--surface));
+  padding: 1px 8px;
+  border-radius: 999px;
 }
 
 /* ----------------------------------------------------------------------------
-   Background-start checkbox (new-ticket modal)
+   Segmented control (agent picker)
+   -------------------------------------------------------------------------- */
+.seg {
+  display: inline-flex;
+  background: var(--chip-bg);
+  border-radius: 10px;
+  padding: 3px;
+  gap: 3px;
+  align-self: flex-start;
+}
+.seg button {
+  padding: 7px 13px;
+  border-radius: 8px;
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--muted);
+  transition: color .14s, background .14s;
+}
+.seg button.on {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-card);
+}
+
+/* ----------------------------------------------------------------------------
+   Checkbox row (background-start)
    -------------------------------------------------------------------------- */
 .check {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  margin-top: 15px;
+  padding: 11px 13px;
+  border-radius: 11px;
+  background: var(--surface-2);
+  border: 1.5px solid var(--line);
   cursor: pointer;
+  transition: border-color .15s, background .15s;
 }
+.check:has(input:checked) { border-color: var(--lav); background: color-mix(in oklab, var(--lav) 14%, var(--surface)); }
 .check input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
   flex: 0 0 auto;
-  width: 17px;
-  height: 17px;
+  width: 19px;
+  height: 19px;
   margin: 1px 0 0;
-  border: 1px solid var(--hair-2);
-  border-radius: 5px;
-  background: var(--surface);
+  border-radius: 6px;
+  border: 1.8px solid var(--faint);
+  background: transparent;
   cursor: pointer;
   position: relative;
-  transition: background 0.12s var(--ease), border-color 0.12s var(--ease);
+  transition: background .14s, border-color .14s;
 }
-.check input[type="checkbox"]:checked {
-  background: var(--accent);
-  border-color: var(--accent);
-}
+.check input[type="checkbox"]:checked { background: var(--primary); border-color: var(--primary); }
 .check input[type="checkbox"]:checked::after {
   content: "✓";
   position: absolute;
   inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: #fff;
+}
+.check-text { font-size: 13.5px; color: var(--muted); line-height: 1.45; }
+.check-text b { display: block; font-weight: 800; color: var(--ink); margin-bottom: 1px; }
+
+/* ----------------------------------------------------------------------------
+   Toggle switch (settings)
+   -------------------------------------------------------------------------- */
+.toggle {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 23px;
+  border-radius: 999px;
+  background: var(--faint);
+  position: relative;
+  transition: background .16s;
+}
+.toggle.on { background: var(--live); }
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2.5px;
+  left: 2.5px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.25);
+  transition: transform .16s;
+}
+.toggle.on::after { transform: translateX(17px); }
+.row-between { display: flex; align-items: center; gap: 12px; }
+
+/* ----------------------------------------------------------------------------
+   Grouped settings + theme swatches
+   -------------------------------------------------------------------------- */
+.field-group {
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 14px;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  gap: 13px;
+}
+.field-group-title,
+.config-section,
+.config-subsection {
   font-size: 11px;
   font-weight: 800;
-  color: #0b0b14;
-}
-.check-text {
-  font-size: 12px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
   color: var(--muted);
-  line-height: 1.45;
 }
-.check-text b {
-  display: block;
-  font-weight: 500;
+.config-section { margin: 6px 0 0; }
+.config-section:first-of-type { margin-top: 0; }
+.config-subsection { margin: 2px 0 0; }
+.daemon-note {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--lemon-ink);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.theme-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.theme-pick {
+  border-radius: 10px;
+  border: 1.5px solid var(--line);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  transition: border-color .14s;
+}
+.theme-pick.on { border-color: var(--primary); }
+.theme-swatch { width: 100%; height: 30px; border-radius: 7px; display: flex; overflow: hidden; }
+.theme-swatch i { flex: 1; }
+.theme-pick span { font-size: 11px; font-weight: 800; color: var(--ink-soft); }
+
+/* ----------------------------------------------------------------------------
+   Confirm body + error banner
+   -------------------------------------------------------------------------- */
+.confirm-message,
+.modal-sub {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.modal-sub code,
+.confirm-message code {
+  font-family: var(--mono);
   font-size: 12.5px;
-  color: var(--text);
-  margin-bottom: 1px;
+  background: var(--chip-bg);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+
+.form-error {
+  margin: 0;
+  background: color-mix(in oklab, var(--pink) 22%, var(--surface));
+  color: var(--pink-ink);
+  font-weight: 700;
+  font-size: 13px;
+  padding: 9px 12px;
+  border-radius: 10px;
 }
 
 /* ----------------------------------------------------------------------------
-   Locked (read-only) prompt + running-session live-dot (edit modal)
+   Buttons (modal chrome)
    -------------------------------------------------------------------------- */
-.field textarea[readonly],
-.field input[readonly] {
-  color: var(--dim);
-  background: var(--bg);
-  border-color: var(--hair);
-  cursor: default;
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 15px;
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 13.5px;
+  white-space: nowrap;
+  background: var(--chip-bg);
+  color: var(--ink-soft);
+  transition: transform .1s, background .15s, box-shadow .15s, color .15s, filter .15s;
 }
-.field textarea[readonly]:focus,
-.field input[readonly]:focus {
-  border-color: var(--hair);
-  box-shadow: none;
-}
-.lock-tag {
-  float: right;
-  font-family: var(--font);
-  font-size: 10px;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--muted);
-  font-weight: 400;
-}
-.modal-livedot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--active);
-  box-shadow: 0 0 7px color-mix(in srgb, var(--active) 70%, transparent);
-  flex: 0 0 auto;
-}
-
-.config-section {
-  margin: 1.25rem 0 0.5rem;
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  opacity: 0.7;
-}
-.config-section:first-of-type { margin-top: 0; }
-.config-subsection {
-  margin: 0.75rem 0 0.25rem;
-  font-size: 0.85rem;
-  opacity: 0.85;
-}
+.btn:hover { background: var(--surface-hover); color: var(--ink); filter: brightness(.98); }
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: var(--primary); color: #fff; box-shadow: 0 2px 8px rgba(124,91,201,.3); }
+.btn-primary:hover { background: var(--primary-hover); box-shadow: 0 4px 14px rgba(124,91,201,.4); filter: none; }
+.btn-primary:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+.btn-danger { background: transparent; color: var(--pink-ink); }
+.btn-danger:hover { background: color-mix(in oklab, var(--pink) 28%, transparent); color: var(--pink-ink); filter: none; }
+.btn-xs { padding: 5px 10px; font-size: 12px; border-radius: 8px; gap: 5px; }

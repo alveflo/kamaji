@@ -1,10 +1,13 @@
-/* Session-cleanup modal: the checkbox list and per-session kind tags.
-   Chrome (modal, modal-head/body/foot, btn, check) comes from modal.css. */
+/* ============================================================================
+   kamaji — sessions-cleanup modal (pastel)
+   The checkbox list + per-session kind tags. Modal chrome (modal-head/body/foot,
+   btn, check) comes from modal.css.
+   ========================================================================== */
 
 .sess-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
   max-height: 50vh;
   overflow-y: auto;
 }
@@ -12,58 +15,39 @@
 .sess-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--border, #2a2a33);
-  border-radius: 8px;
+  gap: 11px;
+  padding: 11px 13px;
+  border-radius: 11px;
+  border: 1.5px solid var(--line);
+  background: var(--surface-2);
+  transition: border-color .14s, background .14s;
 }
+.sess-row:hover { border-color: var(--lav); }
+.sess-row:has(input:checked) { border-color: var(--primary); background: color-mix(in oklab, var(--lav) 12%, var(--surface)); }
 
-.sess-row:hover {
-  background: var(--surface-2, #1c1c22);
-}
-
-.sess-name {
-  font-family: var(--mono, ui-monospace, monospace);
-  font-size: 13px;
-}
+.sess-name { font-weight: 800; font-size: 13.5px; color: var(--ink); }
 
 .sess-tag {
   margin-left: auto;
-  font-size: 12px;
-  color: var(--muted, #9aa0aa);
+  font-size: 10.5px;
+  font-weight: 800;
+  padding: 2px 9px;
+  border-radius: 999px;
+  letter-spacing: .03em;
+  text-transform: uppercase;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 55%;
+  background: var(--chip-bg);
+  color: var(--muted);
 }
+.sess-tag-ticket { background: color-mix(in oklab, var(--sky) 38%, var(--surface)); color: var(--sky-ink); }
+.sess-tag-main { background: color-mix(in oklab, var(--peach) 42%, var(--surface)); color: var(--peach-ink); }
+.sess-tag-orphan { background: var(--chip-bg); color: var(--muted); }
 
-.sess-tag-main {
-  color: var(--warn, #e6a23c);
-}
+/* main/project workspaces are heavier to kill — tint the whole row */
+.sess-warn { border-color: color-mix(in oklab, var(--peach) 55%, var(--line)); }
 
-/* Per-kind tag modifiers — share .sess-tag base; listed here for future
-   per-kind coloring. Currently neutral (muted) to keep them unobtrusive. */
-.sess-tag-ticket { color: var(--muted, #9aa0aa); }
-.sess-tag-orphan { color: var(--muted, #9aa0aa); }
+.sess-confirm-text { font-size: 13.5px; font-weight: 800; color: var(--ink); }
 
-/* Main/project workspaces are heavier to kill — tint the whole row. */
-.sess-warn {
-  border-color: var(--warn, #e6a23c);
-}
+.sess-foot-row { display: flex; align-items: center; gap: 8px; width: 100%; }
 
-.sess-confirm-text {
-  font-size: 13px;
-  color: var(--text, #e6e6ea);
-}
-
-.sess-foot-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-
-.sess-empty {
-  color: var(--muted, #9aa0aa);
-  padding: 8px 2px;
-}
+.sess-empty { color: var(--muted); padding: 8px 2px; }

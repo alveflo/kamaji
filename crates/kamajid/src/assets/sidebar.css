@@ -1,206 +1,247 @@
 /* ============================================================================
-   kamaji — sidebar / workspace rail
-   Slack-style collapsible rail with project tiles.
+   kamaji — sidebar / workspace rail (pastel)
+   Slack-style collapsible rail. Expanded by default (`body.rail-open`);
+   collapses to a 70px icon rail when the class is removed.
    ========================================================================== */
 
 .rail {
-  flex: 0 0 64px;
-  width: 64px;
+  flex: 0 0 252px;
+  width: 252px;
+  min-width: 0;
   background: var(--rail);
-  border-right: 1px solid var(--rail-hair);
+  color: var(--rail-ink);
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  padding: 10px 0;
-  gap: 4px;
-  transition: width 0.18s var(--ease), flex-basis 0.18s var(--ease);
+  overflow: hidden;
+  transition: width .26s cubic-bezier(.4,0,.2,1), flex-basis .26s cubic-bezier(.4,0,.2,1);
 }
-body.rail-open .rail {
-  flex-basis: 212px;
-  width: 212px;
-}
+body:not(.rail-open) .rail { flex-basis: 70px; width: 70px; }
 
+/* ---- header: logo + wordmark + toggle ----------------------------------- */
 .rail-head {
   display: flex;
   align-items: center;
-  height: 44px;
-  padding: 0 12px;
-  margin-bottom: 6px;
-  justify-content: center;
+  gap: 10px;
+  padding: 16px 14px 12px;
+  min-width: 252px;
 }
-body.rail-open .rail-head {
-  justify-content: flex-start;
-  padding: 0 14px 0 16px;
+body:not(.rail-open) .rail-head {
+  flex-direction: column;
+  min-width: 0;
+  gap: 10px;
+  padding: 14px 0 10px;
 }
 
 .rail-mark {
-  display: none;
-  width: 9px;
-  height: 9px;
-  border-radius: 3px;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #C7B8F5, #9CCDF0);
+  display: grid;
+  place-items: center;
   flex: 0 0 auto;
-  background: linear-gradient(135deg, var(--prog), var(--done));
-  box-shadow: 0 0 8px rgba(137, 180, 250, 0.5);
 }
-body.rail-open .rail-mark { display: inline-block; }
-
 .rail-word {
-  display: none;
-  font-family: var(--mono);
-  font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0.02em;
-  margin-left: 9px;
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: -.01em;
+  color: #fff;
   white-space: nowrap;
+  flex: 1;
 }
-body.rail-open .rail-word { display: inline-block; }
+body:not(.rail-open) .rail-word { display: none; }
 
 .rail-toggle {
   flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid transparent;
-  font-size: 15px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--rail-ink-soft);
+  font-size: 16px;
   line-height: 1;
+  transition: background .15s, color .15s;
 }
-body.rail-open .rail-toggle {
-  margin-left: auto;
-  font-size: 13px;
-}
-.rail-toggle:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.06);
-}
-.rail-toggle .ic-open { display: none; }
-body.rail-open .rail-toggle .ic-open { display: inline; }
-body.rail-open .rail-toggle .ic-collapsed { display: none; }
+.rail-toggle:hover { background: var(--rail-2); color: #fff; }
+.rail-toggle .ic-open { display: inline; }
+.rail-toggle .ic-collapsed { display: none; }
+body:not(.rail-open) .rail-toggle .ic-open { display: none; }
+body:not(.rail-open) .rail-toggle .ic-collapsed { display: inline; }
 
+/* ---- "Projects" section label ------------------------------------------- */
+.rail-label {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--rail-ink-soft);
+  padding: 10px 20px 8px;
+  white-space: nowrap;
+}
+body:not(.rail-open) .rail-label { opacity: 0; height: 0; padding: 0; overflow: hidden; }
+
+/* ---- project list ------------------------------------------------------- */
 .rail-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 4px 0;
+  gap: 3px;
+  padding: 2px 10px;
   overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
 }
+.rail-list::-webkit-scrollbar { width: 0; }
+body:not(.rail-open) .rail-list { align-items: center; }
 
-/* each workspace entry */
 .ws {
   position: relative;
   display: flex;
   align-items: center;
-  height: 52px;
-  padding: 0 12px;
+  gap: 11px;
+  padding: 7px;
+  border-radius: 12px;
+  min-width: 0;
   cursor: pointer;
+  transition: background .15s;
 }
+.ws:hover { background: var(--rail-2); }
+.ws.active { background: var(--rail-2); }
 
+/* active left indicator bar */
 .ws-ind {
   position: absolute;
-  left: 0;
+  left: -10px;
   top: 50%;
   transform: translateY(-50%) scaleY(0);
-  width: 3px;
-  height: 30px;
-  border-radius: 0 3px 3px 0;
-  background: var(--text);
-  transition: transform 0.15s var(--ease);
+  width: 4px;
+  height: 26px;
+  border-radius: 0 4px 4px 0;
+  background: #fff;
+  transition: transform .15s cubic-bezier(.4,0,.2,1);
 }
-.ws:hover .ws-ind { transform: translateY(-50%) scaleY(0.4); }
 .ws.active .ws-ind { transform: translateY(-50%) scaleY(1); }
 
 .ws-tile {
   position: relative;
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  border-radius: 13px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 14px;
-  color: #0b0b14;
-  letter-spacing: -0.02em;
-  transition: border-radius 0.15s var(--ease), box-shadow 0.15s var(--ease), transform 0.12s var(--ease);
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 13px;
+  color: #2C2840;
+  letter-spacing: .02em;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.25);
 }
-.ws:hover .ws-tile {
-  border-radius: 11px;
-  transform: translateY(-1px);
-}
-.ws.active .ws-tile {
-  border-radius: 11px;
-  box-shadow: 0 0 0 2px var(--rail), 0 0 0 3px rgba(255, 255, 255, 0.15);
-}
-
-.ws-tile.c1 { background: linear-gradient(135deg, #89b4fa, #5b7fd6); }
-.ws-tile.c2 { background: linear-gradient(135deg, #cba6f7, #f38ba8); }
-.ws-tile.c3 { background: linear-gradient(135deg, #fab387, #f9a03f); }
-.ws-tile.c4 { background: linear-gradient(135deg, #a6e3a1, #5fb37a); }
-
-.ws-badge {
-  position: absolute;
-  top: -3px;
-  right: -3px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 9px;
-  background: var(--review);
-  color: #1a1208;
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 2px solid var(--rail);
-}
+.ws-tile.c1 { background: linear-gradient(135deg, #C7B8F5, #9CCDF0); }
+.ws-tile.c2 { background: linear-gradient(135deg, #F6B6A3, #EE9FC0); }
+.ws-tile.c3 { background: linear-gradient(135deg, #9ADCB9, #86CFD6); }
+.ws-tile.c4 { background: linear-gradient(135deg, #F4D58A, #F6B6A3); }
 
 .ws-label {
-  margin-left: 11px;
+  flex: 1;
+  font-weight: 700;
+  font-size: 14.5px;
+  color: var(--rail-ink);
   white-space: nowrap;
-  font-size: 13px;
-  color: var(--dim);
-  opacity: 0;
-  transition: opacity 0.12s var(--ease);
   overflow: hidden;
+  text-overflow: ellipsis;
 }
-body.rail-open .ws-label { opacity: 1; }
-.ws.active .ws-label {
-  color: var(--text);
-  font-weight: 500;
+.ws.active .ws-label { color: #fff; }
+body:not(.rail-open) .ws-label { display: none; }
+
+.ws-badge {
+  flex: 0 0 auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--peach);
+  color: #7a3b22;
+  font-size: 11.5px;
+  font-weight: 800;
+  display: grid;
+  place-items: center;
+}
+/* the badge sits on the project tile in the mockup; when collapsed pin it to
+   the tile corner so it stays visible without the label row. */
+body:not(.rail-open) .ws-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 18px;
+  height: 18px;
+  font-size: 10.5px;
+  box-shadow: 0 0 0 2px var(--rail);
 }
 
-/* add-project entry and settings gear — identical row layout */
+/* ---- footer actions: add project / theme toggle / settings -------------- */
+.rail-spacer { flex: 0 0 0; }
+.rail-foot {
+  padding: 8px 10px 12px;
+  border-top: 1px solid rgba(255,255,255,.07);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .rail-add,
+.rail-theme,
 .rail-settings {
   display: flex;
   align-items: center;
-  height: 52px;
-  padding: 0 12px;
+  gap: 11px;
+  padding: 9px;
+  border-radius: 11px;
+  color: var(--rail-ink-soft);
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
   cursor: pointer;
-  color: var(--muted);
+  transition: background .15s, color .15s;
 }
-.rail-add .ws-tile,
-.rail-settings .ws-tile {
+.rail-add:hover,
+.rail-theme:hover,
+.rail-settings:hover { background: var(--rail-2); color: #fff; }
+body:not(.rail-open) .rail-add,
+body:not(.rail-open) .rail-theme,
+body:not(.rail-open) .rail-settings { justify-content: center; }
+
+/* the add-project ghost tile (dashed) */
+.rail-add .ws-tile {
   background: transparent;
-  border: 1.5px dashed var(--hair-2);
-  color: var(--muted);
+  box-shadow: none;
+  border: 1.5px dashed var(--rail-ink-soft);
+  color: var(--rail-ink-soft);
   font-weight: 400;
   font-size: 18px;
 }
-.rail-add:hover .ws-tile,
-.rail-settings:hover .ws-tile {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.rail-add .ws-label,
-.rail-settings .ws-label { color: var(--muted); }
+.rail-add:hover .ws-tile { border-color: #fff; color: #fff; }
 
-.rail-spacer { flex: 1; }
+/* theme + settings glyphs sit in a 36px slot to align with the tiles */
+.rail-glyph {
+  flex: 0 0 auto;
+  width: 36px;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+}
+
+.rail-add .ws-label,
+.rail-theme .ws-label,
+.rail-settings .ws-label {
+  color: inherit;
+  font-weight: 700;
+}
+.rail-add:hover .ws-label,
+.rail-theme:hover .ws-label,
+.rail-settings:hover .ws-label { color: #fff; }
+
+/* theme toggle: show the label/glyph for the theme you'd switch TO */
+.rail-theme .theme-to-dark { display: inline; }
+.rail-theme .theme-to-light { display: none; }
+[data-theme="dark"] .rail-theme .theme-to-dark { display: none; }
+[data-theme="dark"] .rail-theme .theme-to-light { display: inline; }

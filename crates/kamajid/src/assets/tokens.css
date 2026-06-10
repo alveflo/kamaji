@@ -1,64 +1,138 @@
 /* ============================================================================
-   kamaji — design tokens
-   Single :root for the entire design system. All other sheets consume these.
+   kamaji — design tokens (pastel light + dark)
+   Single source of truth for the whole design system; every other sheet
+   consumes these. Ported from the Claude-Design "Kamaji Board" mockup.
    ========================================================================== */
 
-:root{
-  /* prototype palette */
-  --bg:#16161f; --bg-2:#1b1b27; --surface:#1f2030; --surface-2:#26273a;
-  --hair:#2a2b3c; --hair-2:#34354a;
-  --text:#cdd6f4; --dim:#a6adc8; --muted:#6c7086; --faint:#45475a;
-  --todo:#9399b2; --prog:#89b4fa; --review:#fab387; --done:#a6e3a1; --active:#a6e3a1;
-  --accent:#89b4fa; --danger:#f38ba8;
-  --rail:#0e0e16; --rail-hair:#22222e;
-  --mono:"SF Mono",ui-monospace,"JetBrains Mono","Cascadia Code",monospace;
-  --font:ui-sans-serif,system-ui,"Inter","SF Pro Text","Segoe UI",roboto,sans-serif;
-  --r:7px;
-  /* utility tokens retained for the carried board/terminal/modal CSS */
-  --surface-3:#45475a;
-  --radius:12px; --radius-sm:8px; --gap:14px; --pad:16px;
-  --t-xs:11px; --t-sm:12.5px; --t-base:13px; --t-md:17.5px; --t-lg:22px; --t-xl:28px;
-  --ease:cubic-bezier(0.22,1,0.36,1); --slide:180ms;
+/* ---- self-hosted fonts (latin subset) ----------------------------------- */
+@font-face { font-family:"Nunito"; font-style:normal; font-weight:400; font-display:swap; src:url(/assets/fonts/nunito-400.woff2) format("woff2"); }
+@font-face { font-family:"Nunito"; font-style:normal; font-weight:500; font-display:swap; src:url(/assets/fonts/nunito-500.woff2) format("woff2"); }
+@font-face { font-family:"Nunito"; font-style:normal; font-weight:600; font-display:swap; src:url(/assets/fonts/nunito-600.woff2) format("woff2"); }
+@font-face { font-family:"Nunito"; font-style:normal; font-weight:700; font-display:swap; src:url(/assets/fonts/nunito-700.woff2) format("woff2"); }
+@font-face { font-family:"Nunito"; font-style:normal; font-weight:800; font-display:swap; src:url(/assets/fonts/nunito-800.woff2) format("woff2"); }
+@font-face { font-family:"JetBrains Mono"; font-style:normal; font-weight:400; font-display:swap; src:url(/assets/fonts/jetbrainsmono-400.woff2) format("woff2"); }
+@font-face { font-family:"JetBrains Mono"; font-style:normal; font-weight:500; font-display:swap; src:url(/assets/fonts/jetbrainsmono-500.woff2) format("woff2"); }
+@font-face { font-family:"JetBrains Mono"; font-style:normal; font-weight:700; font-display:swap; src:url(/assets/fonts/jetbrainsmono-700.woff2) format("woff2"); }
+
+:root {
+  /* pastel accents — shared across themes */
+  --lav: #C7B8F5;   --lav-ink: #6A4BB5;
+  --sky: #9CCDF0;   --sky-ink: #3D7FBD;
+  --peach: #F6B6A3; --peach-ink: #C76A4C;
+  --mint: #9ADCB9;  --mint-ink: #3E9B6E;
+  --pink: #EE9FC0;  --pink-ink: #C24E80;
+  --lemon: #F4D58A; --lemon-ink: #A6822B;
+  --live: #57C98A;  /* running indicator green */
+
+  --primary: #7C5BC9;
+  --primary-hover: #6E4FBC;
+
+  --radius: 14px;
+  --radius-sm: 10px;
+  --radius-lg: 20px;
+
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: "Nunito", system-ui, -apple-system, sans-serif;
 }
+
+/* Light (default) */
+:root, [data-theme="light"] {
+  --bg: #F4F3FA;
+  --surface: #FFFFFF;
+  --surface-2: #FBFAFE;
+  --surface-hover: #F7F5FC;
+  --rail: #2C2840;
+  --rail-2: #383350;
+  --rail-ink: #C8C3DA;
+  --rail-ink-soft: #908AA8;
+  --panel: #FBFAFE;
+  --ink: #2C2A3A;
+  --ink-soft: #57546A;
+  --muted: #918DA3;
+  --faint: #C2BED1;
+  --line: #ECEAF2;
+  --line-soft: #F2F0F7;
+  --col-bg: #EDEBF5;
+  --col-bg-over: #E4E0F2;
+  --chip-bg: #F1EEF8;
+  --shadow-card: 0 1px 2px rgba(44,42,58,.04), 0 3px 8px rgba(44,42,58,.05);
+  --shadow-card-hover: 0 2px 5px rgba(44,42,58,.07), 0 10px 24px rgba(44,42,58,.11);
+  --shadow-pop: 0 24px 60px rgba(44,42,58,.22), 0 6px 16px rgba(44,42,58,.12);
+  --term-bg: #1C1926;
+  --term-ink: #D8D3E4;
+  --overlay: rgba(40,37,56,.40);
+}
+
+/* Dark */
+[data-theme="dark"] {
+  --bg: #141120;
+  --surface: #211D30;
+  --surface-2: #1B1827;
+  --surface-hover: #28233A;
+  --rail: #0F0D18;
+  --rail-2: #1E1A2B;
+  --rail-ink: #C3BEDA;
+  --rail-ink-soft: #7B7596;
+  --panel: #18152234;
+  --ink: #ECEAF6;
+  --ink-soft: #BBB5D0;
+  --muted: #837D9D;
+  --faint: #524C68;
+  --line: #2C2840;
+  --line-soft: #241F33;
+  --col-bg: #1C1928;
+  --col-bg-over: #241F35;
+  --chip-bg: #292437;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.25), 0 3px 10px rgba(0,0,0,.30);
+  --shadow-card-hover: 0 3px 8px rgba(0,0,0,.35), 0 14px 30px rgba(0,0,0,.45);
+  --shadow-pop: 0 30px 70px rgba(0,0,0,.6), 0 8px 20px rgba(0,0,0,.4);
+  --term-bg: #0C0A14;
+  --term-ink: #CFC9DF;
+  --overlay: rgba(6,4,12,.62);
+  --primary: #9b81e0;
+  --primary-hover: #a98fe8;
+}
+
+/* pastel chip palettes resolve from the agent name carried on a card */
+.t-claude  { --c: var(--lav);   --c-ink: var(--lav-ink); }
+.t-codex   { --c: var(--mint);  --c-ink: var(--mint-ink); }
+.t-copilot { --c: var(--sky);   --c-ink: var(--sky-ink); }
 
 /* reset */
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 
-/* base typography — flex shell from prototype */
 body {
+  font-family: var(--sans);
   background: var(--bg);
-  color: var(--text);
-  font-family: var(--font);
-  font-size: 13px;
-  line-height: 1.45;
-  letter-spacing: -0.005em;
+  color: var(--ink);
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
   display: flex;
   height: 100vh;
   overflow: hidden;
+  transition: background .3s, color .3s;
 }
+button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+input, textarea, select { font-family: inherit; }
+::selection { background: var(--lav); color: #fff; }
 
-/* ----------------------------------------------------------------------------
-   Global polish
-   -------------------------------------------------------------------------- */
-::selection { background: rgba(137, 180, 250, 0.28); }
-
+/* scrollbars */
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-thumb {
-  background: var(--surface-3);
+  background: color-mix(in oklab, var(--muted) 35%, transparent);
   border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
 }
-::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--muted) 55%, transparent); background-clip: padding-box; }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* reduced motion — drop every non-essential animation/transition */
+/* reduced motion — keep the live/pulse dots, drop the rest */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.001ms !important;
+  *:not(.sess-dot):not(.term-cursor), *::before, *::after {
+    animation-duration: .001ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
+    transition-duration: .001ms !important;
   }
 }
