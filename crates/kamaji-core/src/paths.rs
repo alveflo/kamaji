@@ -32,6 +32,14 @@ pub fn cache_dir() -> Option<PathBuf> {
     base_dir(BaseKind::Cache)
 }
 
+/// Directory the daemon writes its rolling log files into (and where
+/// `kamaji doctor` reads them from). The same as [`cache_dir`] — kept as a
+/// distinct, named function so the daemon and the doctor command share one
+/// source of truth for the log location.
+pub fn log_dir() -> Option<PathBuf> {
+    cache_dir()
+}
+
 /// `<runtime>/kamaji` for ephemeral runtime files (pidfile, addr). Uses
 /// `$XDG_RUNTIME_DIR` when set to an absolute path, otherwise falls back to
 /// `cache_dir()`. The `kamaji` leaf is appended to an `$XDG_RUNTIME_DIR` base;
@@ -181,5 +189,12 @@ mod tests {
             Some(PathBuf::from("/home/u/.cache/kamaji")),
         );
         assert_eq!(got, Some(PathBuf::from("/home/u/.cache/kamaji")));
+    }
+
+    #[test]
+    fn log_dir_is_the_cache_dir() {
+        // The daemon log file lives directly in the cache dir; doctor reads it
+        // from the same place. They must agree, so log_dir() == cache_dir().
+        assert_eq!(super::log_dir(), super::cache_dir());
     }
 }

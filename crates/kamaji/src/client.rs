@@ -2,6 +2,7 @@
 //! commands are `reqwest::blocking` round-trips to localhost (sub-ms).
 
 use kamaji_core::config::Config;
+use kamaji_core::diagnostics::DaemonReport;
 use kamaji_core::models::{Agent, Project, Status, Ticket};
 
 // The `Server`/`Unreachable`/`Decode` payloads are surfaced only through the
@@ -96,6 +97,11 @@ impl DaemonClient {
     /// [`version_skew_warning`] for the policy.
     pub fn version_skew(&self) -> Option<String> {
         version_skew_warning(env!("CARGO_PKG_VERSION"), self.version())
+    }
+
+    /// Fetch the daemon's diagnostics report (`GET /diagnostics`).
+    pub fn get_diagnostics(&self) -> Result<DaemonReport> {
+        self.get_json("/diagnostics")
     }
 
     /// Map a finished response into a deserialized `T` or a `ClientError`. 2xx →

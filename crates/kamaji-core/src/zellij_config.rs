@@ -51,10 +51,9 @@ pub fn parse_default_layout(kdl: &str) -> Option<String> {
     None
 }
 
-/// Path to the user's zellij `config.kdl`, honoring `$ZELLIJ_CONFIG_FILE`, then
-/// `$ZELLIJ_CONFIG_DIR`, then `$XDG_CONFIG_HOME`, else `~/.config/zellij`.
-/// Returns `None` only when no home directory can be determined.
-fn config_file_path() -> Option<PathBuf> {
+/// Resolve the user's zellij `config.kdl` path (env overrides → XDG → ~/.config).
+/// Public so diagnostics can report whether it is readable.
+pub fn config_file_path() -> Option<PathBuf> {
     if let Some(file) = std::env::var_os("ZELLIJ_CONFIG_FILE") {
         return Some(PathBuf::from(file));
     }

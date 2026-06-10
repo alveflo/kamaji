@@ -1,5 +1,6 @@
 pub mod assets;
 pub mod config;
+pub mod diagnostics;
 pub mod events;
 pub mod healthz;
 pub mod projects;
