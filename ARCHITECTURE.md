@@ -246,6 +246,53 @@ own.)
 
 ---
 
+## Auto-review (idle-session) detection
+
+When a ticket's agent session becomes idle, kamajid's background poll loop
+(`kamajid/src/poll_task.rs`, calling into `kamaji-core/src/poll.rs`) fires a
+`session.idle` event, which the board delivers as a `SessionIdle` event to all
+clients so the ticket can be moved to review. The mechanism for detecting
+"idle" differs by agent type:
+
+### Claude and Codex — hook-instrumented
+
+Both agents are instrumented via their own lifecycle hooks, so the daemon
+never needs to parse terminal screen output.
+
+- **Claude:** The agent session is started with `--settings <path>` pointing
+  at a generated settings file (in `$TMPDIR`) that registers
+  `postToolUse`/`preToolUse` hooks. These hooks touch
+  (`$KAMAJI_IDLE_MARKER`) when the agent is between tool calls (idle) and
+  remove it when a tool call begins (active). The poll loop stat-polls the
+  marker file: present → idle, absent → active.
+
+- **Codex:** `~/.codex/hooks.json` is instrumented with `exec` hooks for the
+  `agent-turn-start` and `agent-turn-end` events. They write/remove the same
+  per-session marker file. Codex sessions thus have identical idle semantics
+  to Claude sessions — no screen scraping involved.
+
+### Copilot — screen-change timeout
+
+GitHub Copilot exposes no lifecycle-hook API. The poll loop hashes the output
+of `zellij dump-screen` at each poll interval and compares it to the previous
+hash. When the screen has been unchanged for `auto_review.copilot_idle_secs`
+(configurable, quantized to whole poll periods), the session is declared idle.
+
+### Config
+
+The relevant `config.toml` keys under `[auto_review]`:
+
+```toml
+[auto_review]
+# Seconds of unchanged screen output before a Copilot session is declared idle.
+copilot_idle_secs = 30
+```
+
+There are no `patterns` or `scrape_level` keys — those were removed when the
+hook-based path became the default for Claude and Codex.
+
+---
+
 ## zellij web + the reverse proxy
 
 The browser's terminal is `zellij`'s own web client; kamaji's job is to *manage*
