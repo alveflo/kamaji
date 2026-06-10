@@ -8,6 +8,24 @@ use std::path::{Path, PathBuf};
 
 use crate::models::{Agent, Project, Status, Ticket};
 
+/// Expand a leading `~/` in a project root to the home directory. Project roots
+/// arrive from several entry points (the browser form, the edit-project modal,
+/// the HTTP API) and only the TUI's new-project picker expands `~` itself; doing
+/// it here, at the single DB writer, guarantees every stored root is absolute.
+/// That matters because git is invoked with `git -C <root>` and no shell, so a
+/// literal `~` would never resolve. `~` and `~/...` expand to home; `~user` is
+/// left untouched (it is a single component that is not exactly `~`).
+fn expand_tilde(root: &Path) -> PathBuf {
+    if let Ok(rest) = root.strip_prefix("~") {
+        // `strip_prefix("~")` only matches when `~` is its own path component,
+        // i.e. the path is `~` or starts with `~/...` — never `~user`.
+        if let Some(home) = directories::BaseDirs::new().map(|b| b.home_dir().to_path_buf()) {
+            return home.join(rest);
+        }
+    }
+    root.to_path_buf()
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS projects (
     id            INTEGER PRIMARY KEY,
@@ -228,7 +246,7 @@ impl Db {
             "INSERT INTO projects (name, root_dir, default_agent) VALUES (?1, ?2, ?3)",
             params![
                 name,
-                root_dir.to_string_lossy(),
+                expand_tilde(root_dir).to_string_lossy(),
                 default_agent.map(|a| a.as_str())
             ],
         )?;
@@ -264,7 +282,7 @@ impl Db {
             params![
                 id,
                 name,
-                root_dir.to_string_lossy(),
+                expand_tilde(root_dir).to_string_lossy(),
                 default_agent.map(|a| a.as_str())
             ],
         )?;
@@ -490,6 +508,47 @@ mod tests {
             .update_project(999, "ghost", &PathBuf::from("/tmp/ghost"), None)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn create_project_expands_a_leading_tilde_to_home() {
+        let db = db();
+        let home = directories::BaseDirs::new()
+            .map(|b| b.home_dir().to_path_buf())
+            .expect("home dir");
+        let p = db
+            .create_project("homed", &PathBuf::from("~/dev/kamaji"), None)
+            .unwrap();
+        // The stored root must be absolute — git checks it without a shell, so a
+        // literal `~` would never resolve.
+        assert_eq!(p.root_dir, home.join("dev/kamaji"));
+        let reread = db.get_project(p.id).unwrap().unwrap();
+        assert_eq!(reread.root_dir, home.join("dev/kamaji"));
+    }
+
+    #[test]
+    fn update_project_expands_a_leading_tilde_to_home() {
+        let db = db();
+        let home = directories::BaseDirs::new()
+            .map(|b| b.home_dir().to_path_buf())
+            .expect("home dir");
+        let p = db
+            .create_project("homed", &PathBuf::from("/tmp/abs"), None)
+            .unwrap();
+        let updated = db
+            .update_project(p.id, "homed", &PathBuf::from("~/code"), None)
+            .unwrap()
+            .expect("existing row");
+        assert_eq!(updated.root_dir, home.join("code"));
+    }
+
+    #[test]
+    fn create_project_leaves_an_absolute_path_untouched() {
+        let db = db();
+        let p = db
+            .create_project("abs", &PathBuf::from("/tmp/acme"), None)
+            .unwrap();
+        assert_eq!(p.root_dir, PathBuf::from("/tmp/acme"));
     }
 
     #[test]

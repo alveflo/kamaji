@@ -81,8 +81,9 @@ pub fn render_board(frame: &mut Frame, app: &App, levels: &HashMap<i64, SignalLe
         );
     }
 
-    let hints =
-        " [↵]attach [s]main [e]dit [c]reate [m]ove [d]elete [space]select [D]close [/]search [t]heme [w]orktree [p]roject [?]help [q]uit";
+    // The keymap has outgrown a single line, so the bar lists only the common
+    // actions and points to the `?` modal (`render_help`) for the full list.
+    let hints = " [↵]attach [c]reate [e]dit [s]main [/]search  ·  [?]help [q]uit";
     let left = format!(" project: {} ", app.project.name);
     // While cards are multi-selected, surface the count so the user knows a bulk
     // close will act on more than the focused card.
@@ -558,6 +559,25 @@ mod tests {
         assert!(
             text.contains("[s]main"),
             "main-session hint present:\n{text}"
+        );
+    }
+
+    #[test]
+    fn status_bar_points_to_help_and_omits_rarely_used_keys() {
+        let app = App::new(project(), vec![ticket(1, Status::Todo)]);
+        let buf = render(&app, &HashMap::new(), 120, 20);
+        let text = buffer_text(&buf);
+        // The bar is slim and points to the `?` modal for the full list.
+        assert!(text.contains("[?]help"), "help pointer present:\n{text}");
+        // Rarely-used keys live only in the help modal now, to keep the bar
+        // readable as the keymap has grown.
+        assert!(
+            !text.contains("[t]heme"),
+            "theme key should move into help:\n{text}"
+        );
+        assert!(
+            !text.contains("[w]orktree"),
+            "worktree key should move into help:\n{text}"
         );
     }
 
