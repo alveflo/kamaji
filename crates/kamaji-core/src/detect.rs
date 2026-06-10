@@ -1,4 +1,5 @@
 use crate::models::Status;
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::hash::{Hash, Hasher};
@@ -286,6 +287,57 @@ fn merge_codex_hooks(existing: Value, state_dir: &str) -> Value {
     }
     root.insert("hooks".to_string(), Value::Object(hooks));
     Value::Object(root)
+}
+
+/// Path to the user's global Codex hooks file (`~/.codex/hooks.json`).
+/// `KAMAJI_CODEX_HOOKS_PATH` overrides it (used by tests to avoid touching the
+/// real home dir). `None` if no home directory can be determined.
+pub fn codex_hooks_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("KAMAJI_CODEX_HOOKS_PATH") {
+        return Some(PathBuf::from(p));
+    }
+    directories::BaseDirs::new().map(|b| b.home_dir().join(".codex").join("hooks.json"))
+}
+
+/// Idempotently merge kamaji's managed hook entries into the user's global
+/// `~/.codex/hooks.json`. Resolves the path via [`codex_hooks_path`].
+pub fn install_codex_hooks(state_dir: &Path) -> Result<()> {
+    let path = codex_hooks_path()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine ~/.codex/hooks.json path"))?;
+    install_codex_hooks_at(&path, &state_dir.to_string_lossy())
+}
+
+/// [`install_codex_hooks`] against an explicit path. Reads the existing file
+/// (missing or whitespace-only => empty object), **aborts without writing** if
+/// it is present but not a JSON object (never destroy a file kamaji can't
+/// parse), merges, and writes back only when the content actually changed.
+pub fn install_codex_hooks_at(path: &Path, state_dir: &str) -> Result<()> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(raw) if raw.trim().is_empty() => Value::Object(serde_json::Map::new()),
+        Ok(raw) => {
+            let v: Value = serde_json::from_str(&raw).map_err(|e| {
+                anyhow::anyhow!(
+                    "{} is not valid JSON, refusing to overwrite: {e}",
+                    path.display()
+                )
+            })?;
+            if !v.is_object() {
+                bail!("{} is not a JSON object, refusing to overwrite", path.display());
+            }
+            v
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(serde_json::Map::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let merged = merge_codex_hooks(existing, state_dir);
+    let body = serde_json::to_string_pretty(&merged)? + "\n";
+    if std::fs::read_to_string(path).ok().as_deref() != Some(body.as_str()) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, body)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -669,5 +721,74 @@ mod tests {
         let existing = serde_json::json!({ "other": 42, "hooks": {} });
         let merged = merge_codex_hooks(existing, "/s");
         assert_eq!(merged["other"], 42);
+    }
+
+    #[test]
+    fn install_creates_fresh_hooks_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("hooks.json");
+        install_codex_hooks_at(&path, "/s/state").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn install_is_idempotent_no_duplicate_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        install_codex_hooks_at(&path, "/s").unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        install_codex_hooks_at(&path, "/s").unwrap();
+        let second = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(first, second, "second install must not change the file");
+        let v: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(v["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn install_preserves_existing_user_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+        )
+        .unwrap();
+        install_codex_hooks_at(&path, "/s").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let stop = v["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2);
+        assert_eq!(stop[0]["hooks"][0]["command"], "echo hi");
+    }
+
+    #[test]
+    fn install_empty_file_is_treated_as_empty_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        std::fs::write(&path, "   \n").unwrap();
+        install_codex_hooks_at(&path, "/s").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(v["hooks"]["Stop"].is_array());
+    }
+
+    #[test]
+    fn install_aborts_on_invalid_json_without_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        std::fs::write(&path, "not json {").unwrap();
+        assert!(install_codex_hooks_at(&path, "/s").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not json {");
+    }
+
+    #[test]
+    fn install_aborts_on_non_object_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        std::fs::write(&path, "[1,2,3]").unwrap();
+        assert!(install_codex_hooks_at(&path, "/s").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[1,2,3]");
     }
 }
