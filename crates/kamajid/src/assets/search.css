@@ -1,98 +1,69 @@
 /* ============================================================================
-   kamaji — search / filter (Slice 4)
-   Topbar search box + active-filter chrome, the highlight <mark>, and the
-   per-column "No matches" line. The `.search-slot` sizing (flex/max-width) is
-   owned by layout.css; this styles the wrap that fills it.
+   kamaji — search / filter (pastel)
+   The centered topbar search pill, the active-filter chrome, the <mark>
+   highlight, and the per-column "No matches" line (styled in board.css).
    ========================================================================== */
 
 .search-wrap {
-  position: relative;
   display: flex;
   align-items: center;
+  gap: 9px;
   width: 100%;
-}
-
-.search-ico {
-  position: absolute;
-  left: 9px;
+  padding: 8px 11px;
+  background: var(--surface-2);
+  border: 1.5px solid var(--line);
+  border-radius: 11px;
   color: var(--muted);
-  pointer-events: none;
-  display: flex;
+  transition: border-color .15s, background .15s;
 }
+.search-wrap:focus-within { border-color: var(--lav); background: var(--surface); }
 
-.search {
-  width: 100%;
-  height: 28px;
-  padding: 0 54px 0 28px;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--hair);
-  border-radius: 6px;
-  font-family: var(--font);
+.search-ico { flex: 0 0 auto; display: flex; color: var(--muted); }
+
+/* the input itself (carries id="search" + class="search") */
+input.search {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
   outline: none;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
 }
-
-/* Hide the native search clear/cancel widget; we render our own ✕. */
-.search::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
-.search::placeholder { color: var(--faint); }
-.search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.14); }
-
-/* Active filter: accented border around the box. */
-.search-wrap.has-q .search { border-color: var(--accent); }
+input.search::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+input.search::placeholder { color: var(--muted); }
 
 .search-clear {
-  position: absolute;
-  right: 7px;
+  flex: 0 0 auto;
   display: none;
-  width: 18px;
-  height: 18px;
-  border: none;
-  border-radius: 4px;
-  background: var(--surface-2);
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
   color: var(--muted);
-  cursor: pointer;
-  font-size: 10px;
-  align-items: center;
-  justify-content: center;
+  font-size: 11px;
 }
-.search-wrap.has-q .search-clear { display: flex; }
-.search-clear:hover { color: var(--text); }
+.search-wrap.has-q .search-clear { display: grid; }
+.search-clear:hover { background: var(--chip-bg); color: var(--ink); }
 
-/* `/` hint, hidden once a query is active (the ✕ takes its place). */
 .kbd {
   font-family: var(--mono);
-  font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.25);
+  font-size: 11px;
+  font-weight: 700;
   color: var(--muted);
-  border: 1px solid var(--hair-2);
+  background: var(--chip-bg);
+  border-radius: 5px;
+  padding: 2px 6px;
 }
-.search-kbd { position: absolute; right: 8px; }
+.search-kbd { flex: 0 0 auto; }
 .search-wrap.has-q .search-kbd { display: none; }
 
-/* "N results" total, sits beside the box in the topbar. */
+/* "N results" total — sits beside the box in the topbar */
 .search-count {
-  font-size: 11px;
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 700;
   color: var(--muted);
-  font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-
-/* Highlighted matched substring inside a card title. */
-mark {
-  background: rgba(137, 180, 250, 0.28);
-  color: var(--text);
-  border-radius: 2px;
-  padding: 0 1px;
-}
-
-/* Per-column placeholder shown when a column has cards but none match. */
-.col-nomatch {
-  font-size: 12px;
-  color: var(--faint);
-  padding: 6px 2px;
-  margin: 0;
 }

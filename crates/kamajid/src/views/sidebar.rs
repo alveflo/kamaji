@@ -62,7 +62,15 @@ pub fn rail(projects: &[Project], active_id: i64, attention: usize) -> Markup {
     html! {
         aside class="rail" {
             div class="rail-head" {
-                span class="rail-mark" {}
+                span class="rail-mark" {
+                    svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                        stroke="#fff" stroke-width="2.2" stroke-linecap="round"
+                        stroke-linejoin="round" {
+                        rect x="3" y="3" width="7" height="8" rx="2" {}
+                        rect x="14" y="3" width="7" height="13" rx="2" {}
+                        rect x="3" y="14" width="7" height="7" rx="2" {}
+                    }
+                }
                 span class="rail-word" { "kamaji" }
                 button class="rail-toggle" aria-label="Toggle sidebar"
                        data-on:click="document.body.classList.toggle('rail-open')" {
@@ -70,6 +78,7 @@ pub fn rail(projects: &[Project], active_id: i64, attention: usize) -> Markup {
                     span class="ic-open" { "‹" }
                 }
             }
+            div class="rail-label" { "Projects" }
             div class="rail-list" {
                 @for (i, p) in projects.iter().enumerate() {
                     @let active = p.id == active_id;
@@ -87,18 +96,53 @@ pub fn rail(projects: &[Project], active_id: i64, attention: usize) -> Markup {
                     }
                 }
             }
-            div class="rail-spacer" {}
-            // "+ Add project" pinned bottom — opens the new-project modal by
-            // morphing the `#modal` mount with the `/ui/projects/new` fragment.
-            div class="rail-add" data-on:click="@get('/ui/projects/new')" {
-                span class="ws-tile" { "+" }
-                span class="ws-label" { "Add project" }
-            }
-            // Gear pinned at the rail bottom — opens the config-editor modal by
-            // morphing the `#modal` mount with the `/ui/config` fragment.
-            div class="rail-settings" data-on:click="@get('/ui/config')" {
-                span class="ws-tile" { "⚙" }
-                span class="ws-label" { "Settings" }
+            // Footer actions pinned at the bottom of the rail.
+            div class="rail-foot" {
+                // "+ Add project" — opens the new-project modal by morphing the
+                // `#modal` mount with the `/ui/projects/new` fragment.
+                div class="rail-add" data-on:click="@get('/ui/projects/new')" {
+                    span class="ws-tile" { "+" }
+                    span class="ws-label" { "Add project" }
+                }
+                // Light/dark theme toggle — calls the global wired by theme.js.
+                // The shown glyph/label is the theme you'd switch TO (CSS-driven).
+                div class="rail-theme" aria-label="Toggle theme"
+                    data-on:click="window.__kamajiToggleTheme()" {
+                    span class="rail-glyph" {
+                        span class="theme-to-dark" {
+                            svg width="19" height="19" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2.1" stroke-linecap="round"
+                                stroke-linejoin="round" {
+                                path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" {}
+                            }
+                        }
+                        span class="theme-to-light" {
+                            svg width="19" height="19" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2.1" stroke-linecap="round"
+                                stroke-linejoin="round" {
+                                circle cx="12" cy="12" r="4.5" {}
+                                path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" {}
+                            }
+                        }
+                    }
+                    span class="ws-label" {
+                        span class="theme-to-dark" { "Dark theme" }
+                        span class="theme-to-light" { "Light theme" }
+                    }
+                }
+                // Gear — opens the config-editor modal by morphing the `#modal`
+                // mount with the `/ui/config` fragment.
+                div class="rail-settings" data-on:click="@get('/ui/config')" {
+                    span class="rail-glyph" {
+                        svg width="19" height="19" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2.1" stroke-linecap="round"
+                            stroke-linejoin="round" {
+                            circle cx="12" cy="12" r="3" {}
+                            path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" {}
+                        }
+                    }
+                    span class="ws-label" { "Settings" }
+                }
             }
         }
     }
@@ -222,6 +266,20 @@ mod tests {
             "gear opens the config modal:\n{html}"
         );
         assert!(html.contains("Settings"), "settings label:\n{html}");
+    }
+
+    #[test]
+    fn theme_toggle_present_and_calls_global() {
+        let ps = [project(1, "acme")];
+        let html = rail(&ps, 1, 0).into_string();
+        assert!(
+            html.contains(r#"class="rail-theme""#),
+            "theme toggle row present:\n{html}"
+        );
+        assert!(
+            html.contains(r#"data-on:click="window.__kamajiToggleTheme()""#),
+            "theme toggle calls the global wired by theme.js:\n{html}"
+        );
     }
 
     #[test]

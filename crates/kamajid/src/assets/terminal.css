@@ -1,17 +1,17 @@
 /* ============================================================================
-   kamaji — terminal (dense redesign, Slice 5)
-   The near-fullscreen terminal-window panel: a title bar (live-dot + #id + task
-   name left, ✕ close right), the black session iframe, and a zellij-style
-   status bar (running indicator + session + agent). View + CSS only.
+   kamaji — terminal window (pastel mockup chrome)
+   The near-fullscreen floating window: dark title bar (live-dot + #id + task
+   name; ⤢ maximize + ✕ close), the session iframe, a zellij-style status bar,
+   and eight resize grips. The window chrome stays dark in both themes — it
+   frames a real terminal. View + CSS + term-resize.js only.
    ========================================================================== */
 
-/* dim + blur the board behind the window when a terminal modal is mounted */
 #modal:has(.term-modal)::before {
   content: "";
   position: fixed;
   inset: 0;
   z-index: 49;
-  background: rgba(17, 17, 27, 0.62);
+  background: var(--overlay);
   backdrop-filter: blur(3px);
 }
 
@@ -20,9 +20,6 @@
   to   { opacity: 1; transform: none; }
 }
 
-/* Anchored top-left at a 16px margin and sized near-fullscreen by default;
-   term-resize.js overrides left/top/width/height inline once the user drags a
-   grip or the title bar (and restores a persisted geometry on re-open). */
 .term-modal {
   position: fixed;
   top: 16px;
@@ -37,15 +34,12 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #000;
-  border: 1px solid var(--hair-2);
-  border-radius: 10px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
-  animation: term-in 160ms var(--ease);
+  background: var(--term-bg);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop), 0 0 0 1px rgba(0,0,0,.4);
+  animation: term-in 160ms cubic-bezier(.34,1.45,.6,1);
 }
-
-/* While dragging/resizing, kill the entrance animation so the window tracks the
-   pointer 1:1 with no transition lag. */
 .term-modal.term-resizing { animation: none; }
 
 .term-bar {
@@ -53,61 +47,51 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 9px 14px;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--hair);
-  /* the title bar is the move handle */
+  padding: 9px 12px;
+  background: #161320;
+  border-bottom: 1px solid rgba(255,255,255,.06);
   cursor: move;
   user-select: none;
   -webkit-user-select: none;
 }
 
-/* live-dot: shared by the title bar and the status bar's running indicator */
 .term-livedot {
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
-  background: var(--active);
-  box-shadow: 0 0 7px rgba(166, 227, 161, 0.7);
+  background: var(--live);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--live) 26%, transparent);
 }
 
 .term-title {
   min-width: 0;
-  font-family: var(--mono);
-  font-size: var(--t-sm);
-  font-weight: 600;
-  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #d8d3e4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.term-id { color: var(--muted); font-weight: 500; }
+.term-id { font-family: var(--mono); font-size: 12.5px; font-weight: 700; color: #8e88a8; }
 
-/* The title-bar icon buttons (maximize + close). The maximize button carries
-   the margin-left:auto, so the pair right-aligns together with the bar's gap
-   between them. */
 .term-max,
 .term-close {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
+  width: 28px;
   height: 26px;
   font-size: 14px;
   line-height: 1;
-  color: var(--dim);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: color 120ms var(--ease), background 120ms var(--ease);
+  color: #9b95b3;
+  border-radius: 7px;
+  transition: color .14s, background .14s;
 }
 .term-max { margin-left: auto; }
-/* neutral hover for maximize; danger-red for close */
-.term-max:hover { color: var(--text); background: var(--hair-2); }
-.term-close:hover { color: #11111b; background: var(--danger); }
+.term-max:hover { color: #fff; background: rgba(255,255,255,.09); }
+.term-close:hover { color: #fff; background: #c2466e; }
 
 .term-frame {
   flex: 1 1 auto;
@@ -116,66 +100,30 @@
   background: #08080d;
 }
 
-/* zellij-style status bar along the bottom */
 .term-status {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 6px 14px;
-  background: var(--bg-2);
-  border-top: 1px solid var(--hair);
-  font-family: var(--mono);
-  font-size: var(--t-xs);
-  color: var(--dim);
+  gap: 10px;
+  padding: 6px 12px;
+  background: #161320;
+  border-top: 1px solid rgba(255,255,255,.06);
+  font-size: 11.5px;
 }
+.term-stat { display: inline-flex; align-items: center; gap: 6px; font-weight: 800; color: var(--live); }
+.term-session { font-family: var(--mono); color: #9b95b3; font-weight: 700; }
+.term-agent { margin-left: auto; font-weight: 800; color: #b89df0; }
 
-.term-stat {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--text);
-}
-
-.term-session, .term-agent { color: var(--muted); }
-/* push the agent to the far right, mirroring a zellij status line */
-.term-agent { margin-left: auto; }
-
-/* ----------------------------------------------------------------------------
-   Resize grips + drag overlay
-   Eight invisible edge/corner strips sit just inside the window border (kept
-   inside the clipped box so the rounded corners survive). term-resize.js turns
-   pointer drags on them — and on the title bar — into geometry changes. The
-   corner grips paint above the edge grips so the diagonal cursor wins.
-   -------------------------------------------------------------------------- */
-.term-rh {
-  position: absolute;
-  z-index: 60;
-  touch-action: none;
-}
-
-/* edges */
-.term-rh-n { top: 0; left: 0; right: 0; height: 6px; cursor: ns-resize; }
-.term-rh-s { bottom: 0; left: 0; right: 0; height: 6px; cursor: ns-resize; }
-.term-rh-e { top: 0; bottom: 0; right: 0; width: 6px; cursor: ew-resize; }
-.term-rh-w { top: 0; bottom: 0; left: 0; width: 6px; cursor: ew-resize; }
-
-/* corners (larger, higher priority) */
-.term-rh-ne, .term-rh-nw, .term-rh-se, .term-rh-sw {
-  z-index: 61;
-  width: 14px;
-  height: 14px;
-}
+/* ---- resize grips + drag shield ---------------------------------------- */
+.term-rh { position: absolute; z-index: 60; touch-action: none; }
+.term-rh-n { top: 0; left: 8px; right: 8px; height: 7px; cursor: ns-resize; }
+.term-rh-s { bottom: 0; left: 8px; right: 8px; height: 7px; cursor: ns-resize; }
+.term-rh-e { right: 0; top: 8px; bottom: 8px; width: 7px; cursor: ew-resize; }
+.term-rh-w { left: 0; top: 8px; bottom: 8px; width: 7px; cursor: ew-resize; }
+.term-rh-ne, .term-rh-nw, .term-rh-se, .term-rh-sw { z-index: 61; width: 14px; height: 14px; }
 .term-rh-ne { top: 0; right: 0; cursor: nesw-resize; }
 .term-rh-nw { top: 0; left: 0; cursor: nwse-resize; }
 .term-rh-se { bottom: 0; right: 0; cursor: nwse-resize; }
 .term-rh-sw { bottom: 0; left: 0; cursor: nesw-resize; }
 
-/* Full-viewport shield laid down for the duration of a drag so the cross-origin
-   zellij iframe never swallows pointermove (and the cursor stays consistent).
-   term-resize.js sets the matching cursor inline. */
-.term-drag-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-}
+.term-drag-overlay { position: fixed; inset: 0; z-index: 9999; }

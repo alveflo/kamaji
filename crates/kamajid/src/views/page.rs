@@ -31,15 +31,20 @@ pub fn page(
         .unwrap_or(0);
     let active_c = super::sidebar::project_color_index(active_pos);
 
+    let root_display = project.root_dir.display().to_string();
     html! {
         (DOCTYPE)
-        html lang="en" data-theme="dark" {
+        html lang="en" data-theme="light" {
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
+                // Apply the persisted theme before first paint to avoid a flash.
+                script {
+                    (PreEscaped("(function(){try{var t=localStorage.getItem('kamaji.theme')||'light';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();"))
+                }
                 title { "kamaji — " (project.name) }
                 link rel="manifest" href="/manifest.webmanifest";
-                meta name="theme-color" content="#16161f";
+                meta name="theme-color" content="#7C5BC9";
                 link rel="icon" href="/assets/favicon.svg";
                 link rel="apple-touch-icon" href="/assets/apple-touch-icon.png";
                 meta name="apple-mobile-web-app-capable" content="yes";
@@ -58,6 +63,7 @@ pub fn page(
                 script type="module" src="/assets/search.js" {}
                 script type="module" src="/assets/keybindings.js" {}
                 script defer src="/assets/term-resize.js" {}
+                script defer src="/assets/theme.js" {}
                 script {
                     (PreEscaped("if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); }); }"))
                 }
@@ -69,6 +75,7 @@ pub fn page(
                         span class="crumb" {
                             span class=(format!("crumb-dot c{active_c}")) {}
                             span class="crumb-name" { (project.name) }
+                            span class="crumb-root" { (root_display) }
                         }
                         div class="search-slot" {
                             div class="search-wrap" {
@@ -88,21 +95,23 @@ pub fn page(
                         }
                         span class="search-count" aria-live="polite" {}
                         span class="spacer" {}
-                        button class="sessions-btn proj-settings-btn"
-                               data-on:click=(PreEscaped(format!("@get('/ui/projects/{}/edit')", project.id))) {
-                            "Project"
-                        }
-                        button class="sessions-btn"
-                               data-on:click=(PreEscaped("@get('/ui/sessions/manage')")) {
-                            "Sessions"
-                        }
-                        button class="sessions-btn clear-done-btn"
-                               data-on:click=(PreEscaped(format!("@get('/ui/projects/{}/confirm-delete-done')", project.id))) {
-                            "Clear Done"
-                        }
-                        button class="new-ticket"
-                               data-on:click=(PreEscaped(format!("@get('/ui/tickets/new?project={}')", project.id))) {
-                            "+ New"
+                        div class="topbar-right" {
+                            button class="sessions-btn proj-settings-btn"
+                                   data-on:click=(PreEscaped(format!("@get('/ui/projects/{}/edit')", project.id))) {
+                                "Project"
+                            }
+                            button class="sessions-btn"
+                                   data-on:click=(PreEscaped("@get('/ui/sessions/manage')")) {
+                                "Sessions"
+                            }
+                            button class="sessions-btn clear-done-btn"
+                                   data-on:click=(PreEscaped(format!("@get('/ui/projects/{}/confirm-delete-done')", project.id))) {
+                                "Clear Done"
+                            }
+                            button class="new-ticket"
+                                   data-on:click=(PreEscaped(format!("@get('/ui/tickets/new?project={}')", project.id))) {
+                                "+ New"
+                            }
                         }
                     }
                     (board(by_status))
@@ -181,7 +190,7 @@ mod tests {
             "manifest link:\n{html}"
         );
         assert!(
-            html.contains(r##"name="theme-color" content="#16161f""##),
+            html.contains(r##"name="theme-color" content="#7C5BC9""##),
             "theme-color meta:\n{html}"
         );
         assert!(
@@ -195,6 +204,35 @@ mod tests {
         assert!(
             html.contains("serviceWorker.register('/sw.js')"),
             "sw registration:\n{html}"
+        );
+    }
+
+    #[test]
+    fn page_defaults_to_light_theme_with_persisted_override_and_toggle() {
+        let p = project(1, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        // Default light theme, with the pre-paint script that honours localStorage.
+        assert!(
+            html.contains(r#"<html lang="en" data-theme="light">"#),
+            "defaults to light theme:\n{html}"
+        );
+        assert!(
+            html.contains("localStorage.getItem('kamaji.theme')"),
+            "pre-paint theme script present:\n{html}"
+        );
+        assert!(
+            html.contains(r#"src="/assets/theme.js""#),
+            "theme toggle module linked:\n{html}"
+        );
+    }
+
+    #[test]
+    fn breadcrumb_shows_project_root_path() {
+        let p = project(1, "acme"); // root_dir = /tmp/p
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"class="crumb-root">/tmp/p</span>"#),
+            "breadcrumb carries the mono root path:\n{html}"
         );
     }
 
