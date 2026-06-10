@@ -3,7 +3,11 @@
 //! summary. The renderer is pure (takes a [`DoctorReport`]) so it is unit
 //! tested without a daemon.
 
-use kamaji_core::diagnostics::{Check, DaemonReport, LocalReport, Verdict};
+use crate::client::DaemonClient;
+use crate::daemon;
+use kamaji_core::diagnostics::{
+    gather_local, newest_log_file, Check, DaemonReport, LocalReport, Verdict,
+};
 
 /// Everything `kamaji doctor` collected, ready to render or serialize.
 #[derive(Debug, serde::Serialize)]
@@ -175,6 +179,64 @@ pub fn render(report: &DoctorReport) -> String {
         }
     ));
     out
+}
+
+/// How many trailing daemon-log lines to include in the report.
+const LOG_TAIL_LINES: usize = 50;
+
+/// Collect a full doctor report: this binary's local gather, the daemon's
+/// report (if one is already running — never spawns one), and the daemon log
+/// tail. `forced_addr` mirrors `--daemon <addr>`.
+pub fn collect(forced_addr: Option<&str>) -> DoctorReport {
+    let local = gather_local();
+    let (daemon, daemon_error) = match connect_existing(forced_addr) {
+        Some(client) => match client.get_diagnostics() {
+            Ok(report) => (Some(report), None),
+            Err(e) => (
+                None,
+                Some(format!("daemon reachable but /diagnostics failed: {e:?}")),
+            ),
+        },
+        None => (None, Some("no daemon running".to_string())),
+    };
+    DoctorReport {
+        tui_version: env!("CARGO_PKG_VERSION").to_string(),
+        local,
+        daemon,
+        daemon_error,
+        recent_logs: read_log_tail(),
+    }
+}
+
+/// Connect to an already-running daemon WITHOUT spawning one. With `--daemon`
+/// the address is forced; otherwise the pidfile/addrfile is probed.
+fn connect_existing(forced_addr: Option<&str>) -> Option<DaemonClient> {
+    if let Some(addr) = forced_addr {
+        let base = if addr.starts_with("http") {
+            addr.to_string()
+        } else {
+            format!("http://{addr}")
+        };
+        return DaemonClient::connect(base).ok();
+    }
+    let (pidfile, addrfile) = daemon::runtime_files()?;
+    daemon::probe_existing(&pidfile, &addrfile)
+}
+
+/// Read the last `LOG_TAIL_LINES` lines of the newest daemon log file.
+fn read_log_tail() -> Vec<String> {
+    let Some(dir) = kamaji_core::paths::log_dir() else {
+        return vec![];
+    };
+    let Some(file) = newest_log_file(&dir) else {
+        return vec![];
+    };
+    let Ok(contents) = std::fs::read_to_string(&file) else {
+        return vec![];
+    };
+    let lines: Vec<&str> = contents.lines().collect();
+    let start = lines.len().saturating_sub(LOG_TAIL_LINES);
+    lines[start..].iter().map(|s| s.to_string()).collect()
 }
 
 #[cfg(test)]

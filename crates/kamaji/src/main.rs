@@ -89,6 +89,15 @@ fn main() -> Result<()> {
         cli::Command::Down => container::down(),
         cli::Command::Logs => container::logs(),
         cli::Command::Status => container::status(),
+        cli::Command::Doctor(opts) => {
+            let report = doctor::collect(opts.forced_addr.as_deref());
+            if opts.json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", doctor::render(&report));
+            }
+            Ok(())
+        }
     }
 }
 

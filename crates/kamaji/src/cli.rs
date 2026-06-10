@@ -18,6 +18,7 @@ Usage:
   kamaji down
   kamaji logs
   kamaji status
+  kamaji doctor [--json] [--daemon <addr>]
   kamaji ticket create --prompt <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
   kamaji ticket create <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
 
@@ -27,6 +28,7 @@ Agents: claude, codex, copilot
   down              stop the sandbox container (back to native)
   logs              follow the container's logs
   status            show the active mode (native vs container) + board URL
+  doctor            print a diagnostics report (zellij/paths/daemon/logs)
 
   --background, -b  also start the ticket's agent in a detached zellij session
 ";
@@ -41,6 +43,7 @@ pub enum Command {
     Down,
     Logs,
     Status,
+    Doctor(DoctorOpts),
 }
 
 /// Escape-hatch daemon options for the TUI entrypoint.
@@ -50,6 +53,15 @@ pub struct DaemonOpts {
     pub forced_addr: Option<String>,
     /// `--no-spawn`: fail if no daemon is already running.
     pub no_spawn: bool,
+}
+
+/// Options for `kamaji doctor`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DoctorOpts {
+    /// `--json`: emit the merged report as JSON instead of human text.
+    pub json: bool,
+    /// `--daemon <ADDR>`: query this daemon address instead of the discovered one.
+    pub forced_addr: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +146,7 @@ where
         [cmd, rest @ ..] if cmd == "down" => parse_bare(rest, Command::Down, "down"),
         [cmd, rest @ ..] if cmd == "logs" => parse_bare(rest, Command::Logs, "logs"),
         [cmd, rest @ ..] if cmd == "status" => parse_bare(rest, Command::Status, "status"),
+        [cmd, rest @ ..] if cmd == "doctor" => parse_doctor(rest),
         [other, ..] => bail!("unknown command: {other}\n\n{USAGE}"),
         [] => Ok(Command::Tui(DaemonOpts::default())),
     }
@@ -220,6 +233,21 @@ fn parse_ticket_create(args: &[String]) -> Result<Command> {
     };
     parsed.title_or_prompt()?;
     Ok(Command::CreateTicket(parsed))
+}
+
+fn parse_doctor(args: &[String]) -> Result<Command> {
+    let mut opts = DoctorOpts::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => opts.json = true,
+            "--daemon" => opts.forced_addr = Some(take_value(args, &mut i, "--daemon")?),
+            "--help" | "-h" => return Ok(Command::Help),
+            other => bail!("unknown doctor argument: {other}\n\n{USAGE}"),
+        }
+        i += 1;
+    }
+    Ok(Command::Doctor(opts))
 }
 
 fn parse_up(args: &[String]) -> Result<Command> {
@@ -436,6 +464,32 @@ mod tests {
             .create_project("kamaji", root, Some(Agent::Codex))
             .unwrap();
         client
+    }
+
+    #[test]
+    fn parses_doctor_command() {
+        assert_eq!(
+            parse(["doctor"]).unwrap(),
+            Command::Doctor(DoctorOpts {
+                json: false,
+                forced_addr: None
+            })
+        );
+        assert_eq!(
+            parse(["doctor", "--json"]).unwrap(),
+            Command::Doctor(DoctorOpts {
+                json: true,
+                forced_addr: None
+            })
+        );
+        assert_eq!(
+            parse(["doctor", "--daemon", "127.0.0.1:9000"]).unwrap(),
+            Command::Doctor(DoctorOpts {
+                json: false,
+                forced_addr: Some("127.0.0.1:9000".into())
+            })
+        );
+        assert_eq!(parse(["doctor", "--help"]).unwrap(), Command::Help);
     }
 
     #[test]
