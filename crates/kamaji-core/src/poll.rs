@@ -26,8 +26,9 @@ pub struct PollLoop {
     last_level: HashMap<i64, SignalLevel>,
     /// Tickets kamaji auto-moved to Review (provenance gate for the move back).
     auto_review_ids: HashSet<i64>,
-    /// Per-ticket scrape screen hash for the scrape detector's stability guard.
-    scrape_hash: HashMap<i64, Option<u64>>,
+    /// Per-ticket Copilot screen-change detector state (last screen hash +
+    /// consecutive-unchanged count).
+    screen_state: HashMap<i64, detect::ScreenChangeState>,
 }
 
 impl PollLoop {
@@ -67,7 +68,7 @@ impl PollLoop {
     pub fn forget_ticket(&mut self, id: i64) {
         self.last_level.remove(&id);
         self.auto_review_ids.remove(&id);
-        self.scrape_hash.remove(&id);
+        self.screen_state.remove(&id);
     }
 
     /// One full detection pass: gather the current signal level for every live,
@@ -173,23 +174,23 @@ impl PollLoop {
                     continue;
                 }
             }
-            let level = match agent {
-                Agent::Claude => {
-                    if instrumented {
-                        detect::marker_level(&detect::marker_path(state_dir, &session))
-                    } else {
-                        SignalLevel::Unknown
-                    }
-                }
-                Agent::Codex | Agent::Copilot => {
-                    let patterns: Vec<String> = config.auto_review_patterns(agent).to_vec();
-                    if patterns.is_empty() {
-                        continue; // detector disabled for this agent
-                    }
-                    let screen = zellij::dump_screen(&session);
-                    let hash = self.scrape_hash.entry(id).or_insert(None);
-                    detect::scrape_level(screen.as_deref(), &patterns, hash)
-                }
+            let level = if instrumented {
+                // Claude + Codex: their own hooks maintain the idle marker.
+                detect::marker_level(&detect::marker_path(state_dir, &session))
+            } else if agent == Agent::Copilot && config.auto_review.enabled {
+                // Copilot: screen-change timeout (no usable hooks; TUI is too
+                // noisy to pattern-match).
+                let screen = zellij::dump_screen(&session);
+                let st = self.screen_state.entry(id).or_default();
+                detect::screen_change_level(
+                    screen.as_deref(),
+                    st,
+                    config.copilot_idle_after_unchanged(),
+                )
+            } else {
+                // Auto-review disabled, or an un-instrumented Claude/Codex:
+                // no trustworthy signal this poll.
+                SignalLevel::Unknown
             };
             out.insert(id, level);
         }
