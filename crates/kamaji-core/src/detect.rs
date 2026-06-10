@@ -185,10 +185,12 @@ pub fn inject_claude_settings(argv: Vec<String>, marker_path: &str) -> Vec<Strin
 /// replace only our entries and never touch the user's own hooks.
 const CODEX_MARKER_KEY: &str = "_kamajiManaged";
 
-/// The four Codex hook events kamaji wires, and which marker op each performs.
-/// Active events clear the marker (agent working); idle events create it.
+/// Codex hook events signalling the agent is active (clear the idle marker).
 const CODEX_ACTIVE_EVENTS: [&str; 2] = ["UserPromptSubmit", "PreToolUse"];
+/// Codex hook events signalling the agent is idle (create the idle marker).
 const CODEX_IDLE_EVENTS: [&str; 2] = ["Stop", "PermissionRequest"];
+/// The one tool-scoped Codex event; it needs a `.*` matcher to fire for every tool.
+const CODEX_TOOL_EVENT: &str = "PreToolUse";
 
 /// Shell command a Codex hook runs to set/clear the idle marker. `op` is
 /// `"touch"` (idle) or `"rm -f"` (active). The marker path is derived at run
@@ -206,16 +208,15 @@ fn codex_hook_command(state_dir: &str, op: &str) -> String {
 
 /// One kamaji-managed Codex hook entry: `{matcher?, hooks:[{type,command,marker}]}`.
 fn codex_managed_entry(command: &str, matcher: Option<&str>) -> Value {
-    let mut entry = json!({
-        "hooks": [ { "type": "command", "command": command, CODEX_MARKER_KEY: true } ]
-    });
+    let mut obj = serde_json::Map::new();
     if let Some(m) = matcher {
-        entry
-            .as_object_mut()
-            .expect("entry is an object")
-            .insert("matcher".to_string(), json!(m));
+        obj.insert("matcher".to_string(), json!(m));
     }
-    entry
+    obj.insert(
+        "hooks".to_string(),
+        json!([ { "type": "command", "command": command, CODEX_MARKER_KEY: true } ]),
+    );
+    Value::Object(obj)
 }
 
 /// kamaji's managed entries keyed by event: active events (`UserPromptSubmit`,
@@ -227,7 +228,11 @@ fn codex_managed_entries(state_dir: &str) -> Vec<(&'static str, Value)> {
     let idle = codex_hook_command(state_dir, "touch");
     let mut out = Vec::new();
     for event in CODEX_ACTIVE_EVENTS {
-        let matcher = if event == "PreToolUse" { Some(".*") } else { None };
+        let matcher = if event == CODEX_TOOL_EVENT {
+            Some(".*")
+        } else {
+            None
+        };
         out.push((event, codex_managed_entry(&active, matcher)));
     }
     for event in CODEX_IDLE_EVENTS {
@@ -497,32 +502,59 @@ mod tests {
     #[test]
     fn screen_change_changed_screen_is_active() {
         let mut st = ScreenChangeState::default();
-        assert_eq!(screen_change_level(Some("a"), &mut st, 2), SignalLevel::Active);
+        assert_eq!(
+            screen_change_level(Some("a"), &mut st, 2),
+            SignalLevel::Active
+        );
         // Different content => activity, counter resets.
-        assert_eq!(screen_change_level(Some("b"), &mut st, 2), SignalLevel::Active);
+        assert_eq!(
+            screen_change_level(Some("b"), &mut st, 2),
+            SignalLevel::Active
+        );
     }
 
     #[test]
     fn screen_change_unchanged_below_threshold_is_active() {
         let mut st = ScreenChangeState::default();
         // threshold 2: first sight (count 0) and one repeat (count 1) stay Active.
-        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Active);
-        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Active);
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Active
+        );
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Active
+        );
     }
 
     #[test]
     fn screen_change_unchanged_at_threshold_is_idle() {
         let mut st = ScreenChangeState::default();
-        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Active); // count 0
-        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Active); // count 1
-        assert_eq!(screen_change_level(Some("x"), &mut st, 2), SignalLevel::Idle); // count 2
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Active
+        ); // count 0
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Active
+        ); // count 1
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Idle
+        ); // count 2
     }
 
     #[test]
     fn screen_change_threshold_of_one_idles_on_first_repeat() {
         let mut st = ScreenChangeState::default();
-        assert_eq!(screen_change_level(Some("x"), &mut st, 1), SignalLevel::Active); // count 0
-        assert_eq!(screen_change_level(Some("x"), &mut st, 1), SignalLevel::Idle); // count 1
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 1),
+            SignalLevel::Active
+        ); // count 0
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 1),
+            SignalLevel::Idle
+        ); // count 1
     }
 
     #[test]
@@ -535,9 +567,15 @@ mod tests {
     fn screen_change_reactivates_after_idle_when_screen_moves() {
         let mut st = ScreenChangeState::default();
         screen_change_level(Some("x"), &mut st, 1); // Active, count 0
-        assert_eq!(screen_change_level(Some("x"), &mut st, 1), SignalLevel::Idle); // count 1
-        // New content => back to Active.
-        assert_eq!(screen_change_level(Some("y"), &mut st, 1), SignalLevel::Active);
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 1),
+            SignalLevel::Idle
+        ); // count 1
+           // New content => back to Active.
+        assert_eq!(
+            screen_change_level(Some("y"), &mut st, 1),
+            SignalLevel::Active
+        );
     }
 
     fn hooks_of<'a>(v: &'a serde_json::Value, event: &str) -> &'a Vec<serde_json::Value> {
@@ -547,14 +585,21 @@ mod tests {
     #[test]
     fn merge_fresh_wires_all_four_events() {
         let merged = merge_codex_hooks(serde_json::json!({}), "/s/state");
-        for event in ["UserPromptSubmit", "PreToolUse", "Stop", "PermissionRequest"] {
+        for event in [
+            "UserPromptSubmit",
+            "PreToolUse",
+            "Stop",
+            "PermissionRequest",
+        ] {
             assert_eq!(hooks_of(&merged, event).len(), 1, "event {event}");
         }
         // Active events run `rm -f`; idle events `touch`.
-        let cmd = |e: &str| hooks_of(&merged, e)[0]["hooks"][0]["command"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let cmd = |e: &str| {
+            hooks_of(&merged, e)[0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
         assert!(cmd("UserPromptSubmit").contains("rm -f"));
         assert!(cmd("PreToolUse").contains("rm -f"));
         assert!(cmd("Stop").contains("touch"));
@@ -582,7 +627,10 @@ mod tests {
     #[test]
     fn merge_marks_entries_kamaji_managed() {
         let merged = merge_codex_hooks(serde_json::json!({}), "/s");
-        assert_eq!(hooks_of(&merged, "Stop")[0]["hooks"][0]["_kamajiManaged"], true);
+        assert_eq!(
+            hooks_of(&merged, "Stop")[0]["hooks"][0]["_kamajiManaged"],
+            true
+        );
     }
 
     #[test]
@@ -605,7 +653,12 @@ mod tests {
         let once = merge_codex_hooks(serde_json::json!({}), "/s");
         let twice = merge_codex_hooks(once.clone(), "/s");
         // Re-merging strips the prior kamaji entry before re-adding: still one each.
-        for event in ["UserPromptSubmit", "PreToolUse", "Stop", "PermissionRequest"] {
+        for event in [
+            "UserPromptSubmit",
+            "PreToolUse",
+            "Stop",
+            "PermissionRequest",
+        ] {
             assert_eq!(hooks_of(&twice, event).len(), 1, "event {event}");
         }
         assert_eq!(once, twice);
