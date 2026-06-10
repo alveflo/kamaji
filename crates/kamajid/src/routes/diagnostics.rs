@@ -41,12 +41,15 @@ pub async fn diagnostics(State(state): State<AppState>) -> Json<DaemonReport> {
         tokio::task::spawn_blocking(move || {
             let local = diagnostics::gather_local();
             let sessions = kamaji_core::zellij::list_sessions();
+            // 8082 is ZellijWeb's fixed base port (zellij_web.rs DEFAULT_BASE_URL).
+            // TODO: derive from state.zellij_web() once it exposes a base_url() accessor.
             let web = diagnostics::tcp_reachable("127.0.0.1", 8082, PROBE_TIMEOUT);
             let proxy = probe_proxy(&proxy_for_probe);
             (local, sessions, web, proxy)
         })
         .await
-        .unwrap_or_else(|_| {
+        .unwrap_or_else(|e| {
+            tracing::error!(error = %e, "diagnostics gather task panicked");
             (
                 diagnostics::LocalReport {
                     checks: vec![],
@@ -122,5 +125,23 @@ mod tests {
     async fn probe_proxy_parses_host_and_port() {
         assert!(!probe_proxy("http://127.0.0.1:1"));
         assert!(!probe_proxy("garbage"));
+    }
+
+    #[tokio::test]
+    async fn diagnostics_counts_seeded_projects_and_tickets() {
+        use kamaji_core::models::Agent;
+        use std::path::PathBuf;
+
+        let db = Db::open_in_memory().unwrap();
+        let project = db
+            .create_project("test-proj", &PathBuf::from("/tmp/test-proj"), None)
+            .unwrap();
+        db.create_ticket(project.id, "ticket-one", "", None, Agent::Claude)
+            .unwrap();
+        let mut state = AppState::new(db, Config::default());
+        state.set_zellij_web(crate::zellij_web::ZellijWeb::fake("t"));
+        let Json(report) = diagnostics(State(state)).await;
+        assert_eq!(report.project_count, 1);
+        assert_eq!(report.ticket_count, 1);
     }
 }
