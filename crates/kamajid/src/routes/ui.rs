@@ -12,8 +12,11 @@ use kamaji_core::session;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::views;
-use crate::views::confirm::{delete_done_confirm, ticket_confirm, ConfirmAction};
+use crate::views::confirm::{
+    delete_done_confirm, delete_project_confirm, ticket_confirm, ConfirmAction,
+};
 use crate::views::modal::ticket_form;
+use crate::views::project_manage::project_manage_form;
 
 #[derive(Deserialize)]
 pub struct BoardQuery {
@@ -116,6 +119,28 @@ pub async fn confirm_delete_done(Path(project_id): Path<i64>) -> Markup {
 pub async fn new_project(State(state): State<AppState>) -> Markup {
     let default_agent = state.config_async().await.default_agent();
     views::project_form::project_form(default_agent, None)
+}
+
+/// `GET /ui/projects/:id/edit` → the project-management modal fragment, listing
+/// the project's properties and pre-filling its editable fields (name, root dir,
+/// default agent). Submit PATCHes `/projects/:id`; the Delete button opens the
+/// delete-project confirmation. 404 if the project is missing.
+pub async fn edit_project(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Markup, ApiError> {
+    let project = state
+        .with_db(move |db| db.get_project(id))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(project_manage_form(&project, None))
+}
+
+/// `GET /ui/projects/:id/confirm-delete` → the confirmation modal for deleting a
+/// whole project (and all its tickets). Render-only: the `DELETE /projects/:id`
+/// fires from the modal's Confirm button, which navigates home on success.
+pub async fn confirm_delete_project(Path(id): Path<i64>) -> Markup {
+    delete_project_confirm(id)
 }
 
 /// `GET /ui/config` → the config-editor modal fragment, pre-filled from the

@@ -177,6 +177,118 @@ impl WorktreeForm {
     }
 }
 
+/// The focusable rows of the project-settings modal. `Name`/`Root` are text
+/// fields; `Agent` cycles the default agent with ←/→; `Delete` is an action row
+/// whose Enter opens the delete-project confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectSettingsField {
+    Name,
+    Root,
+    Agent,
+    Delete,
+}
+
+/// State for the project-settings modal (`P` on the board): the editable name,
+/// root directory (a [`DirField`] so its fuzzy search matches the project-root
+/// and worktree selectors), and default agent — plus the read-only id and
+/// creation time shown for reference, and an optional validation error.
+#[derive(Debug, Clone)]
+pub struct ProjectSettingsForm {
+    pub id: i64,
+    pub created_at: String,
+    pub name: String,
+    pub root: DirField,
+    pub default_agent: Option<Agent>,
+    pub field: ProjectSettingsField,
+    pub error: Option<String>,
+}
+
+impl ProjectSettingsForm {
+    /// Open the form pre-filled from an existing project.
+    pub fn from_project(p: &Project) -> Self {
+        ProjectSettingsForm {
+            id: p.id,
+            created_at: p.created_at.clone(),
+            name: p.name.clone(),
+            root: DirField::with_value(p.root_dir.to_string_lossy()),
+            default_agent: p.default_agent,
+            field: ProjectSettingsField::Name,
+            error: None,
+        }
+    }
+
+    /// The agent options, in cycle order: the global default (None) followed by
+    /// every concrete agent.
+    fn agent_options() -> Vec<Option<Agent>> {
+        std::iter::once(None)
+            .chain(Agent::all().into_iter().map(Some))
+            .collect()
+    }
+
+    pub fn next_field(&mut self) {
+        use ProjectSettingsField::*;
+        // Switching off Root invalidates a pending "create this directory?" prompt.
+        self.root.pending_create = None;
+        self.field = match self.field {
+            Name => Root,
+            Root => Agent,
+            Agent => Delete,
+            Delete => Name,
+        };
+    }
+
+    pub fn prev_field(&mut self) {
+        use ProjectSettingsField::*;
+        self.root.pending_create = None;
+        self.field = match self.field {
+            Name => Delete,
+            Root => Name,
+            Agent => Root,
+            Delete => Agent,
+        };
+    }
+
+    pub fn input_char(&mut self, c: char) {
+        match self.field {
+            ProjectSettingsField::Name => {
+                // Editing invalidates a pending confirmation against the old root.
+                self.root.pending_create = None;
+                self.name.push(c);
+            }
+            ProjectSettingsField::Root => self.root.input_char(c),
+            ProjectSettingsField::Agent | ProjectSettingsField::Delete => {}
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        match self.field {
+            ProjectSettingsField::Name => {
+                self.root.pending_create = None;
+                self.name.pop();
+            }
+            ProjectSettingsField::Root => {
+                self.root.backspace();
+            }
+            ProjectSettingsField::Agent | ProjectSettingsField::Delete => {}
+        }
+    }
+
+    /// Cycle the default agent through `[global default, …agents]`.
+    pub fn cycle_agent(&mut self, forward: bool) {
+        let opts = Self::agent_options();
+        let i = opts
+            .iter()
+            .position(|a| *a == self.default_agent)
+            .unwrap_or(0);
+        let n = opts.len();
+        self.default_agent = if forward {
+            opts[(i + 1) % n]
+        } else {
+            opts[(i + n - 1) % n]
+        };
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Modal {
     None,
@@ -209,6 +321,14 @@ pub enum Modal {
     /// Directory selector for the worktree location (issue #48). Reuses the
     /// project-root fuzzy search; on confirm it persists `config.worktree_base`.
     WorktreeLocation(WorktreeForm),
+    /// Edit/delete the current project: lists its properties and edits name,
+    /// root dir, and default agent. On save it `PATCH`es `/projects/:id`.
+    ProjectSettings(ProjectSettingsForm),
+    /// Confirm deleting `id` (named `name` for the prompt) and all its tickets.
+    ConfirmDeleteProject {
+        id: i64,
+        name: String,
+    },
 }
 
 /// Severity of a transient status-bar message, controlling its color.
@@ -507,6 +627,65 @@ mod tests {
         assert!(!f.start_in_background);
         f.toggle_background();
         assert!(f.start_in_background);
+    }
+
+    #[test]
+    fn project_settings_form_prefills_from_project() {
+        let mut p = project();
+        p.name = "kamaji".into();
+        p.root_dir = PathBuf::from("/home/u/dev/kamaji");
+        p.default_agent = Some(Agent::Codex);
+        let f = ProjectSettingsForm::from_project(&p);
+        assert_eq!(f.id, p.id);
+        assert_eq!(f.name, "kamaji");
+        assert_eq!(f.root.value, "/home/u/dev/kamaji");
+        assert_eq!(f.default_agent, Some(Agent::Codex));
+        assert_eq!(f.field, ProjectSettingsField::Name);
+    }
+
+    #[test]
+    fn project_settings_field_navigation_cycles_all_four_rows() {
+        use ProjectSettingsField::*;
+        let mut f = ProjectSettingsForm::from_project(&project());
+        assert_eq!(f.field, Name);
+        f.next_field();
+        assert_eq!(f.field, Root);
+        f.next_field();
+        assert_eq!(f.field, Agent);
+        f.next_field();
+        assert_eq!(f.field, Delete);
+        f.next_field();
+        assert_eq!(f.field, Name, "wraps back to Name");
+        f.prev_field();
+        assert_eq!(f.field, Delete, "prev from Name wraps to Delete");
+    }
+
+    #[test]
+    fn project_settings_typing_targets_active_text_field_only() {
+        use ProjectSettingsField::*;
+        let mut f = ProjectSettingsForm::from_project(&project());
+        f.name.clear();
+        f.input_char('h');
+        f.input_char('i');
+        assert_eq!(f.name, "hi");
+        // Agent/Delete rows ignore typed characters.
+        f.field = Agent;
+        f.input_char('x');
+        assert_eq!(f.name, "hi");
+    }
+
+    #[test]
+    fn project_settings_cycles_agent_including_the_global_default() {
+        let mut f = ProjectSettingsForm::from_project(&project());
+        f.default_agent = None;
+        f.cycle_agent(true);
+        assert_eq!(f.default_agent, Some(Agent::all()[0]));
+        // Cycling backward from the first agent returns to the global default.
+        f.cycle_agent(false);
+        assert_eq!(f.default_agent, None);
+        // Backward from None wraps to the last agent.
+        f.cycle_agent(false);
+        assert_eq!(f.default_agent, Some(*Agent::all().last().unwrap()));
     }
 
     #[test]

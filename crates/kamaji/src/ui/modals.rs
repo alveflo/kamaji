@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{FormField, TicketForm, WorktreeForm};
+use crate::app::{FormField, ProjectSettingsField, ProjectSettingsForm, TicketForm, WorktreeForm};
 use crate::dir_select;
 use crate::theme::Theme;
 use crate::ui::centered_rect;
@@ -307,6 +307,124 @@ pub fn render_worktree_location(frame: &mut Frame, theme: &Theme, form: &Worktre
     );
 }
 
+/// Render the project-settings modal: the project's read-only properties (id,
+/// created-at), its editable Name / Root / Agent fields, and a Delete action
+/// row. The Root field carries the same fuzzy suggestion list + create-confirm
+/// flow as the project-root and worktree selectors.
+pub fn render_project_settings(frame: &mut Frame, theme: &Theme, form: &ProjectSettingsForm) {
+    use ProjectSettingsField as F;
+    let area = centered_rect(70, 75, frame.area());
+    frame.render_widget(Clear, area);
+    let block = themed_block(theme, " Project settings ".to_string());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let prop = |label: &str, value: String| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(format!("{label}: "), Style::new().fg(theme.accent())),
+            Span::styled(value, Style::new().fg(theme.muted)),
+        ])
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    // Read-only properties.
+    lines.push(prop("ID", form.id.to_string()));
+    if !form.created_at.is_empty() {
+        lines.push(prop("Created", form.created_at.clone()));
+    }
+    lines.push(Line::raw(""));
+
+    // Editable: Name.
+    lines.push(field_line(theme, "Name", &form.name, form.field == F::Name));
+    lines.push(Line::raw(""));
+
+    // Editable: Root (basepath), with the directory-search affordances.
+    lines.push(field_line(
+        theme,
+        "Root",
+        &form.root.value,
+        form.field == F::Root,
+    ));
+    let pending = form
+        .root
+        .pending_create
+        .as_ref()
+        .map(|p| format!("⚠ {} doesn't exist.", dir_select::contract_home(p)));
+    if form.field == F::Root && pending.is_none() && !form.root.suggestions.is_empty() {
+        let selected = form.root.suggestion_idx;
+        let start = selected.saturating_sub(MAX_VISIBLE_SUGGESTIONS - 1);
+        let end = (start + MAX_VISIBLE_SUGGESTIONS).min(form.root.suggestions.len());
+        for (i, name) in form
+            .root
+            .suggestions
+            .iter()
+            .enumerate()
+            .take(end)
+            .skip(start)
+        {
+            let style = if i == selected {
+                Style::new()
+                    .fg(theme.base.unwrap_or(Color::Black))
+                    .bg(theme.accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(theme.text)
+            };
+            let marker = if i == selected { "› " } else { "  " };
+            lines.push(Line::styled(format!("{marker}{name}"), style));
+        }
+    }
+    lines.push(Line::raw(""));
+
+    // Editable: default Agent.
+    let agent_label = form
+        .default_agent
+        .map(|a| a.label().to_string())
+        .unwrap_or_else(|| "(global default)".to_string());
+    lines.push(field_line(
+        theme,
+        "Agent",
+        &agent_label,
+        form.field == F::Agent,
+    ));
+    lines.push(Line::raw(""));
+
+    // Delete action row.
+    let del_style = if form.field == F::Delete {
+        Style::new()
+            .fg(theme.base.unwrap_or(Color::Black))
+            .bg(theme.error)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(theme.error)
+    };
+    lines.push(Line::styled(" Delete project ", del_style));
+    lines.push(Line::raw(""));
+
+    if let Some(err) = &form.error {
+        lines.push(Line::styled(err.clone(), Style::new().fg(theme.error)));
+        lines.push(Line::raw(""));
+    }
+
+    let hint = if pending.is_some() {
+        "Enter: create the directory   Esc: edit"
+    } else {
+        match form.field {
+            F::Root => "↑/↓ choose · Tab complete · ↵ save · Esc cancel",
+            F::Agent => "←/→ agent · Tab field · ↵ save · Esc cancel",
+            F::Delete => "↵ delete project · Tab field · Esc cancel",
+            F::Name => "Tab/Shift-Tab field · ↵ save · Esc cancel",
+        }
+    };
+    if let Some(msg) = &pending {
+        lines.push(Line::styled(msg.clone(), Style::new().fg(theme.error)));
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::styled(hint.to_string(), Style::new().fg(theme.muted)));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
 pub fn render_help(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(50, 60, frame.area());
     frame.render_widget(Clear, area);
@@ -330,6 +448,7 @@ a         set default agent
 w         set worktree location (where worktrees are created)
 u         update kamaji (shown when a new version is available)
 p         switch project
+P         project settings (edit / delete)
 ?         this help
 q         quit
 
@@ -524,6 +643,44 @@ mod tests {
         assert!(
             visible <= 5,
             "at most 5 suggestions visible, saw {visible}:\n{text}"
+        );
+    }
+
+    #[test]
+    fn project_settings_modal_lists_properties_and_delete_action() {
+        use crate::app::ProjectSettingsForm;
+        use kamaji_core::models::{Agent, Project};
+        let theme = Theme::by_name("catppuccin");
+        let backend = TestBackend::new(80, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let p = Project {
+            id: 7,
+            name: "kamaji".into(),
+            root_dir: "/home/u/dev/kamaji".into(),
+            default_agent: Some(Agent::Claude),
+            created_at: "2026-06-10T12:00:00Z".into(),
+        };
+        let form = ProjectSettingsForm::from_project(&p);
+        terminal
+            .draw(|f| render_project_settings(f, &theme, &form))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[Position::new(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("Project settings"), "titled:\n{text}");
+        assert!(text.contains("kamaji"), "name shown:\n{text}");
+        assert!(
+            text.contains("/home/u/dev/kamaji"),
+            "root (basepath) shown:\n{text}"
+        );
+        assert!(text.contains("Claude"), "default agent shown:\n{text}");
+        assert!(
+            text.contains("Delete project"),
+            "delete action row shown:\n{text}"
         );
     }
 

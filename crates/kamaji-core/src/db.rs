@@ -249,6 +249,49 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Edit a project's caller-editable fields (full replace): name, root dir,
+    /// and default agent. Returns the updated row, or `None` when no project
+    /// with `id` exists (zero rows touched).
+    pub fn update_project(
+        &self,
+        id: i64,
+        name: &str,
+        root_dir: &Path,
+        default_agent: Option<Agent>,
+    ) -> Result<Option<Project>> {
+        self.conn.execute(
+            "UPDATE projects SET name = ?2, root_dir = ?3, default_agent = ?4 WHERE id = ?1",
+            params![
+                id,
+                name,
+                root_dir.to_string_lossy(),
+                default_agent.map(|a| a.as_str())
+            ],
+        )?;
+        self.get_project(id)
+    }
+
+    /// Delete a project together with every ticket that belongs to it, returning
+    /// the ids of the removed tickets (in id order) so callers can emit one
+    /// `ticket.deleted` per card. Tickets are removed first to satisfy the
+    /// `tickets.project_id REFERENCES projects(id)` foreign key. Like
+    /// [`Self::delete_done_tickets`], this only removes rows — tearing down any
+    /// worktree/zellij session a ticket still owns is the caller's concern
+    /// (the daemon's project-delete route does it before calling this).
+    pub fn delete_project(&self, id: i64) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM tickets WHERE project_id = ?1 ORDER BY id")?;
+        let ids = stmt
+            .query_map([id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        self.conn
+            .execute("DELETE FROM tickets WHERE project_id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        Ok(ids)
+    }
+
     pub fn create_ticket(
         &self,
         project_id: i64,
@@ -416,6 +459,82 @@ mod tests {
             db.get_project(p.id).unwrap().unwrap().default_agent,
             Some(Agent::Codex)
         );
+    }
+
+    #[test]
+    fn update_project_replaces_fields_and_returns_the_row() {
+        let db = db();
+        let p = db
+            .create_project("acme", &PathBuf::from("/tmp/acme"), Some(Agent::Claude))
+            .unwrap();
+        let updated = db
+            .update_project(p.id, "acme-renamed", &PathBuf::from("/tmp/moved"), None)
+            .unwrap()
+            .expect("an existing project returns the updated row");
+        assert_eq!(updated.name, "acme-renamed");
+        assert_eq!(updated.root_dir, PathBuf::from("/tmp/moved"));
+        assert_eq!(updated.default_agent, None);
+        // The id and created_at are stable across the edit.
+        assert_eq!(updated.id, p.id);
+        assert_eq!(updated.created_at, p.created_at);
+        // The change is persisted, not just returned.
+        let reread = db.get_project(p.id).unwrap().unwrap();
+        assert_eq!(reread.name, "acme-renamed");
+        assert_eq!(reread.default_agent, None);
+    }
+
+    #[test]
+    fn update_project_on_missing_id_returns_none() {
+        let db = db();
+        assert!(db
+            .update_project(999, "ghost", &PathBuf::from("/tmp/ghost"), None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn delete_project_removes_it_with_its_tickets_and_returns_their_ids() {
+        let db = db();
+        let p = db
+            .create_project("p", &PathBuf::from("/tmp/p"), None)
+            .unwrap();
+        // A second project whose tickets must be left completely untouched.
+        let other = db
+            .create_project("other", &PathBuf::from("/tmp/other"), None)
+            .unwrap();
+        let other_ticket = db
+            .create_ticket(other.id, "keep me", "", None, Agent::Claude)
+            .unwrap();
+
+        let a = db
+            .create_ticket(p.id, "a", "", None, Agent::Claude)
+            .unwrap();
+        let b = db
+            .create_ticket(p.id, "b", "", None, Agent::Claude)
+            .unwrap();
+
+        let deleted = db.delete_project(p.id).unwrap();
+        assert_eq!(deleted, vec![a.id, b.id], "returns its ticket ids in order");
+
+        // The project and its tickets are gone; the FK never trips.
+        assert!(db.get_project(p.id).unwrap().is_none());
+        assert!(db.get_ticket(a.id).unwrap().is_none());
+        assert!(db.get_ticket(b.id).unwrap().is_none());
+
+        // The other project and its ticket survive intact.
+        assert!(db.get_project(other.id).unwrap().is_some());
+        assert!(db.get_ticket(other_ticket.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn delete_project_with_no_tickets_returns_empty_and_removes_the_row() {
+        let db = db();
+        let p = db
+            .create_project("empty", &PathBuf::from("/tmp/empty"), None)
+            .unwrap();
+        let deleted = db.delete_project(p.id).unwrap();
+        assert!(deleted.is_empty());
+        assert!(db.get_project(p.id).unwrap().is_none());
     }
 
     #[test]

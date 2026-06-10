@@ -27,6 +27,11 @@ pub fn router(state: AppState) -> Router {
         .route("/ui/tickets/new", get(routes::ui::new_ticket))
         .route("/ui/tickets/cancel", get(routes::ui::cancel_ticket))
         .route("/ui/projects/new", get(routes::ui::new_project))
+        .route("/ui/projects/:id/edit", get(routes::ui::edit_project))
+        .route(
+            "/ui/projects/:id/confirm-delete",
+            get(routes::ui::confirm_delete_project),
+        )
         .route("/ui/config", get(routes::ui::config))
         .route("/ui/tickets/:id/edit", get(routes::ui::edit_ticket))
         .route("/ui/tickets/:id/confirm", get(routes::ui::confirm_ticket))
@@ -46,7 +51,12 @@ pub fn router(state: AppState) -> Router {
             "/projects",
             get(routes::projects::list).post(routes::projects::create),
         )
-        .route("/projects/:id", get(routes::projects::get_one))
+        .route(
+            "/projects/:id",
+            get(routes::projects::get_one)
+                .patch(routes::projects::update)
+                .delete(routes::projects::delete),
+        )
         .route(
             "/projects/:id/main-session",
             axum::routing::post(routes::projects::main_session),

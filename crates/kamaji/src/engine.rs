@@ -9,7 +9,10 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::{App, FormField, Modal, TicketForm, WorktreeForm, LAST_COLUMN};
+use crate::app::{
+    App, FormField, Modal, ProjectSettingsField, ProjectSettingsForm, TicketForm, WorktreeForm,
+    LAST_COLUMN,
+};
 use crate::client::{ClientError, DaemonClient};
 use crate::dir_select::{self, RootCheck};
 use crate::theme::Theme;
@@ -297,6 +300,10 @@ impl Engine {
             }
             Modal::AgentPicker { selected } => self.handle_agent_picker_key(key, selected),
             Modal::WorktreeLocation(form) => self.handle_worktree_location_key(key, form),
+            Modal::ProjectSettings(form) => self.handle_project_settings_key(key, form),
+            Modal::ConfirmDeleteProject { id, name } => {
+                self.handle_confirm_delete_project_key(key, id, name)
+            }
         }
     }
 
@@ -603,6 +610,165 @@ impl Engine {
         }
     }
 
+    /// Handle a key while the project-settings modal is open. Tab/Shift-Tab cycle
+    /// the rows; ←/→ cycle the default agent on the Agent row; the Root row reuses
+    /// the project-root fuzzy search + create-confirm flow. Enter on Name/Root/
+    /// Agent saves (validating the root like project creation); Enter on the
+    /// Delete row opens the delete-project confirmation.
+    fn handle_project_settings_key(
+        &mut self,
+        key: KeyEvent,
+        mut form: ProjectSettingsForm,
+    ) -> Result<Effect> {
+        use ProjectSettingsField as F;
+        match key.code {
+            KeyCode::Esc => {
+                // Esc dismisses a pending create-confirm first; only a second Esc
+                // (nothing pending) closes the modal.
+                if !form.root.escape() {
+                    self.app.modal = Modal::ProjectSettings(form);
+                }
+            }
+            KeyCode::Tab => {
+                // On Root, Tab completes the highlighted suggestion; elsewhere it
+                // advances the field.
+                if form.field == F::Root && !form.root.suggestions.is_empty() {
+                    form.root.accept_suggestion();
+                } else {
+                    form.next_field();
+                }
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+            KeyCode::BackTab => {
+                form.prev_field();
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+            KeyCode::Up if form.field == F::Root => {
+                form.root.move_suggestion(-1);
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+            KeyCode::Down if form.field == F::Root => {
+                form.root.move_suggestion(1);
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+            KeyCode::Left if form.field == F::Agent => {
+                form.cycle_agent(false);
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+            KeyCode::Right if form.field == F::Agent => {
+                form.cycle_agent(true);
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+            KeyCode::Enter => return self.submit_project_settings(form),
+            KeyCode::Backspace => {
+                form.backspace();
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+            KeyCode::Char(c) => {
+                form.input_char(c);
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+            _ => self.app.modal = Modal::ProjectSettings(form),
+        }
+        Ok(Effect::None)
+    }
+
+    /// Enter inside the project-settings modal: delegate to the delete
+    /// confirmation when the Delete row is focused, otherwise validate and save.
+    fn submit_project_settings(&mut self, mut form: ProjectSettingsForm) -> Result<Effect> {
+        if form.field == ProjectSettingsField::Delete {
+            self.app.modal = Modal::ConfirmDeleteProject {
+                id: form.id,
+                name: form.name.clone(),
+            };
+            return Ok(Effect::None);
+        }
+        if form.name.trim().is_empty() {
+            form.error = Some("Name is required".into());
+            self.app.modal = Modal::ProjectSettings(form);
+            return Ok(Effect::None);
+        }
+        if form.root.pending_create.is_some() {
+            // Second Enter: create the missing directory, then save.
+            match form.root.confirm_create() {
+                Ok(Some(root)) => self.save_project_settings(form, &root),
+                Ok(None) => self.app.modal = Modal::ProjectSettings(form),
+                Err(e) => {
+                    form.error = Some(format!("Couldn't create directory: {e}"));
+                    self.app.modal = Modal::ProjectSettings(form);
+                }
+            }
+        } else {
+            match dir_select::check_root(form.root.resolved()) {
+                RootCheck::Ready(root) => self.save_project_settings(form, &root),
+                RootCheck::NeedsConfirm(path) => {
+                    form.error = None;
+                    form.root.pending_create = Some(path);
+                    self.app.modal = Modal::ProjectSettings(form);
+                }
+                RootCheck::Invalid(msg) => {
+                    form.error = Some(msg);
+                    self.app.modal = Modal::ProjectSettings(form);
+                }
+            }
+        }
+        Ok(Effect::None)
+    }
+
+    /// Persist the edited project through the daemon. On success the in-memory
+    /// project is refreshed (so the board header reflects the rename) and the
+    /// modal closes; a domain error keeps the modal open with the error inline.
+    fn save_project_settings(&mut self, mut form: ProjectSettingsForm, root: &std::path::Path) {
+        match self
+            .client
+            .update_project(form.id, form.name.trim(), root, form.default_agent)
+        {
+            Ok(p) => {
+                if self.app.project.id == p.id {
+                    self.app.project = p;
+                }
+                self.app.set_info("Project updated");
+                // modal closes (left as None)
+            }
+            Err(ClientError::BadRequest(m)) => {
+                form.error = Some(m);
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+            Err(e) => {
+                self.note_client_error(&e);
+                self.app
+                    .set_error(format!("could not update project: {e:?}"));
+                self.app.modal = Modal::ProjectSettings(form);
+            }
+        }
+    }
+
+    /// Confirm-delete-project: `y` deletes the project (and all its tickets) and
+    /// returns to the picker, since the board's current project is now gone. Any
+    /// other key cancels back to the board.
+    fn handle_confirm_delete_project_key(
+        &mut self,
+        key: KeyEvent,
+        id: i64,
+        name: String,
+    ) -> Result<Effect> {
+        match key.code {
+            KeyCode::Char('y') => match self.client.delete_project(id) {
+                Ok(()) => {
+                    self.app.set_info(format!("Deleted project '{name}'"));
+                    Ok(Effect::SwitchProject)
+                }
+                Err(e) => {
+                    self.note_client_error(&e);
+                    self.app
+                        .set_error(format!("could not delete project: {e:?}"));
+                    Ok(Effect::None)
+                }
+            },
+            _ => Ok(Effect::None),
+        }
+    }
+
     fn on_board_key(&mut self, key: KeyEvent) -> Result<Effect> {
         self.app.status_message = None;
 
@@ -645,6 +811,11 @@ impl Engine {
                 }
             }
             KeyCode::Char('p') => return Ok(Effect::SwitchProject),
+            // Shift-P opens the current project's settings (edit / delete).
+            KeyCode::Char('P') => {
+                self.app.modal =
+                    Modal::ProjectSettings(ProjectSettingsForm::from_project(&self.app.project));
+            }
             // Open the project's main session (not tied to any ticket): the
             // daemon attaches if it's already running, otherwise starts it, and
             // returns the session name for the TUI to attach to.
@@ -1319,6 +1490,97 @@ mod tests {
             Modal::Form(form) => assert_eq!(form.editing_id, Some(t.id)),
             other => panic!("expected edit form, got {other:?}"),
         }
+    }
+
+    /// Shift-P opens the project-settings modal for the current project.
+    #[test]
+    fn shift_p_opens_project_settings_for_current_project() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('P')).unwrap();
+        match &e.app.modal {
+            Modal::ProjectSettings(f) => assert_eq!(f.id, e.app.project.id),
+            other => panic!("expected ProjectSettings, got {other:?}"),
+        }
+    }
+
+    /// Enter on the Delete row escalates to the delete-project confirmation.
+    #[test]
+    fn enter_on_delete_row_opens_confirm() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        let mut form = ProjectSettingsForm::from_project(&e.app.project);
+        form.field = ProjectSettingsField::Delete;
+        e.app.modal = Modal::ProjectSettings(form);
+        e.on_key(enter()).unwrap();
+        match &e.app.modal {
+            Modal::ConfirmDeleteProject { id, .. } => assert_eq!(*id, pid),
+            other => panic!("expected ConfirmDeleteProject, got {other:?}"),
+        }
+    }
+
+    /// Saving the settings form persists the edit through the daemon and updates
+    /// the in-memory project so the board header reflects the rename.
+    #[test]
+    fn project_settings_save_updates_project_via_daemon() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        let mut form = ProjectSettingsForm::from_project(&e.app.project);
+        form.name = "renamed".into();
+        form.default_agent = Some(Agent::Codex);
+        e.save_project_settings(form, std::path::Path::new("/tmp/renamed"));
+        assert!(
+            matches!(e.app.modal, Modal::None),
+            "modal closes on success"
+        );
+        assert_eq!(e.app.project.name, "renamed");
+        let saved = e.client.get_project(pid).unwrap();
+        assert_eq!(saved.name, "renamed");
+        assert_eq!(saved.default_agent, Some(Agent::Codex));
+    }
+
+    /// An empty name keeps the modal open with an inline error and no daemon call.
+    #[test]
+    fn project_settings_empty_name_keeps_modal_open_with_error() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let mut form = ProjectSettingsForm::from_project(&e.app.project);
+        form.name = "   ".into();
+        e.submit_project_settings(form).unwrap();
+        match &e.app.modal {
+            Modal::ProjectSettings(f) => assert!(f.error.is_some(), "shows a validation error"),
+            other => panic!("expected the form to stay open, got {other:?}"),
+        }
+    }
+
+    /// Confirming the delete removes the project (and its tickets) via the daemon
+    /// and returns to the picker, since the board's project is now gone.
+    #[test]
+    fn confirm_delete_project_deletes_and_requests_switch() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        let effect = e
+            .handle_confirm_delete_project_key(key('y'), pid, "p".into())
+            .unwrap();
+        assert_eq!(effect, Effect::SwitchProject);
+        assert!(matches!(
+            e.client.get_project(pid),
+            Err(ClientError::NotFound)
+        ));
+    }
+
+    /// Any non-`y` key cancels the delete confirmation back to the board, leaving
+    /// the project intact.
+    #[test]
+    fn confirm_delete_project_cancel_keeps_project() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        let pid = e.app.project.id;
+        let effect = e
+            .handle_confirm_delete_project_key(esc(), pid, "p".into())
+            .unwrap();
+        assert_eq!(effect, Effect::None);
+        assert!(
+            e.client.get_project(pid).is_ok(),
+            "project survives a cancel"
+        );
     }
 
     fn esc() -> KeyEvent {

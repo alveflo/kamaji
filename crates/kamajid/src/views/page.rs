@@ -88,6 +88,10 @@ pub fn page(
                         }
                         span class="search-count" aria-live="polite" {}
                         span class="spacer" {}
+                        button class="sessions-btn proj-settings-btn"
+                               data-on:click=(PreEscaped(format!("@get('/ui/projects/{}/edit')", project.id))) {
+                            "Project"
+                        }
                         button class="sessions-btn"
                                data-on:click=(PreEscaped("@get('/ui/sessions/manage')")) {
                             "Sessions"
@@ -273,6 +277,20 @@ mod tests {
         assert!(
             html.contains(r#"href="/assets/sessions.css""#),
             "sessions css link:\n{html}"
+        );
+    }
+
+    #[test]
+    fn topbar_has_project_button_opening_the_manage_modal() {
+        let p = project(8, "acme");
+        let html = page(&p, std::slice::from_ref(&p), &empty_board()).into_string();
+        assert!(
+            html.contains(r#"class="sessions-btn proj-settings-btn""#),
+            "project settings button present:\n{html}"
+        );
+        assert!(
+            html.contains("@get('/ui/projects/8/edit')"),
+            "project button opens the edit/manage modal:\n{html}"
         );
     }
 
