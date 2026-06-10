@@ -7,7 +7,7 @@
 //! touches the DB, git, or zellij directly.
 
 use anyhow::Result;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{
     App, FormField, Modal, ProjectSettingsField, ProjectSettingsForm, TicketForm, WorktreeForm,
@@ -327,6 +327,22 @@ impl Engine {
     fn handle_form_key(&mut self, key: KeyEvent, mut form: TicketForm) -> Result<Effect> {
         match key.code {
             KeyCode::Esc => {} // close (modal already None)
+            // Ctrl+S saves from any field — the only way to submit while editing
+            // a multi-line text area, where Enter inserts a newline instead.
+            KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !form.title.trim().is_empty() {
+                    return self.submit_form(&form);
+                } else {
+                    self.app.modal = Modal::Form(form);
+                    self.app.set_error("Title is required");
+                }
+            }
+            // In the Description/Prompt text areas, Enter inserts a newline rather
+            // than submitting; single-line fields keep Enter as "save".
+            KeyCode::Enter if form.is_multiline_field() => {
+                form.input_newline();
+                self.app.modal = Modal::Form(form);
+            }
             KeyCode::Enter => {
                 if !form.title.trim().is_empty() {
                     return self.submit_form(&form);
@@ -1128,6 +1144,42 @@ mod tests {
         assert_eq!(e.app.tickets.len(), 1);
         assert_eq!(e.app.tickets[0].title, "Add login");
         assert_eq!(e.app.tickets[0].status, Status::Todo);
+    }
+
+    /// Enter in the Description text area inserts a newline and keeps the form
+    /// open; Ctrl+S then submits the multi-line value.
+    #[test]
+    fn enter_newlines_in_text_area_and_ctrl_s_saves() {
+        let mut e = engine_with_project(std::path::PathBuf::from("/tmp/none"));
+        e.on_key(key('c')).unwrap();
+        for ch in "Multi".chars() {
+            e.on_key(key(ch)).unwrap();
+        }
+        // Tab to Description, type a line, Enter (newline), type another line.
+        e.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+        e.on_key(key('a')).unwrap();
+        e.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        e.on_key(key('b')).unwrap();
+        // The form is still open with a two-line description; nothing submitted.
+        match &e.app.modal {
+            Modal::Form(f) => assert_eq!(f.description, "a\nb"),
+            other => panic!("form should still be open, got {other:?}"),
+        }
+        assert!(
+            e.app.tickets.is_empty(),
+            "Enter on a text area must not submit"
+        );
+        // Ctrl+S submits from within the text area.
+        e.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL))
+            .unwrap();
+        assert_eq!(e.app.tickets.len(), 1);
+        assert_eq!(e.app.tickets[0].title, "Multi");
+        assert!(
+            matches!(e.app.modal, Modal::None),
+            "submitting closes the form"
+        );
     }
 
     #[test]

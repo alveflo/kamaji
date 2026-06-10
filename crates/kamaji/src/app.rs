@@ -124,6 +124,27 @@ impl TicketForm {
         }
     }
 
+    /// The Description and Prompt fields are multi-line text areas: pressing
+    /// Enter inserts a newline rather than submitting the form. (Single-line
+    /// fields like Title keep Enter as "save".)
+    pub fn is_multiline_field(&self) -> bool {
+        matches!(
+            self.field,
+            FormField::Description | FormField::InitialPrompt
+        )
+    }
+
+    /// Insert a literal newline into the active field. A no-op unless the active
+    /// field is a multi-line text area, so a stray Enter elsewhere can't sneak a
+    /// newline into a single-line value.
+    pub fn input_newline(&mut self) {
+        match self.field {
+            FormField::Description => self.description.push('\n'),
+            FormField::InitialPrompt => self.initial_prompt.push('\n'),
+            FormField::Title | FormField::Agent | FormField::Background => {}
+        }
+    }
+
     pub fn backspace(&mut self) {
         match self.field {
             FormField::Title => self.title.pop(),
@@ -602,6 +623,45 @@ mod tests {
         assert_eq!(f.field, FormField::Description);
         f.next_field();
         assert_eq!(f.field, FormField::Title);
+    }
+
+    #[test]
+    fn description_and_prompt_are_multiline_fields() {
+        let mut f = TicketForm::new_create(Agent::Claude);
+        f.field = FormField::Title;
+        assert!(!f.is_multiline_field(), "title is single-line");
+        f.field = FormField::Description;
+        assert!(f.is_multiline_field(), "description is a text area");
+        f.field = FormField::InitialPrompt;
+        assert!(f.is_multiline_field(), "prompt is a text area");
+        f.field = FormField::Agent;
+        assert!(!f.is_multiline_field(), "agent is not editable text");
+    }
+
+    #[test]
+    fn input_newline_only_affects_multiline_text_areas() {
+        let mut f = TicketForm::new_create(Agent::Claude);
+        // Title is single-line: a newline must be ignored.
+        f.field = FormField::Title;
+        f.input_char('a');
+        f.input_newline();
+        f.input_char('b');
+        assert_eq!(f.title, "ab", "title ignores newlines");
+
+        // Description is a text area: newlines are inserted verbatim.
+        f.field = FormField::Description;
+        f.input_char('x');
+        f.input_newline();
+        f.input_char('y');
+        assert_eq!(f.description, "x\ny");
+
+        // Prompt is a text area too.
+        f.field = FormField::InitialPrompt;
+        f.input_char('1');
+        f.input_newline();
+        f.input_char('2');
+        assert_eq!(f.initial_prompt, "1\n2");
+        assert_eq!(f.prompt_opt().as_deref(), Some("1\n2"));
     }
 
     #[test]

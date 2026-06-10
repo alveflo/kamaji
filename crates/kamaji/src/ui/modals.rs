@@ -41,6 +41,48 @@ pub(crate) fn field_line(theme: &Theme, label: &str, value: &str, active: bool) 
     ])
 }
 
+/// Render a multi-line text-area field: the label sits on the first row beside
+/// the opening line of `value`, and each embedded `\n` starts a fresh row. The
+/// cursor `_` trails the final row when the field is active. A value with no
+/// newline renders the same single row as [`field_line`].
+pub(crate) fn field_lines(
+    theme: &Theme,
+    label: &str,
+    value: &str,
+    active: bool,
+) -> Vec<Line<'static>> {
+    let style = if active {
+        Style::new()
+            .fg(theme.base.unwrap_or(Color::Black))
+            .bg(theme.accent())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(theme.text)
+    };
+    let cursor = if active { "_" } else { "" };
+    let segments: Vec<&str> = value.split('\n').collect();
+    let last = segments.len() - 1;
+    segments
+        .into_iter()
+        .enumerate()
+        .map(|(i, seg)| {
+            let text = if i == last {
+                format!("{seg}{cursor}")
+            } else {
+                seg.to_string()
+            };
+            if i == 0 {
+                Line::from(vec![
+                    Span::styled(format!("{label}: "), Style::new().fg(theme.accent())),
+                    Span::styled(text, style),
+                ])
+            } else {
+                Line::from(Span::styled(text, style))
+            }
+        })
+        .collect()
+}
+
 /// Render a centered, bordered modal form: a list of labelled fields with an
 /// active-field highlight, a hint line, and an optional error. Shared by modals
 /// (like the new-project form) that want the same look as the ticket modal.
@@ -114,16 +156,16 @@ pub fn render_form(frame: &mut Frame, theme: &Theme, form: &TicketForm) {
     let mut lines = vec![
         field_line(theme, "Title", &form.title, form.field == FormField::Title),
         Line::raw(""),
-        field_line(
-            theme,
-            "Description",
-            &form.description,
-            form.field == FormField::Description,
-        ),
     ];
+    lines.extend(field_lines(
+        theme,
+        "Description",
+        &form.description,
+        form.field == FormField::Description,
+    ));
     if form.editing_id.is_none() {
         lines.push(Line::raw(""));
-        lines.push(field_line(
+        lines.extend(field_lines(
             theme,
             "Prompt",
             &form.initial_prompt,
@@ -168,7 +210,7 @@ pub fn render_form(frame: &mut Frame, theme: &Theme, form: &TicketForm) {
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "Tab/Shift-Tab: field   ←/→: agent / toggle   Enter: save   Esc: cancel",
+        "Tab/Shift-Tab: field   ←/→: agent / toggle   Enter: newline (Desc/Prompt)   Ctrl-S: save   Esc: cancel",
         Style::new().fg(theme.muted),
     ));
 
@@ -681,6 +723,36 @@ mod tests {
         assert!(
             text.contains("Delete project"),
             "delete action row shown:\n{text}"
+        );
+    }
+
+    #[test]
+    fn form_renders_multiline_description_across_rows() {
+        use crate::app::{FormField, TicketForm};
+        let theme = Theme::by_name("nord");
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut form = TicketForm::new_create(Agent::Claude);
+        form.title = "Title".into();
+        form.description = "first line\nsecond line".into();
+        form.field = FormField::Description;
+        terminal.draw(|f| render_form(f, &theme, &form)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        // Each embedded newline starts its own row, so the two segments land on
+        // different terminal rows.
+        let row_of = |needle: &str| {
+            (0..buf.area.height).find(|&y| {
+                let row: String = (0..buf.area.width)
+                    .map(|x| buf[Position::new(x, y)].symbol())
+                    .collect();
+                row.contains(needle)
+            })
+        };
+        let first = row_of("first line").expect("first line rendered");
+        let second = row_of("second line").expect("second line rendered");
+        assert!(
+            second > first,
+            "the newline should push 'second line' onto a later row (first={first}, second={second})"
         );
     }
 
