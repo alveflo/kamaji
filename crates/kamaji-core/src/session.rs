@@ -549,8 +549,10 @@ mod tests {
         std::env::set_var("KAMAJI_CODEX_HOOKS_PATH", &hooks_path);
 
         let wt = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.worktree_base = Some(wt.path().join("wt").to_string_lossy().to_string());
+        let config = Config {
+            worktree_base: Some(wt.path().join("wt").to_string_lossy().to_string()),
+            ..Config::default()
+        };
 
         let db = Db::open_in_memory().unwrap();
         let project = db.create_project("p", root, None).unwrap();
