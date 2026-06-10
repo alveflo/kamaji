@@ -1,5 +1,6 @@
 use crate::models::Status;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -178,6 +179,108 @@ pub fn inject_claude_settings(argv: Vec<String>, marker_path: &str) -> Vec<Strin
     out.push(json);
     out.extend_from_slice(&argv[1..]);
     out
+}
+
+/// Marker key stamped on kamaji-managed Codex hook entries so re-installs
+/// replace only our entries and never touch the user's own hooks.
+const CODEX_MARKER_KEY: &str = "_kamajiManaged";
+
+/// The four Codex hook events kamaji wires, and which marker op each performs.
+/// Active events clear the marker (agent working); idle events create it.
+const CODEX_ACTIVE_EVENTS: [&str; 2] = ["UserPromptSubmit", "PreToolUse"];
+const CODEX_IDLE_EVENTS: [&str; 2] = ["Stop", "PermissionRequest"];
+
+/// Shell command a Codex hook runs to set/clear the idle marker. `op` is
+/// `"touch"` (idle) or `"rm -f"` (active). The marker path is derived at run
+/// time from `$ZELLIJ_SESSION_NAME` — which Codex's hook subprocess inherits
+/// from its pane — so one global hooks file serves every kamaji Codex session.
+/// The `kamaji-*` guard keeps the global hook inert for the user's own
+/// (non-kamaji) Codex sessions and for any non-zellij run (no session name).
+/// `state_dir` is assumed free of single quotes (it is an XDG path; the Claude
+/// path makes the same assumption for its marker).
+fn codex_hook_command(state_dir: &str, op: &str) -> String {
+    format!(
+        "sh -c 'case \"$ZELLIJ_SESSION_NAME\" in kamaji-*) {op} \"{state_dir}/$ZELLIJ_SESSION_NAME.idle\";; esac'"
+    )
+}
+
+/// One kamaji-managed Codex hook entry: `{matcher?, hooks:[{type,command,marker}]}`.
+fn codex_managed_entry(command: &str, matcher: Option<&str>) -> Value {
+    let mut entry = json!({
+        "hooks": [ { "type": "command", "command": command, CODEX_MARKER_KEY: true } ]
+    });
+    if let Some(m) = matcher {
+        entry
+            .as_object_mut()
+            .expect("entry is an object")
+            .insert("matcher".to_string(), json!(m));
+    }
+    entry
+}
+
+/// kamaji's managed entries keyed by event: active events (`UserPromptSubmit`,
+/// `PreToolUse`) clear the marker; idle events (`Stop`, `PermissionRequest`)
+/// create it. Tool-scoped `PreToolUse` carries a `.*` matcher (fire for every
+/// tool); lifecycle events take none.
+fn codex_managed_entries(state_dir: &str) -> Vec<(&'static str, Value)> {
+    let active = codex_hook_command(state_dir, "rm -f");
+    let idle = codex_hook_command(state_dir, "touch");
+    let mut out = Vec::new();
+    for event in CODEX_ACTIVE_EVENTS {
+        let matcher = if event == "PreToolUse" { Some(".*") } else { None };
+        out.push((event, codex_managed_entry(&active, matcher)));
+    }
+    for event in CODEX_IDLE_EVENTS {
+        out.push((event, codex_managed_entry(&idle, None)));
+    }
+    out
+}
+
+/// Is this inner-hook object kamaji-managed (carries the marker key == true)?
+fn codex_hook_is_managed(hook: &Value) -> bool {
+    hook.get(CODEX_MARKER_KEY).and_then(|v| v.as_bool()) == Some(true)
+}
+
+/// Strip kamaji-managed inner hooks from one entry. Returns the entry with the
+/// remaining user hooks, or `None` if nothing user-defined is left (so an
+/// entry that was kamaji-only disappears instead of lingering empty).
+fn strip_managed_entry(entry: Value) -> Option<Value> {
+    let mut obj = entry.as_object()?.clone();
+    let inner = obj.get("hooks")?.as_array()?.clone();
+    let kept: Vec<Value> = inner
+        .into_iter()
+        .filter(|h| !codex_hook_is_managed(h))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    obj.insert("hooks".to_string(), Value::Array(kept));
+    Some(Value::Object(obj))
+}
+
+/// Merge kamaji's managed hook entries into an existing parsed hooks file,
+/// preserving user-defined hooks and unrelated keys. Idempotent: any prior
+/// kamaji-managed entry is stripped before the current one is appended.
+fn merge_codex_hooks(existing: Value, state_dir: &str) -> Value {
+    let mut root = match existing {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let mut hooks = match root.remove("hooks") {
+        Some(Value::Object(m)) => m,
+        _ => serde_json::Map::new(),
+    };
+    for (event, managed) in codex_managed_entries(state_dir) {
+        let prior = match hooks.remove(event) {
+            Some(Value::Array(a)) => a,
+            _ => Vec::new(),
+        };
+        let mut entries: Vec<Value> = prior.into_iter().filter_map(strip_managed_entry).collect();
+        entries.push(managed);
+        hooks.insert(event.to_string(), Value::Array(entries));
+    }
+    root.insert("hooks".to_string(), Value::Object(hooks));
+    Value::Object(root)
 }
 
 #[cfg(test)]
@@ -435,5 +538,83 @@ mod tests {
         assert_eq!(screen_change_level(Some("x"), &mut st, 1), SignalLevel::Idle); // count 1
         // New content => back to Active.
         assert_eq!(screen_change_level(Some("y"), &mut st, 1), SignalLevel::Active);
+    }
+
+    fn hooks_of<'a>(v: &'a serde_json::Value, event: &str) -> &'a Vec<serde_json::Value> {
+        v["hooks"][event].as_array().unwrap()
+    }
+
+    #[test]
+    fn merge_fresh_wires_all_four_events() {
+        let merged = merge_codex_hooks(serde_json::json!({}), "/s/state");
+        for event in ["UserPromptSubmit", "PreToolUse", "Stop", "PermissionRequest"] {
+            assert_eq!(hooks_of(&merged, event).len(), 1, "event {event}");
+        }
+        // Active events run `rm -f`; idle events `touch`.
+        let cmd = |e: &str| hooks_of(&merged, e)[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(cmd("UserPromptSubmit").contains("rm -f"));
+        assert!(cmd("PreToolUse").contains("rm -f"));
+        assert!(cmd("Stop").contains("touch"));
+        assert!(cmd("PermissionRequest").contains("touch"));
+    }
+
+    #[test]
+    fn merge_command_derives_marker_from_session_with_guard() {
+        let merged = merge_codex_hooks(serde_json::json!({}), "/s/state");
+        let cmd = hooks_of(&merged, "Stop")[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.contains("case \"$ZELLIJ_SESSION_NAME\" in kamaji-*"));
+        assert!(cmd.contains("/s/state/$ZELLIJ_SESSION_NAME.idle"));
+    }
+
+    #[test]
+    fn merge_pretooluse_has_wildcard_matcher() {
+        let merged = merge_codex_hooks(serde_json::json!({}), "/s");
+        assert_eq!(hooks_of(&merged, "PreToolUse")[0]["matcher"], ".*");
+        // Lifecycle events take no matcher.
+        assert!(hooks_of(&merged, "Stop")[0].get("matcher").is_none());
+    }
+
+    #[test]
+    fn merge_marks_entries_kamaji_managed() {
+        let merged = merge_codex_hooks(serde_json::json!({}), "/s");
+        assert_eq!(hooks_of(&merged, "Stop")[0]["hooks"][0]["_kamajiManaged"], true);
+    }
+
+    #[test]
+    fn merge_preserves_user_hooks() {
+        let existing = serde_json::json!({
+            "hooks": {
+                "Stop": [ { "hooks": [ { "type": "command", "command": "echo user" } ] } ]
+            }
+        });
+        let merged = merge_codex_hooks(existing, "/s");
+        let stop = hooks_of(&merged, "Stop");
+        // User entry preserved, kamaji entry appended.
+        assert_eq!(stop.len(), 2);
+        assert_eq!(stop[0]["hooks"][0]["command"], "echo user");
+        assert_eq!(stop[1]["hooks"][0]["_kamajiManaged"], true);
+    }
+
+    #[test]
+    fn merge_is_idempotent() {
+        let once = merge_codex_hooks(serde_json::json!({}), "/s");
+        let twice = merge_codex_hooks(once.clone(), "/s");
+        // Re-merging strips the prior kamaji entry before re-adding: still one each.
+        for event in ["UserPromptSubmit", "PreToolUse", "Stop", "PermissionRequest"] {
+            assert_eq!(hooks_of(&twice, event).len(), 1, "event {event}");
+        }
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn merge_preserves_unrelated_top_level_keys() {
+        let existing = serde_json::json!({ "other": 42, "hooks": {} });
+        let merged = merge_codex_hooks(existing, "/s");
+        assert_eq!(merged["other"], 42);
     }
 }
