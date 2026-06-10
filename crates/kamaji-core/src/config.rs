@@ -59,14 +59,6 @@ fn default_web_theme() -> String {
     "auto".to_string()
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ScrapePatterns {
-    #[serde(default)]
-    pub codex: Vec<String>,
-    #[serde(default)]
-    pub copilot: Vec<String>,
-}
-
 /// Daemon (`kamajid`) settings. Entirely optional and defaulted, so configs
 /// written before the daemon existed still load unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,8 +104,6 @@ pub struct AutoReview {
     /// [`Config::copilot_idle_after_unchanged`].
     #[serde(default = "default_copilot_idle_secs")]
     pub copilot_idle_secs: u64,
-    #[serde(default)]
-    pub patterns: ScrapePatterns,
 }
 
 impl Default for AutoReview {
@@ -122,7 +112,6 @@ impl Default for AutoReview {
             enabled: true,
             poll_interval_secs: 5,
             copilot_idle_secs: default_copilot_idle_secs(),
-            patterns: ScrapePatterns::default(),
         }
     }
 }
@@ -224,16 +213,6 @@ impl Config {
         let mut argv = vec![bin.clone()];
         argv.extend(flags.iter().map(|s| s.to_string()));
         Some(argv)
-    }
-
-    /// Scrape idle-substrings for `agent`. Claude uses launch-injected hooks
-    /// instead of scraping, so it has none.
-    pub fn auto_review_patterns(&self, agent: Agent) -> &[String] {
-        match agent {
-            Agent::Codex => &self.auto_review.patterns.codex,
-            Agent::Copilot => &self.auto_review.patterns.copilot,
-            Agent::Claude => &[],
-        }
     }
 
     /// Detection cadence; clamped to at least 1s so it can never busy-loop.
@@ -457,18 +436,7 @@ mod tests {
         let c = Config::default();
         assert!(c.auto_review.enabled);
         assert_eq!(c.auto_review.poll_interval_secs, 5);
-        assert!(c.auto_review.patterns.codex.is_empty());
-        assert!(c.auto_review.patterns.copilot.is_empty());
         assert_eq!(c.poll_interval(), std::time::Duration::from_secs(5));
-    }
-
-    #[test]
-    fn patterns_lookup_by_agent() {
-        let mut c = Config::default();
-        c.auto_review.patterns.codex = vec!["▌".into()];
-        assert_eq!(c.auto_review_patterns(Agent::Codex), &["▌".to_string()]);
-        assert!(c.auto_review_patterns(Agent::Claude).is_empty());
-        assert!(c.auto_review_patterns(Agent::Copilot).is_empty());
     }
 
     #[test]
@@ -742,8 +710,8 @@ mod tests {
 
     #[test]
     fn config_with_legacy_patterns_table_still_loads() {
-        // Old configs carrying [auto_review.patterns] must still load (serde
-        // ignores it once the field is gone; for now it just deserializes).
+        // Old configs carrying [auto_review.patterns] must still load: serde
+        // silently ignores the now-unknown field.
         let text = "default_agent = \"claude\"\nbase_branch = \"auto\"\n\
              [agents.claude]\nwith_prompt = [\"claude\", \"{prompt}\"]\nno_prompt = [\"claude\"]\n\
              [agents.codex]\nwith_prompt = [\"codex\", \"{prompt}\"]\nno_prompt = [\"codex\"]\n\
