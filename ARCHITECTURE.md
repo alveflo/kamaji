@@ -259,17 +259,29 @@ clients so the ticket can be moved to review. The mechanism for detecting
 Both agents are instrumented via their own lifecycle hooks, so the daemon
 never needs to parse terminal screen output.
 
-- **Claude:** The agent session is started with `--settings <path>` pointing
-  at a generated settings file (in `$TMPDIR`) that registers
-  `postToolUse`/`preToolUse` hooks. These hooks touch
-  (`$KAMAJI_IDLE_MARKER`) when the agent is between tool calls (idle) and
-  remove it when a tool call begins (active). The poll loop stat-polls the
-  marker file: present → idle, absent → active.
+Each session has a per-session idle-marker file at
+`<state_dir>/<session-name>.idle`. The agent's hooks create it when the agent
+goes idle and remove it when it resumes; the poll loop stat-polls it: present
+→ idle, absent → active.
 
-- **Codex:** `~/.codex/hooks.json` is instrumented with `exec` hooks for the
-  `agent-turn-start` and `agent-turn-end` events. They write/remove the same
-  per-session marker file. Codex sessions thus have identical idle semantics
-  to Claude sessions — no screen scraping involved.
+- **Claude:** The session is started with a generated `--settings <json>`
+  flag registering hooks. `Stop` and `Notification` `touch` the marker (idle);
+  `UserPromptSubmit` and `PreToolUse` `rm -f` it (active). The marker's
+  absolute path is baked directly into each hook command, so the settings are
+  fully session-scoped and nothing is persisted to the user's `~/.claude`.
+
+- **Codex:** Codex has no per-invocation settings flag, so kamaji idempotently
+  merges kamaji-managed entries into the user's *global* `~/.codex/hooks.json`
+  (preserving any hooks the user already has, marked with a `_kamajiManaged`
+  sentinel so re-installs replace only kamaji's entries). The same mapping
+  applies — `UserPromptSubmit`/`PreToolUse` clear the marker, `Stop`/
+  `PermissionRequest` create it. Because that file is shared by every Codex
+  session, the hook command derives the per-session marker path at run time
+  from `$ZELLIJ_SESSION_NAME` (which the hook subprocess inherits from its
+  pane) plus the baked state dir, guarded by a `kamaji-*` session-name prefix
+  so the global hook stays inert for the user's own (non-kamaji) Codex runs.
+  Codex sessions thus get identical idle semantics to Claude — no screen
+  scraping. (Requires a Codex new enough to support `~/.codex/hooks.json`.)
 
 ### Copilot — screen-change timeout
 
@@ -284,8 +296,9 @@ The relevant `config.toml` keys under `[auto_review]`:
 
 ```toml
 [auto_review]
-# Seconds of unchanged screen output before a Copilot session is declared idle.
-copilot_idle_secs = 30
+# Seconds of unchanged screen output before a Copilot session is declared
+# idle. Quantized to whole poll periods (poll_interval_secs). Default: 8.
+copilot_idle_secs = 8
 ```
 
 There are no `patterns` or `scrape_level` keys — those were removed when the
