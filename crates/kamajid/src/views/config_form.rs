@@ -3,10 +3,9 @@
 //! id="modal">` mount. Submit builds a full `Config` JSON from the form's named
 //! controls and PUTs it to `/config` via an explicit `fetch()` (a Datastar
 //! `@post`/`@put`'s 2nd argument is request *options*, not a body). Argv command
-//! templates are edited as space-separated single-line inputs; auto-review
-//! patterns (which may contain spaces) as newline-separated textareas. Bindings
-//! use the RC.6 colon form (`data-on:click`); the hyphen form is inert. Built
-//! from the shared modal chrome classes — no new CSS beyond section headings.
+//! templates are edited as space-separated single-line inputs. Bindings use the
+//! RC.6 colon form (`data-on:click`); the hyphen form is inert. Built from the
+//! shared modal chrome classes — no new CSS beyond section headings.
 
 use kamaji_core::config::Config;
 use kamaji_core::models::Agent;
@@ -37,7 +36,6 @@ pub fn config_form(cfg: &Config) -> Markup {
     let submit_action = format!(
         "evt.preventDefault();const f=evt.target,els=f.elements;\
 const sp=n=>els[n].value.split(/\\s+/).filter(Boolean);\
-const nl=n=>els[n].value.split('\\n').map(s=>s.trim()).filter(Boolean);\
 const body={{\
 default_agent:els['default_agent'].value,\
 theme:els['theme'].value,\
@@ -49,7 +47,7 @@ claude:{{with_prompt:sp('claude.with_prompt'),no_prompt:sp('claude.no_prompt'),r
 codex:{{with_prompt:sp('codex.with_prompt'),no_prompt:sp('codex.no_prompt'),resume:sp('codex.resume')}},\
 copilot:{{with_prompt:sp('copilot.with_prompt'),no_prompt:sp('copilot.no_prompt'),resume:sp('copilot.resume')}}\
 }},\
-auto_review:{{enabled:els['ar_enabled'].checked,poll_interval_secs:parseInt(els['poll_interval_secs'].value,10)||1,patterns:{{codex:nl('patterns.codex'),copilot:nl('patterns.copilot')}}}},\
+auto_review:{{enabled:els['ar_enabled'].checked,poll_interval_secs:parseInt(els['poll_interval_secs'].value,10)||1,copilot_idle_secs:parseInt(els['copilot_idle_secs'].value,10)||1}},\
 daemon:{{bind:els['bind'].value,log_format:els['log_format'].value,log_level:els['log_level'].value,web_theme:els['web_theme'].value}}\
 }};\
 fetch('/config',{{method:'PUT',headers:{{'content-type':'application/json'}},body:JSON.stringify(body)}}).then(r=>{{if(r.ok){{{CLEAR_MODAL_JS}}}else{{r.json().then(j=>{{document.getElementById('cfg-error').textContent=(j&&j.error)?j.error:'Save failed'}}).catch(()=>{{document.getElementById('cfg-error').textContent='Save failed'}})}}}})"
@@ -136,13 +134,9 @@ fetch('/config',{{method:'PUT',headers:{{'content-type':'application/json'}},bod
                                   value=(cfg.auto_review.poll_interval_secs);
                         }
                         div class="field" {
-                            label { "Codex idle patterns" }
-                            textarea name="patterns.codex" rows="2" { (cfg.auto_review.patterns.codex.join("\n")) }
-                            div class="hint" { "One substring per line; a match means idle." }
-                        }
-                        div class="field" {
-                            label { "Copilot idle patterns" }
-                            textarea name="patterns.copilot" rows="2" { (cfg.auto_review.patterns.copilot.join("\n")) }
+                            label { "Copilot idle timeout (seconds)" }
+                            input type="number" name="copilot_idle_secs" min="1"
+                                  value=(cfg.auto_review.copilot_idle_secs);
                         }
 
                         h3 class="config-section" { "Daemon" }
@@ -279,30 +273,35 @@ mod tests {
     }
 
     #[test]
-    fn auto_review_patterns_render_newline_joined() {
-        let c = Config {
-            auto_review: kamaji_core::config::AutoReview {
-                patterns: kamaji_core::config::ScrapePatterns {
-                    codex: vec!["foo".into(), "bar".into()],
-                    copilot: vec![],
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let html = config_form(&c).into_string();
-        assert!(
-            html.contains("foo\nbar"),
-            "codex patterns newline-joined:\n{html}"
-        );
-    }
-
-    #[test]
     fn daemon_restart_fields_are_labeled() {
         let html = config_form(&Config::default()).into_string();
         assert!(
             html.contains("applies after daemon restart"),
             "bind labeled:\n{html}"
+        );
+    }
+
+    #[test]
+    fn auto_review_section_includes_copilot_idle_secs() {
+        use kamaji_core::config::AutoReview;
+        let c = Config {
+            auto_review: AutoReview {
+                copilot_idle_secs: 42,
+                poll_interval_secs: 5,
+                ..AutoReview::default()
+            },
+            ..Default::default()
+        };
+        let html = config_form(&c).into_string();
+        // Input field is present and pre-filled with the current value.
+        assert!(
+            html.contains(r#"name="copilot_idle_secs""#) && html.contains(r#"value="42""#),
+            "copilot_idle_secs input pre-filled:\n{html}"
+        );
+        // Submit JS reads and includes the field.
+        assert!(
+            html.contains("copilot_idle_secs:parseInt(els['copilot_idle_secs'].value,10)"),
+            "submit JS includes copilot_idle_secs:\n{html}"
         );
     }
 
