@@ -322,7 +322,10 @@ pub fn install_codex_hooks_at(path: &Path, state_dir: &str) -> Result<()> {
                 )
             })?;
             if !v.is_object() {
-                bail!("{} is not a JSON object, refusing to overwrite", path.display());
+                bail!(
+                    "{} is not a JSON object, refusing to overwrite",
+                    path.display()
+                );
             }
             v
         }

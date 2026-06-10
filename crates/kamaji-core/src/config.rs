@@ -243,13 +243,9 @@ impl Config {
 
     /// Consecutive unchanged polls before the Copilot screen-change detector
     /// declares idle: `ceil(copilot_idle_secs / poll_interval_secs)`, at least 1.
-    /// Computed without `div_ceil` to avoid a toolchain floor.
-    // div_ceil was stabilised in Rust 1.73; the manual form is intentional here
-    // to avoid a toolchain floor constraint.
-    #[allow(clippy::manual_div_ceil)]
     pub fn copilot_idle_after_unchanged(&self) -> u32 {
         let interval = self.auto_review.poll_interval_secs.max(1);
-        let polls = (self.auto_review.copilot_idle_secs + interval - 1) / interval;
+        let polls = self.auto_review.copilot_idle_secs.div_ceil(interval);
         polls.max(1).min(u32::MAX as u64) as u32
     }
 
