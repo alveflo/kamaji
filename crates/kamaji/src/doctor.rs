@@ -46,7 +46,10 @@ fn render_checks(out: &mut String, checks: &[Check]) {
     }
 }
 
-/// Count of non-Ok checks across local + daemon-local sections.
+/// Count of problems shown in the report: non-Ok env checks (local + daemon)
+/// plus a down reverse proxy (rendered `[fail]`). A non-reachable zellij-web
+/// port is intentionally excluded — it is rendered `[warn]` and is expected
+/// until the first browser attach.
 fn problem_count(report: &DoctorReport) -> usize {
     let local = report
         .local
@@ -54,7 +57,7 @@ fn problem_count(report: &DoctorReport) -> usize {
         .iter()
         .filter(|c| c.verdict != Verdict::Ok)
         .count();
-    let daemon = report
+    let daemon_checks = report
         .daemon
         .as_ref()
         .map(|d| {
@@ -65,7 +68,12 @@ fn problem_count(report: &DoctorReport) -> usize {
                 .count()
         })
         .unwrap_or(0);
-    local + daemon
+    let proxy_down = report
+        .daemon
+        .as_ref()
+        .map(|d| usize::from(!d.proxy_reachable))
+        .unwrap_or(0);
+    local + daemon_checks + proxy_down
 }
 
 /// Find a check by name in a slice.
@@ -315,5 +323,19 @@ mod tests {
         let text = render(&report);
         assert!(!text.contains("MISMATCH"), "{text}");
         assert!(text.contains("no problems found"), "{text}");
+    }
+
+    #[test]
+    fn down_reverse_proxy_counts_as_a_problem() {
+        let report = DoctorReport {
+            tui_version: "0.5.0".into(),
+            local: local(true),
+            daemon: Some(daemon_report(true, false)), // all env ok, proxy DOWN
+            daemon_error: None,
+            recent_logs: vec![],
+        };
+        let text = render(&report);
+        assert!(text.contains("reverse proxy — not listening"), "{text}");
+        assert!(text.contains("1 problem(s) found"), "{text}");
     }
 }

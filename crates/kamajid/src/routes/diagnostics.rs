@@ -18,7 +18,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 pub async fn diagnostics(State(state): State<AppState>) -> Json<DaemonReport> {
     let config = state.config_async().await;
-    let board_bind = config.daemon.bind.clone();
+    // Prefer the actual bound address; fall back to the configured bind when it
+    // hasn't been recorded (e.g. in unit tests that never bind a socket).
+    let board_bind = state
+        .bound_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| config.daemon.bind.clone());
     let proxy_base = state.proxy_base().to_string();
 
     // Project/ticket counts (best-effort; 0 on any DB error).

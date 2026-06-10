@@ -188,6 +188,7 @@ async fn main() -> Result<()> {
     let local = listener
         .local_addr()
         .with_context(|| "reading bound address")?;
+    state.set_bound_addr(local);
     let (pidfile, addrfile) = runtime_paths()?;
     // Startup clients treat the addrfile as the point where health can be
     // probed, so replace the non-PID lock placeholder before publishing it.

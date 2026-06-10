@@ -1,8 +1,9 @@
 //! Shared daemon state: the SQLite handle (accessed on the blocking pool since
 //! rusqlite is sync), the loaded config, and the event broadcast channel.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use kamaji_core::config::Config;
@@ -37,6 +38,9 @@ pub struct AppState {
     /// When this daemon process constructed its state — used for uptime in
     /// `GET /diagnostics`.
     started: Arc<Instant>,
+    /// The daemon's actual bound board address, set once after binding. Reported
+    /// by `GET /diagnostics`. Empty until set (e.g. in tests).
+    bound_addr: Arc<OnceLock<SocketAddr>>,
 }
 
 impl AppState {
@@ -57,6 +61,7 @@ impl AppState {
             proxy_base: Arc::new(DEFAULT_PROXY_BASE.to_string()),
             sessions: Arc::new(RealSessionDriver),
             started: Arc::new(Instant::now()),
+            bound_addr: Arc::new(OnceLock::new()),
         }
     }
 
@@ -149,6 +154,16 @@ impl AppState {
     /// Seconds since this daemon's state was constructed (process uptime).
     pub fn uptime_secs(&self) -> u64 {
         self.started.elapsed().as_secs()
+    }
+
+    /// Record the daemon's actual bound board address (call once, after bind).
+    pub fn set_bound_addr(&self, addr: SocketAddr) {
+        let _ = self.bound_addr.set(addr);
+    }
+
+    /// The actual bound board address, if it has been recorded yet.
+    pub fn bound_addr(&self) -> Option<SocketAddr> {
+        self.bound_addr.get().copied()
     }
 
     /// Broadcast an event to all SSE subscribers. Returns immediately; a send
