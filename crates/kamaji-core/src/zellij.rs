@@ -95,15 +95,16 @@ pub fn create_session(name: &str, layout_path: &Path) -> Result<ExitStatus> {
 pub fn create_session_background(name: &str, layout_path: &Path, cwd: &Path) -> Result<()> {
     // Clear any pre-existing session by this name before creating it. zellij
     // refuses `attach --create-background` with "Session already exists" when a
-    // session of that name is present — including a serialized/EXITED stub left
-    // over from a prior run (common on macOS, where session_serialization keeps
-    // resurrectable sessions around after a stop or reboot). Callers reach this
-    // only when kamaji has no live session recorded for the name, so any zellij
-    // session still holding it is stale and safe to reclaim; doing so makes the
-    // create idempotent instead of surfacing a 500 "internal error" to the user.
-    if list_sessions().is_some_and(|l| session_in_list(&l, name)) {
-        terminate_session(name);
-    }
+    // session of that name is present — including a *serialized/resurrectable*
+    // stub that `list-sessions` does not print (common on macOS, where
+    // session_serialization keeps such sessions on disk after a stop or reboot).
+    // Because the stub can be invisible to `list-sessions`, clear unconditionally
+    // rather than gating on it: `delete-session --force` (run by
+    // `terminate_session`) is a harmless no-op when nothing matches. Callers reach
+    // this only when kamaji has no live session recorded for the name, so any
+    // session still holding it is stale and safe to reclaim — making the create
+    // idempotent instead of surfacing a 500 "internal error" to the user.
+    terminate_session(name);
     let mut cmd = command();
     cmd.current_dir(cwd);
     with_web_sharing(&mut cmd);
@@ -120,8 +121,8 @@ pub fn create_session_background(name: &str, layout_path: &Path, cwd: &Path) -> 
     let out = out?;
     if !out.status.success() {
         anyhow::bail!(
-            "zellij --layout … attach --create-background failed: {}",
-            String::from_utf8_lossy(&out.stderr)
+            "zellij attach --create-background {name:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
         );
     }
     // A 0 exit code is not proof the session exists. `command()` scrubs the
