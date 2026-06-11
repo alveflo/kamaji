@@ -107,6 +107,24 @@ async fn serves_embedded_datastar_and_css() {
 }
 
 #[tokio::test]
+async fn board_with_no_projects_renders_empty_state_not_404() {
+    // A fresh database (e.g. the `kamaji up` sandbox) has no projects. The board
+    // must render a usable empty state with a way to create one — not a raw 404.
+    let (base, _state) = spawn().await;
+    let resp = reqwest::get(format!("{base}/")).await.unwrap();
+    assert_eq!(resp.status(), 200, "empty board must be 200, not 404");
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("No projects yet"),
+        "empty-state copy:\n{body}"
+    );
+    assert!(
+        body.contains(r#"@get('/ui/projects/new')"#),
+        "a way to create the first project:\n{body}"
+    );
+}
+
+#[tokio::test]
 async fn board_page_renders_columns_and_seeded_card() {
     let (base, state) = spawn().await;
     state

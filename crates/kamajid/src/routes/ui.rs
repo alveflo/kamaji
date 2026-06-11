@@ -30,22 +30,33 @@ pub async fn board(
     Query(q): Query<BoardQuery>,
 ) -> Result<Markup, ApiError> {
     let want = q.project;
-    let (projects, project, by_status) = state
+    let (projects, selected) = state
         .with_db(move |db| {
             let projects = db.list_projects()?;
-            let Some(project) = (match want {
+            let project = match want {
                 Some(id) => projects.iter().find(|p| p.id == id).cloned(),
                 None => projects.first().cloned(),
-            }) else {
-                return Ok(None);
             };
-            let tickets = db.list_tickets(project.id)?;
-            let by_status = group_by_status(tickets);
-            Ok(Some((projects, project, by_status)))
+            let selected = match project {
+                Some(p) => {
+                    let by_status = group_by_status(db.list_tickets(p.id)?);
+                    Some((p, by_status))
+                }
+                None => None,
+            };
+            Ok((projects, selected))
         })
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    Ok(views::page::page(&project, &projects, &by_status))
+        .await?;
+    match selected {
+        Some((project, by_status)) => Ok(views::page::page(&project, &projects, &by_status)),
+        // No projects at all → a usable empty state instead of a raw 404, so the
+        // browser can bootstrap the first project (notably in the `kamaji up`
+        // sandbox's fresh database).
+        None if projects.is_empty() => Ok(views::page::empty_page()),
+        // A specific `?project=<id>` was requested but doesn't exist while other
+        // projects do — a stale link; keep that a 404.
+        None => Err(ApiError::NotFound),
+    }
 }
 
 /// Partition a project's tickets into `Status::all()` order — the shape both
