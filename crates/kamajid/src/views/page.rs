@@ -35,39 +35,7 @@ pub fn page(
     html! {
         (DOCTYPE)
         html lang="en" data-theme="light" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                // Apply the persisted theme before first paint to avoid a flash.
-                script {
-                    (PreEscaped("(function(){try{var t=localStorage.getItem('kamaji.theme')||'light';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();"))
-                }
-                title { "kamaji — " (project.name) }
-                link rel="manifest" href="/manifest.webmanifest";
-                meta name="theme-color" content="#7C5BC9";
-                link rel="icon" href="/assets/favicon.svg";
-                link rel="apple-touch-icon" href="/assets/apple-touch-icon.png";
-                meta name="apple-mobile-web-app-capable" content="yes";
-                meta name="apple-mobile-web-app-status-bar-style" content="black-translucent";
-                meta name="apple-mobile-web-app-title" content="kamaji";
-                link rel="stylesheet" href="/assets/tokens.css";
-                link rel="stylesheet" href="/assets/layout.css";
-                link rel="stylesheet" href="/assets/sidebar.css";
-                link rel="stylesheet" href="/assets/modal.css";
-                link rel="stylesheet" href="/assets/sessions.css";
-                link rel="stylesheet" href="/assets/board.css";
-                link rel="stylesheet" href="/assets/search.css";
-                link rel="stylesheet" href="/assets/terminal.css";
-                script type="module" src="/assets/datastar.js" {}
-                script defer src="/assets/board-dnd.js" {}
-                script type="module" src="/assets/search.js" {}
-                script type="module" src="/assets/keybindings.js" {}
-                script defer src="/assets/term-resize.js" {}
-                script defer src="/assets/theme.js" {}
-                script {
-                    (PreEscaped("if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); }); }"))
-                }
-            }
+            (document_head(&format!("kamaji — {}", project.name)))
             body class="rail-open" data-init=(PreEscaped(format!("@get('/ui/events?project={}')", project.id))) {
                 (super::sidebar::rail(projects, project.id, attention))
                 div class="main" {
@@ -115,6 +83,80 @@ pub fn page(
                         }
                     }
                     (board(by_status))
+                    div id="modal" {}
+                }
+            }
+        }
+    }
+}
+
+/// The shared `<head>`: design-system stylesheets, the vendored Datastar module,
+/// board/search/keybinding scripts, PWA wiring, and the pre-paint theme apply.
+/// `title` is the document title. Shared by [`page`] and [`empty_page`] so both
+/// load the same assets.
+fn document_head(title: &str) -> Markup {
+    html! {
+        head {
+            meta charset="utf-8";
+            meta name="viewport" content="width=device-width, initial-scale=1";
+            // Apply the persisted theme before first paint to avoid a flash.
+            script {
+                (PreEscaped("(function(){try{var t=localStorage.getItem('kamaji.theme')||'light';document.documentElement.setAttribute('data-theme',t);}catch(e){}})();"))
+            }
+            title { (title) }
+            link rel="manifest" href="/manifest.webmanifest";
+            meta name="theme-color" content="#7C5BC9";
+            link rel="icon" href="/assets/favicon.svg";
+            link rel="apple-touch-icon" href="/assets/apple-touch-icon.png";
+            meta name="apple-mobile-web-app-capable" content="yes";
+            meta name="apple-mobile-web-app-status-bar-style" content="black-translucent";
+            meta name="apple-mobile-web-app-title" content="kamaji";
+            link rel="stylesheet" href="/assets/tokens.css";
+            link rel="stylesheet" href="/assets/layout.css";
+            link rel="stylesheet" href="/assets/sidebar.css";
+            link rel="stylesheet" href="/assets/modal.css";
+            link rel="stylesheet" href="/assets/sessions.css";
+            link rel="stylesheet" href="/assets/board.css";
+            link rel="stylesheet" href="/assets/search.css";
+            link rel="stylesheet" href="/assets/terminal.css";
+            script type="module" src="/assets/datastar.js" {}
+            script defer src="/assets/board-dnd.js" {}
+            script type="module" src="/assets/search.js" {}
+            script type="module" src="/assets/keybindings.js" {}
+            script defer src="/assets/term-resize.js" {}
+            script defer src="/assets/theme.js" {}
+            script {
+                (PreEscaped("if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); }); }"))
+            }
+        }
+    }
+}
+
+/// The board page when there are **no projects yet** (e.g. a fresh install, or
+/// the `kamaji up` sandbox's empty database). The full board needs a project, so
+/// rather than 404 — which left the browser showing a raw JSON error and no way
+/// to bootstrap — this renders the document shell + the rail (whose "Add project"
+/// action still works) and a centered empty state that opens the new-project
+/// modal. Creating a project navigates to `/?project=<id>`, which renders the
+/// normal [`page`]. No SSE `data-init`: there is no project to stream yet.
+pub fn empty_page() -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" data-theme="light" {
+            (document_head("kamaji"))
+            body class="rail-open" {
+                (super::sidebar::rail(&[], 0, 0))
+                div class="main" {
+                    div class="empty-board" {
+                        h1 class="empty-board-title" { "No projects yet" }
+                        p class="empty-board-sub" {
+                            "Create your first project to start a board. A project points at a "
+                            "git repository on disk."
+                        }
+                        button class="btn btn-primary" data-on:click="@get('/ui/projects/new')" {
+                            "+ New project"
+                        }
+                    }
                     div id="modal" {}
                 }
             }
@@ -178,6 +220,29 @@ mod tests {
         assert!(
             !html.contains(r#"href="/assets/app.css""#),
             "old monolithic app.css must be gone:\n{html}"
+        );
+    }
+
+    #[test]
+    fn empty_page_offers_project_creation_and_no_sse() {
+        let html = empty_page().into_string();
+        // Loads the same assets as the normal board (shared head).
+        assert!(
+            html.contains(r#"href="/assets/layout.css""#),
+            "css:\n{html}"
+        );
+        // The rail's "Add project" action is present so the user can bootstrap.
+        assert!(
+            html.contains(r#"data-on:click="@get('/ui/projects/new')""#),
+            "add-project action:\n{html}"
+        );
+        // A clear empty-state with its own create button + the modal mount.
+        assert!(html.contains("No projects yet"), "empty copy:\n{html}");
+        assert!(html.contains(r#"id="modal""#), "modal mount:\n{html}");
+        // No SSE wiring — there is no project to stream yet.
+        assert!(
+            !html.contains("/ui/events"),
+            "must not open an SSE stream with no project:\n{html}"
         );
     }
 
