@@ -87,7 +87,7 @@ pub async fn poll_round(state: &AppState, poll: PollLoop, state_dir: &Path) -> P
             // The DB is the source of truth: a manual move via POST /tickets/:id/move
             // clears `auto_reviewed`, but that route can't reach this task's in-memory
             // PollLoop — so we rehydrate here, otherwise a human-placed card would be
-            // dragged back when its agent resumes. (last_level/scrape_hash are NOT
+            // dragged back when its agent resumes. (last_level/screen_state are NOT
             // touched by rehydrate, so detection history persists across rounds.)
             poll.rehydrate(&tickets);
             match poll.tick(&tickets, &db, &task_state.config_snapshot(), &state_dir) {

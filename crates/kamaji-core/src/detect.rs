@@ -1,5 +1,7 @@
 use crate::models::Status;
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -68,14 +70,24 @@ pub fn marker_level(path: &Path) -> SignalLevel {
     }
 }
 
-/// Scrape detector. `Idle` only when the buffer matches a configured idle
-/// substring AND is unchanged since the previous poll (stability guard).
-/// `None` screen (dump failed) => Unknown. Empty patterns => never Idle.
-/// `last_hash` is updated in place so the next poll can detect change.
-pub fn scrape_level(
+/// Per-session state for the Copilot screen-change detector, held across polls.
+#[derive(Default)]
+pub struct ScreenChangeState {
+    last_hash: Option<u64>,
+    unchanged_count: u32,
+}
+
+/// Screen-change detector (Copilot). kamaji's daemon can't see keystrokes or
+/// raw PTY output — only `zellij dump-screen` each poll — so "is it working?"
+/// is inferred from whether the screen moves: a working TUI redraws (spinner,
+/// streaming output), a finished or input-blocked one is static. A byte-for-byte
+/// identical screen for `idle_after_unchanged` consecutive polls => `Idle`; any
+/// change => `Active`. A failed dump (`None`) => `Unknown` (never moves a ticket)
+/// and leaves state untouched, so a transient blank screen can't force idle.
+pub fn screen_change_level(
     screen: Option<&str>,
-    idle_substrings: &[String],
-    last_hash: &mut Option<u64>,
+    state: &mut ScreenChangeState,
+    idle_after_unchanged: u32,
 ) -> SignalLevel {
     let Some(screen) = screen else {
         return SignalLevel::Unknown;
@@ -83,12 +95,13 @@ pub fn scrape_level(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     screen.hash(&mut hasher);
     let hash = hasher.finish();
-    let stable = *last_hash == Some(hash);
-    *last_hash = Some(hash);
-
-    let matches =
-        !idle_substrings.is_empty() && idle_substrings.iter().any(|p| screen.contains(p.as_str()));
-    if matches && stable {
+    if state.last_hash == Some(hash) {
+        state.unchanged_count = state.unchanged_count.saturating_add(1);
+    } else {
+        state.last_hash = Some(hash);
+        state.unchanged_count = 0;
+    }
+    if state.unchanged_count >= idle_after_unchanged.max(1) {
         SignalLevel::Idle
     } else {
         SignalLevel::Active
@@ -140,6 +153,167 @@ pub fn inject_claude_settings(argv: Vec<String>, marker_path: &str) -> Vec<Strin
     out.push(json);
     out.extend_from_slice(&argv[1..]);
     out
+}
+
+/// Marker key stamped on kamaji-managed Codex hook entries so re-installs
+/// replace only our entries and never touch the user's own hooks.
+const CODEX_MARKER_KEY: &str = "_kamajiManaged";
+
+/// Codex hook events signalling the agent is active (clear the idle marker).
+const CODEX_ACTIVE_EVENTS: [&str; 2] = ["UserPromptSubmit", "PreToolUse"];
+/// Codex hook events signalling the agent is idle (create the idle marker).
+const CODEX_IDLE_EVENTS: [&str; 2] = ["Stop", "PermissionRequest"];
+/// The one tool-scoped Codex event; it needs a `.*` matcher to fire for every tool.
+const CODEX_TOOL_EVENT: &str = "PreToolUse";
+
+/// Shell command a Codex hook runs to set/clear the idle marker. `op` is
+/// `"touch"` (idle) or `"rm -f"` (active). The marker path is derived at run
+/// time from `$ZELLIJ_SESSION_NAME` — which Codex's hook subprocess inherits
+/// from its pane — so one global hooks file serves every kamaji Codex session.
+/// The `kamaji-*` guard keeps the global hook inert for the user's own
+/// (non-kamaji) Codex sessions and for any non-zellij run (no session name).
+/// `state_dir` is assumed free of single quotes (it is an XDG path; the Claude
+/// path makes the same assumption for its marker).
+fn codex_hook_command(state_dir: &str, op: &str) -> String {
+    format!(
+        "sh -c 'case \"$ZELLIJ_SESSION_NAME\" in kamaji-*) {op} \"{state_dir}/$ZELLIJ_SESSION_NAME.idle\";; esac'"
+    )
+}
+
+/// One kamaji-managed Codex hook entry: `{matcher?, hooks:[{type,command,marker}]}`.
+fn codex_managed_entry(command: &str, matcher: Option<&str>) -> Value {
+    let mut obj = serde_json::Map::new();
+    if let Some(m) = matcher {
+        obj.insert("matcher".to_string(), json!(m));
+    }
+    obj.insert(
+        "hooks".to_string(),
+        json!([ { "type": "command", "command": command, CODEX_MARKER_KEY: true } ]),
+    );
+    Value::Object(obj)
+}
+
+/// kamaji's managed entries keyed by event: active events (`UserPromptSubmit`,
+/// `PreToolUse`) clear the marker; idle events (`Stop`, `PermissionRequest`)
+/// create it. Tool-scoped `PreToolUse` carries a `.*` matcher (fire for every
+/// tool); lifecycle events take none.
+fn codex_managed_entries(state_dir: &str) -> Vec<(&'static str, Value)> {
+    let active = codex_hook_command(state_dir, "rm -f");
+    let idle = codex_hook_command(state_dir, "touch");
+    let mut out = Vec::new();
+    for event in CODEX_ACTIVE_EVENTS {
+        let matcher = if event == CODEX_TOOL_EVENT {
+            Some(".*")
+        } else {
+            None
+        };
+        out.push((event, codex_managed_entry(&active, matcher)));
+    }
+    for event in CODEX_IDLE_EVENTS {
+        out.push((event, codex_managed_entry(&idle, None)));
+    }
+    out
+}
+
+/// Is this inner-hook object kamaji-managed (carries the marker key == true)?
+fn codex_hook_is_managed(hook: &Value) -> bool {
+    hook.get(CODEX_MARKER_KEY).and_then(|v| v.as_bool()) == Some(true)
+}
+
+/// Strip kamaji-managed inner hooks from one entry. Returns the entry with the
+/// remaining user hooks, or `None` if nothing user-defined is left (so an
+/// entry that was kamaji-only disappears instead of lingering empty).
+fn strip_managed_entry(entry: Value) -> Option<Value> {
+    let mut obj = entry.as_object()?.clone();
+    let inner = obj.get("hooks")?.as_array()?.clone();
+    let kept: Vec<Value> = inner
+        .into_iter()
+        .filter(|h| !codex_hook_is_managed(h))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    obj.insert("hooks".to_string(), Value::Array(kept));
+    Some(Value::Object(obj))
+}
+
+/// Merge kamaji's managed hook entries into an existing parsed hooks file,
+/// preserving user-defined hooks and unrelated keys. Idempotent: any prior
+/// kamaji-managed entry is stripped before the current one is appended.
+fn merge_codex_hooks(existing: Value, state_dir: &str) -> Value {
+    let mut root = match existing {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let mut hooks = match root.remove("hooks") {
+        Some(Value::Object(m)) => m,
+        _ => serde_json::Map::new(),
+    };
+    for (event, managed) in codex_managed_entries(state_dir) {
+        let prior = match hooks.remove(event) {
+            Some(Value::Array(a)) => a,
+            _ => Vec::new(),
+        };
+        let mut entries: Vec<Value> = prior.into_iter().filter_map(strip_managed_entry).collect();
+        entries.push(managed);
+        hooks.insert(event.to_string(), Value::Array(entries));
+    }
+    root.insert("hooks".to_string(), Value::Object(hooks));
+    Value::Object(root)
+}
+
+/// Path to the user's global Codex hooks file (`~/.codex/hooks.json`).
+/// `KAMAJI_CODEX_HOOKS_PATH` overrides it (used by tests to avoid touching the
+/// real home dir). `None` if no home directory can be determined.
+pub fn codex_hooks_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("KAMAJI_CODEX_HOOKS_PATH") {
+        return Some(PathBuf::from(p));
+    }
+    directories::BaseDirs::new().map(|b| b.home_dir().join(".codex").join("hooks.json"))
+}
+
+/// Idempotently merge kamaji's managed hook entries into the user's global
+/// `~/.codex/hooks.json`. Resolves the path via [`codex_hooks_path`].
+pub fn install_codex_hooks(state_dir: &Path) -> Result<()> {
+    let path = codex_hooks_path()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine ~/.codex/hooks.json path"))?;
+    install_codex_hooks_at(&path, &state_dir.to_string_lossy())
+}
+
+/// [`install_codex_hooks`] against an explicit path. Reads the existing file
+/// (missing or whitespace-only => empty object), **aborts without writing** if
+/// it is present but not a JSON object (never destroy a file kamaji can't
+/// parse), merges, and writes back only when the content actually changed.
+pub fn install_codex_hooks_at(path: &Path, state_dir: &str) -> Result<()> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(raw) if raw.trim().is_empty() => Value::Object(serde_json::Map::new()),
+        Ok(raw) => {
+            let v: Value = serde_json::from_str(&raw).map_err(|e| {
+                anyhow::anyhow!(
+                    "{} is not valid JSON, refusing to overwrite: {e}",
+                    path.display()
+                )
+            })?;
+            if !v.is_object() {
+                bail!(
+                    "{} is not a JSON object, refusing to overwrite",
+                    path.display()
+                );
+            }
+            v
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(serde_json::Map::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let merged = merge_codex_hooks(existing, state_dir);
+    let body = serde_json::to_string_pretty(&merged)? + "\n";
+    if std::fs::read_to_string(path).ok().as_deref() != Some(body.as_str()) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, body)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -257,69 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn scrape_idle_requires_match_and_stability() {
-        let pats = vec!["waiting for input".to_string()];
-        let mut h: Option<u64> = None;
-        let screen = "...\nwaiting for input\n";
-        // First sight of a matching screen: not yet stable => Active.
-        assert_eq!(
-            scrape_level(Some(screen), &pats, &mut h),
-            SignalLevel::Active
-        );
-        // Unchanged + still matching => Idle.
-        assert_eq!(scrape_level(Some(screen), &pats, &mut h), SignalLevel::Idle);
-    }
-
-    #[test]
-    fn scrape_changed_screen_is_active() {
-        let pats = vec!["waiting".to_string()];
-        let mut h: Option<u64> = None;
-        assert_eq!(
-            scrape_level(Some("waiting a"), &pats, &mut h),
-            SignalLevel::Active
-        );
-        assert_eq!(
-            scrape_level(Some("waiting b"), &pats, &mut h),
-            SignalLevel::Active
-        );
-    }
-
-    #[test]
-    fn scrape_no_match_is_active() {
-        let pats = vec!["waiting".to_string()];
-        let mut h: Option<u64> = None;
-        assert_eq!(
-            scrape_level(Some("nvim"), &pats, &mut h),
-            SignalLevel::Active
-        );
-        assert_eq!(
-            scrape_level(Some("nvim"), &pats, &mut h),
-            SignalLevel::Active
-        );
-    }
-
-    #[test]
-    fn scrape_empty_patterns_never_idle() {
-        let pats: Vec<String> = vec![];
-        let mut h: Option<u64> = None;
-        assert_eq!(
-            scrape_level(Some("anything"), &pats, &mut h),
-            SignalLevel::Active
-        );
-        assert_eq!(
-            scrape_level(Some("anything"), &pats, &mut h),
-            SignalLevel::Active
-        );
-    }
-
-    #[test]
-    fn scrape_failed_dump_is_unknown() {
-        let pats = vec!["x".to_string()];
-        let mut h: Option<u64> = None;
-        assert_eq!(scrape_level(None, &pats, &mut h), SignalLevel::Unknown);
-    }
-
-    #[test]
     fn settings_json_wires_all_four_hooks() {
         let j = claude_settings_json("/s/kamaji-1-x.idle");
         assert!(j.contains("\"Stop\""));
@@ -351,5 +462,246 @@ mod tests {
         let out = inject_claude_settings(argv, "/s/m.idle");
         assert_eq!(out.len(), 3);
         assert_eq!(out[1], "--settings");
+    }
+
+    #[test]
+    fn screen_change_changed_screen_is_active() {
+        let mut st = ScreenChangeState::default();
+        assert_eq!(
+            screen_change_level(Some("a"), &mut st, 2),
+            SignalLevel::Active
+        );
+        // Different content => activity, counter resets.
+        assert_eq!(
+            screen_change_level(Some("b"), &mut st, 2),
+            SignalLevel::Active
+        );
+    }
+
+    #[test]
+    fn screen_change_unchanged_below_threshold_is_active() {
+        let mut st = ScreenChangeState::default();
+        // threshold 2: first sight (count 0) and one repeat (count 1) stay Active.
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Active
+        );
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Active
+        );
+    }
+
+    #[test]
+    fn screen_change_unchanged_at_threshold_is_idle() {
+        let mut st = ScreenChangeState::default();
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Active
+        ); // count 0
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Active
+        ); // count 1
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 2),
+            SignalLevel::Idle
+        ); // count 2
+    }
+
+    #[test]
+    fn screen_change_threshold_of_one_idles_on_first_repeat() {
+        let mut st = ScreenChangeState::default();
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 1),
+            SignalLevel::Active
+        ); // count 0
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 1),
+            SignalLevel::Idle
+        ); // count 1
+    }
+
+    #[test]
+    fn screen_change_failed_dump_is_unknown() {
+        let mut st = ScreenChangeState::default();
+        assert_eq!(screen_change_level(None, &mut st, 2), SignalLevel::Unknown);
+    }
+
+    #[test]
+    fn screen_change_reactivates_after_idle_when_screen_moves() {
+        let mut st = ScreenChangeState::default();
+        screen_change_level(Some("x"), &mut st, 1); // Active, count 0
+        assert_eq!(
+            screen_change_level(Some("x"), &mut st, 1),
+            SignalLevel::Idle
+        ); // count 1
+           // New content => back to Active.
+        assert_eq!(
+            screen_change_level(Some("y"), &mut st, 1),
+            SignalLevel::Active
+        );
+    }
+
+    fn hooks_of<'a>(v: &'a serde_json::Value, event: &str) -> &'a Vec<serde_json::Value> {
+        v["hooks"][event].as_array().unwrap()
+    }
+
+    #[test]
+    fn merge_fresh_wires_all_four_events() {
+        let merged = merge_codex_hooks(serde_json::json!({}), "/s/state");
+        for event in [
+            "UserPromptSubmit",
+            "PreToolUse",
+            "Stop",
+            "PermissionRequest",
+        ] {
+            assert_eq!(hooks_of(&merged, event).len(), 1, "event {event}");
+        }
+        // Active events run `rm -f`; idle events `touch`.
+        let cmd = |e: &str| {
+            hooks_of(&merged, e)[0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(cmd("UserPromptSubmit").contains("rm -f"));
+        assert!(cmd("PreToolUse").contains("rm -f"));
+        assert!(cmd("Stop").contains("touch"));
+        assert!(cmd("PermissionRequest").contains("touch"));
+    }
+
+    #[test]
+    fn merge_command_derives_marker_from_session_with_guard() {
+        let merged = merge_codex_hooks(serde_json::json!({}), "/s/state");
+        let cmd = hooks_of(&merged, "Stop")[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(cmd.contains("case \"$ZELLIJ_SESSION_NAME\" in kamaji-*"));
+        assert!(cmd.contains("/s/state/$ZELLIJ_SESSION_NAME.idle"));
+    }
+
+    #[test]
+    fn merge_pretooluse_has_wildcard_matcher() {
+        let merged = merge_codex_hooks(serde_json::json!({}), "/s");
+        assert_eq!(hooks_of(&merged, "PreToolUse")[0]["matcher"], ".*");
+        // Lifecycle events take no matcher.
+        assert!(hooks_of(&merged, "Stop")[0].get("matcher").is_none());
+    }
+
+    #[test]
+    fn merge_marks_entries_kamaji_managed() {
+        let merged = merge_codex_hooks(serde_json::json!({}), "/s");
+        assert_eq!(
+            hooks_of(&merged, "Stop")[0]["hooks"][0]["_kamajiManaged"],
+            true
+        );
+    }
+
+    #[test]
+    fn merge_preserves_user_hooks() {
+        let existing = serde_json::json!({
+            "hooks": {
+                "Stop": [ { "hooks": [ { "type": "command", "command": "echo user" } ] } ]
+            }
+        });
+        let merged = merge_codex_hooks(existing, "/s");
+        let stop = hooks_of(&merged, "Stop");
+        // User entry preserved, kamaji entry appended.
+        assert_eq!(stop.len(), 2);
+        assert_eq!(stop[0]["hooks"][0]["command"], "echo user");
+        assert_eq!(stop[1]["hooks"][0]["_kamajiManaged"], true);
+    }
+
+    #[test]
+    fn merge_is_idempotent() {
+        let once = merge_codex_hooks(serde_json::json!({}), "/s");
+        let twice = merge_codex_hooks(once.clone(), "/s");
+        // Re-merging strips the prior kamaji entry before re-adding: still one each.
+        for event in [
+            "UserPromptSubmit",
+            "PreToolUse",
+            "Stop",
+            "PermissionRequest",
+        ] {
+            assert_eq!(hooks_of(&twice, event).len(), 1, "event {event}");
+        }
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn merge_preserves_unrelated_top_level_keys() {
+        let existing = serde_json::json!({ "other": 42, "hooks": {} });
+        let merged = merge_codex_hooks(existing, "/s");
+        assert_eq!(merged["other"], 42);
+    }
+
+    #[test]
+    fn install_creates_fresh_hooks_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("hooks.json");
+        install_codex_hooks_at(&path, "/s/state").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["hooks"]["Stop"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn install_is_idempotent_no_duplicate_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        install_codex_hooks_at(&path, "/s").unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        install_codex_hooks_at(&path, "/s").unwrap();
+        let second = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(first, second, "second install must not change the file");
+        let v: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(v["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn install_preserves_existing_user_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+        )
+        .unwrap();
+        install_codex_hooks_at(&path, "/s").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let stop = v["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2);
+        assert_eq!(stop[0]["hooks"][0]["command"], "echo hi");
+    }
+
+    #[test]
+    fn install_empty_file_is_treated_as_empty_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        std::fs::write(&path, "   \n").unwrap();
+        install_codex_hooks_at(&path, "/s").unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(v["hooks"]["Stop"].is_array());
+    }
+
+    #[test]
+    fn install_aborts_on_invalid_json_without_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        std::fs::write(&path, "not json {").unwrap();
+        assert!(install_codex_hooks_at(&path, "/s").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not json {");
+    }
+
+    #[test]
+    fn install_aborts_on_non_object_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        std::fs::write(&path, "[1,2,3]").unwrap();
+        assert!(install_codex_hooks_at(&path, "/s").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[1,2,3]");
     }
 }

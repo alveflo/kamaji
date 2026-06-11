@@ -34,6 +34,9 @@ fn default_true() -> bool {
 fn default_poll_interval() -> u64 {
     5
 }
+fn default_copilot_idle_secs() -> u64 {
+    8
+}
 
 fn default_zellij_bar() -> String {
     "auto".to_string()
@@ -54,14 +57,6 @@ fn default_log_level() -> String {
 }
 fn default_web_theme() -> String {
     "auto".to_string()
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ScrapePatterns {
-    #[serde(default)]
-    pub codex: Vec<String>,
-    #[serde(default)]
-    pub copilot: Vec<String>,
 }
 
 /// Daemon (`kamajid`) settings. Entirely optional and defaulted, so configs
@@ -104,8 +99,11 @@ pub struct AutoReview {
     pub enabled: bool,
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
-    #[serde(default)]
-    pub patterns: ScrapePatterns,
+    /// Seconds a Copilot session's screen may stay byte-for-byte unchanged
+    /// before it is considered idle. Quantized to whole polls by
+    /// [`Config::copilot_idle_after_unchanged`].
+    #[serde(default = "default_copilot_idle_secs")]
+    pub copilot_idle_secs: u64,
 }
 
 impl Default for AutoReview {
@@ -113,7 +111,7 @@ impl Default for AutoReview {
         AutoReview {
             enabled: true,
             poll_interval_secs: 5,
-            patterns: ScrapePatterns::default(),
+            copilot_idle_secs: default_copilot_idle_secs(),
         }
     }
 }
@@ -227,19 +225,17 @@ impl Config {
         Some(argv)
     }
 
-    /// Scrape idle-substrings for `agent`. Claude uses launch-injected hooks
-    /// instead of scraping, so it has none.
-    pub fn auto_review_patterns(&self, agent: Agent) -> &[String] {
-        match agent {
-            Agent::Codex => &self.auto_review.patterns.codex,
-            Agent::Copilot => &self.auto_review.patterns.copilot,
-            Agent::Claude => &[],
-        }
-    }
-
     /// Detection cadence; clamped to at least 1s so it can never busy-loop.
     pub fn poll_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.auto_review.poll_interval_secs.max(1))
+    }
+
+    /// Consecutive unchanged polls before the Copilot screen-change detector
+    /// declares idle: `ceil(copilot_idle_secs / poll_interval_secs)`, at least 1.
+    pub fn copilot_idle_after_unchanged(&self) -> u32 {
+        let interval = self.auto_review.poll_interval_secs.max(1);
+        let polls = self.auto_review.copilot_idle_secs.div_ceil(interval);
+        polls.max(1).min(u32::MAX as u64) as u32
     }
 
     /// Validate a config before it is persisted by the web editor's full
@@ -484,18 +480,7 @@ mod tests {
         let c = Config::default();
         assert!(c.auto_review.enabled);
         assert_eq!(c.auto_review.poll_interval_secs, 5);
-        assert!(c.auto_review.patterns.codex.is_empty());
-        assert!(c.auto_review.patterns.copilot.is_empty());
         assert_eq!(c.poll_interval(), std::time::Duration::from_secs(5));
-    }
-
-    #[test]
-    fn patterns_lookup_by_agent() {
-        let mut c = Config::default();
-        c.auto_review.patterns.codex = vec!["▌".into()];
-        assert_eq!(c.auto_review_patterns(Agent::Codex), &["▌".to_string()]);
-        assert!(c.auto_review_patterns(Agent::Claude).is_empty());
-        assert!(c.auto_review_patterns(Agent::Copilot).is_empty());
     }
 
     #[test]
@@ -733,5 +718,49 @@ mod tests {
         c.auto_review.poll_interval_secs = 0;
         let err = c.validate().unwrap_err();
         assert!(err.contains("poll_interval"), "{err}");
+    }
+
+    #[test]
+    fn copilot_idle_secs_defaults_to_eight() {
+        let c = Config::default();
+        assert_eq!(c.auto_review.copilot_idle_secs, 8);
+    }
+
+    #[test]
+    fn copilot_idle_after_unchanged_is_polls_to_cover_the_window() {
+        let mut c = Config::default();
+        c.auto_review.poll_interval_secs = 5;
+        c.auto_review.copilot_idle_secs = 8; // ceil(8/5) = 2
+        assert_eq!(c.copilot_idle_after_unchanged(), 2);
+        c.auto_review.copilot_idle_secs = 5; // ceil(5/5) = 1
+        assert_eq!(c.copilot_idle_after_unchanged(), 1);
+        c.auto_review.copilot_idle_secs = 3; // ceil(3/5) = 1 (floor of 1)
+        assert_eq!(c.copilot_idle_after_unchanged(), 1);
+        c.auto_review.copilot_idle_secs = 11; // ceil(11/5) = 3
+        assert_eq!(c.copilot_idle_after_unchanged(), 3);
+    }
+
+    #[test]
+    fn config_missing_copilot_idle_secs_defaults() {
+        // A config predating the key still loads, defaulting to 8.
+        let text = "default_agent = \"claude\"\nbase_branch = \"auto\"\n\
+             [agents.claude]\nwith_prompt = [\"claude\", \"{prompt}\"]\nno_prompt = [\"claude\"]\n\
+             [agents.codex]\nwith_prompt = [\"codex\", \"{prompt}\"]\nno_prompt = [\"codex\"]\n\
+             [agents.copilot]\nwith_prompt = [\"copilot\", \"{prompt}\"]\nno_prompt = [\"copilot\"]\n\
+             [auto_review]\nenabled = true\npoll_interval_secs = 5\n";
+        let loaded: Config = toml::from_str(text).unwrap();
+        assert_eq!(loaded.auto_review.copilot_idle_secs, 8);
+    }
+
+    #[test]
+    fn config_with_legacy_patterns_table_still_loads() {
+        // Old configs carrying [auto_review.patterns] must still load: serde
+        // silently ignores the now-unknown field.
+        let text = "default_agent = \"claude\"\nbase_branch = \"auto\"\n\
+             [agents.claude]\nwith_prompt = [\"claude\", \"{prompt}\"]\nno_prompt = [\"claude\"]\n\
+             [agents.codex]\nwith_prompt = [\"codex\", \"{prompt}\"]\nno_prompt = [\"codex\"]\n\
+             [agents.copilot]\nwith_prompt = [\"copilot\", \"{prompt}\"]\nno_prompt = [\"copilot\"]\n\
+             [auto_review.patterns]\ncodex = [\"x\"]\ncopilot = [\"y\"]\n";
+        assert!(toml::from_str::<Config>(text).is_ok());
     }
 }

@@ -246,6 +246,66 @@ own.)
 
 ---
 
+## Auto-review (idle-session) detection
+
+When a ticket's agent session becomes idle, kamajid's background poll loop
+(`kamajid/src/poll_task.rs`, calling into `kamaji-core/src/poll.rs`) fires a
+`session.idle` event, which the board delivers as a `SessionIdle` event to all
+clients so the ticket can be moved to review. The mechanism for detecting
+"idle" differs by agent type:
+
+### Claude and Codex — hook-instrumented
+
+Both agents are instrumented via their own lifecycle hooks, so the daemon
+never needs to parse terminal screen output.
+
+Each session has a per-session idle-marker file at
+`<state_dir>/<session-name>.idle`. The agent's hooks create it when the agent
+goes idle and remove it when it resumes; the poll loop stat-polls it: present
+→ idle, absent → active.
+
+- **Claude:** The session is started with a generated `--settings <json>`
+  flag registering hooks. `Stop` and `Notification` `touch` the marker (idle);
+  `UserPromptSubmit` and `PreToolUse` `rm -f` it (active). The marker's
+  absolute path is baked directly into each hook command, so the settings are
+  fully session-scoped and nothing is persisted to the user's `~/.claude`.
+
+- **Codex:** Codex has no per-invocation settings flag, so kamaji idempotently
+  merges kamaji-managed entries into the user's *global* `~/.codex/hooks.json`
+  (preserving any hooks the user already has, marked with a `_kamajiManaged`
+  sentinel so re-installs replace only kamaji's entries). The same mapping
+  applies — `UserPromptSubmit`/`PreToolUse` clear the marker, `Stop`/
+  `PermissionRequest` create it. Because that file is shared by every Codex
+  session, the hook command derives the per-session marker path at run time
+  from `$ZELLIJ_SESSION_NAME` (which the hook subprocess inherits from its
+  pane) plus the baked state dir, guarded by a `kamaji-*` session-name prefix
+  so the global hook stays inert for the user's own (non-kamaji) Codex runs.
+  Codex sessions thus get identical idle semantics to Claude — no screen
+  scraping. (Requires a Codex new enough to support `~/.codex/hooks.json`.)
+
+### Copilot — screen-change timeout
+
+GitHub Copilot exposes no lifecycle-hook API. The poll loop hashes the output
+of `zellij dump-screen` at each poll interval and compares it to the previous
+hash. When the screen has been unchanged for `auto_review.copilot_idle_secs`
+(configurable, quantized to whole poll periods), the session is declared idle.
+
+### Config
+
+The relevant `config.toml` keys under `[auto_review]`:
+
+```toml
+[auto_review]
+# Seconds of unchanged screen output before a Copilot session is declared
+# idle. Quantized to whole poll periods (poll_interval_secs). Default: 8.
+copilot_idle_secs = 8
+```
+
+There are no `patterns` or `scrape_level` keys — those were removed when the
+hook-based path became the default for Claude and Codex.
+
+---
+
 ## zellij web + the reverse proxy
 
 The browser's terminal is `zellij`'s own web client; kamaji's job is to *manage*

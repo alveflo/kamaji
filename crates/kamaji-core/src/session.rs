@@ -87,12 +87,24 @@ fn prepare_with_argv(
     // worktree so the session still comes up — the user can launch the agent (or
     // install it) themselves. No instrumentation without an agent to instrument.
     let (kdl, instrumented) = if crate::diagnostics::program_on_path(&argv[0]) {
-        let instrumented = config.auto_review.enabled && ticket.agent == Agent::Claude;
+        let instrumented =
+            config.auto_review.enabled && matches!(ticket.agent, Agent::Claude | Agent::Codex);
         let argv = if instrumented {
             let marker = detect::marker_path(state_dir, &name);
             let _ = std::fs::create_dir_all(state_dir);
-            let _ = std::fs::remove_file(&marker);
-            detect::inject_claude_settings(argv, &marker.to_string_lossy())
+            let _ = std::fs::remove_file(&marker); // start "active": no marker
+            match ticket.agent {
+                // Claude takes per-invocation hooks via --settings.
+                Agent::Claude => detect::inject_claude_settings(argv, &marker.to_string_lossy()),
+                // Codex has no per-invocation hook flag; install its global
+                // hooks.json (idempotent). The hook derives the same marker path
+                // from $ZELLIJ_SESSION_NAME, so argv is unchanged.
+                Agent::Codex => {
+                    detect::install_codex_hooks(state_dir)?;
+                    argv
+                }
+                _ => argv,
+            }
         } else {
             argv
         };
@@ -596,6 +608,56 @@ mod tests {
 
     /// cleanup_ticket removes the worktree + branch and clears the ticket's
     /// session columns. Uses a real temp git repo (git is available in tests).
+    #[test]
+    fn prepare_session_instruments_codex_and_installs_hooks() {
+        // Real git repo so `worktree add` has a base.
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        let run = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "t@t.t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(root.join("README.md"), "hi").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
+
+        let hooks_dir = tempfile::tempdir().unwrap();
+        let hooks_path = hooks_dir.path().join("hooks.json");
+        std::env::set_var("KAMAJI_CODEX_HOOKS_PATH", &hooks_path);
+
+        let wt = tempfile::tempdir().unwrap();
+        let config = Config {
+            worktree_base: Some(wt.path().join("wt").to_string_lossy().to_string()),
+            ..Config::default()
+        };
+
+        let db = Db::open_in_memory().unwrap();
+        let project = db.create_project("p", root, None).unwrap();
+        let ticket = db
+            .create_ticket(project.id, "codex task", "", None, Agent::Codex)
+            .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let prepared = prepare_session(&project, &config, state_dir.path(), &ticket).unwrap();
+
+        assert!(prepared.instrumented, "codex sessions must be instrumented");
+        assert!(hooks_path.exists(), "codex hooks file should be installed");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+        assert!(v["hooks"]["Stop"].is_array());
+
+        std::env::remove_var("KAMAJI_CODEX_HOOKS_PATH");
+    }
+
     #[test]
     fn cleanup_ticket_removes_worktree_and_clears_session() {
         // A committed git repo so `worktree add` has a base.
