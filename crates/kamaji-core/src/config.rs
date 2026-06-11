@@ -128,6 +128,15 @@ pub struct Config {
     /// token, if present, is expanded to the project root at use time.
     #[serde(default)]
     pub worktree_base: Option<String>,
+    /// Path to the user's zellij `config.kdl`. When unset (`None`), kamaji
+    /// resolves it from the environment (`ZELLIJ_CONFIG_FILE` →
+    /// `ZELLIJ_CONFIG_DIR` → `XDG_CONFIG_HOME` → `~/.config/zellij/config.kdl`).
+    /// Set this when that resolution misses the real file — notably on macOS,
+    /// where zellij may read a config kamaji's default lookup doesn't find — so
+    /// the derived web-sharing config and bar auto-detection use the right file.
+    /// A leading `~` is expanded to the home directory.
+    #[serde(default)]
+    pub zellij_config_path: Option<String>,
     pub base_branch: String,
     /// Bar style for spawned zellij sessions: `auto` (match the user's zellij
     /// `default_layout`), `compact`, `default`, or `none`. Defaults to `auto`,
@@ -156,6 +165,7 @@ impl Default for Config {
         Config {
             default_agent: "claude".to_string(),
             worktree_base: None,
+            zellij_config_path: None,
             base_branch: "auto".to_string(),
             zellij_bar: default_zellij_bar(),
             theme: default_theme(),
@@ -350,6 +360,40 @@ mod tests {
         // The worktree location makes no assumptions: a fresh config leaves it
         // unset so the user must choose where worktrees live.
         assert_eq!(Config::default().worktree_base, None);
+    }
+
+    #[test]
+    fn zellij_config_path_defaults_to_none_and_roundtrips() {
+        assert_eq!(Config::default().zellij_config_path, None);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let c = Config {
+            zellij_config_path: Some("/home/u/.config/zellij/config.kdl".to_string()),
+            ..Config::default()
+        };
+        save_to(&path, &c).unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(
+            loaded.zellij_config_path.as_deref(),
+            Some("/home/u/.config/zellij/config.kdl")
+        );
+    }
+
+    #[test]
+    fn missing_zellij_config_path_loads_as_none() {
+        // A config.toml predating the key must still load, leaving it unset.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "default_agent = \"claude\"\nbase_branch = \"auto\"\n\
+             [agents.claude]\nwith_prompt = [\"claude\", \"{prompt}\"]\nno_prompt = [\"claude\"]\n\
+             [agents.codex]\nwith_prompt = [\"codex\", \"{prompt}\"]\nno_prompt = [\"codex\"]\n\
+             [agents.copilot]\nwith_prompt = [\"copilot\", \"{prompt}\"]\nno_prompt = [\"copilot\"]\n",
+        )
+        .unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(loaded.zellij_config_path, None);
     }
 
     #[test]

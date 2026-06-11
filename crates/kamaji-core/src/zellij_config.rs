@@ -51,9 +51,25 @@ pub fn parse_default_layout(kdl: &str) -> Option<String> {
     None
 }
 
-/// Resolve the user's zellij `config.kdl` path (env overrides → XDG → ~/.config).
-/// Public so diagnostics can report whether it is readable.
+/// Resolve the user's zellij `config.kdl` path from the environment alone
+/// (env overrides → XDG → ~/.config). Public so diagnostics can report whether
+/// it is readable. Most callers should prefer [`config_file_path_with`], which
+/// honors a user-set override first.
 pub fn config_file_path() -> Option<PathBuf> {
+    config_file_path_with(None)
+}
+
+/// Resolve the user's zellij `config.kdl` path, preferring an explicit
+/// `override_path` (from `Config::zellij_config_path`) over the environment
+/// lookup. A blank override is ignored; a leading `~` is expanded to `$HOME`.
+/// Falls back to env overrides → XDG → `~/.config/zellij/config.kdl`.
+pub fn config_file_path_with(override_path: Option<&str>) -> Option<PathBuf> {
+    if let Some(raw) = override_path {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            return Some(expand_tilde(trimmed));
+        }
+    }
     if let Some(file) = std::env::var_os("ZELLIJ_CONFIG_FILE") {
         return Some(PathBuf::from(file));
     }
@@ -72,12 +88,27 @@ pub fn config_file_path() -> Option<PathBuf> {
     )
 }
 
+/// Expand a leading `~` / `~/…` in `path` to `$HOME`. A path without a leading
+/// tilde (or when `$HOME` is unset) is returned unchanged.
+fn expand_tilde(path: &str) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
 /// The user's zellij `default_layout`, or `None` if it can't be determined
 /// (no/unreadable config file, or no uncommented `default_layout` node). Any
 /// failure is treated as "unset", which [`resolve_bar_style`] maps to the
-/// default bars.
-pub fn detect_default_layout() -> Option<String> {
-    let text = std::fs::read_to_string(config_file_path()?).ok()?;
+/// default bars. `override_path` is the configured `zellij_config_path`, if any.
+pub fn detect_default_layout(override_path: Option<&str>) -> Option<String> {
+    let text = std::fs::read_to_string(config_file_path_with(override_path)?).ok()?;
     parse_default_layout(&text)
 }
 
@@ -213,17 +244,24 @@ fn derive_web_config(base: &str, web_theme: &str) -> String {
 }
 
 fn build_web_sharing_config_file() -> Option<PathBuf> {
+    // Read kamaji's own config once: it carries both the zellij-config override
+    // path and the browser theme policy. Any read failure leaves both unset.
+    let kamaji_cfg = config::config_path()
+        .and_then(|p| config::load_from(&p))
+        .ok();
+    let override_path = kamaji_cfg
+        .as_ref()
+        .and_then(|c| c.zellij_config_path.clone());
     // Missing/unreadable user config → start from empty, so the derived config is
     // just `web_sharing "on"` (zellij fills the rest with its defaults).
-    let base = config_file_path()
+    let base = config_file_path_with(override_path.as_deref())
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
-    // Read the browser theme policy from kamaji's own config; any read failure
-    // falls back to "auto" (respect the user's zellij theme).
-    let web_theme = config::config_path()
-        .and_then(|p| config::load_from(&p))
+    // Browser theme policy; any read failure falls back to "auto" (respect the
+    // user's zellij theme).
+    let web_theme = kamaji_cfg
         .map(|c| c.daemon.web_theme)
-        .unwrap_or_else(|_| "auto".to_string());
+        .unwrap_or_else(|| "auto".to_string());
     let derived = derive_web_config(&base, &web_theme);
     let dir = std::env::temp_dir().join("kamaji-zellij");
     std::fs::create_dir_all(&dir).ok()?;
@@ -444,6 +482,41 @@ mod tests {
             vec!["theme \"catppuccin-mocha\""],
             "exactly one active theme, the forced one"
         );
+    }
+
+    #[test]
+    fn config_file_path_with_override_wins_over_env() {
+        // An explicit override is used verbatim, regardless of any env config.
+        assert_eq!(
+            config_file_path_with(Some("/etc/zellij/config.kdl")),
+            Some(PathBuf::from("/etc/zellij/config.kdl"))
+        );
+    }
+
+    #[test]
+    fn config_file_path_with_blank_override_falls_through() {
+        // A blank/whitespace override is ignored — it must not resolve to an
+        // empty path; it falls through to the env/XDG/HOME lookup instead.
+        let got = config_file_path_with(Some("   "));
+        assert_ne!(got, Some(PathBuf::new()));
+    }
+
+    #[test]
+    fn expand_tilde_expands_leading_home_only() {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        if let Some(home) = home {
+            assert_eq!(expand_tilde("~"), home);
+            assert_eq!(
+                expand_tilde("~/zellij/config.kdl"),
+                home.join("zellij/config.kdl")
+            );
+        }
+        // A non-tilde path is returned unchanged; a `~` mid-string is not expanded.
+        assert_eq!(
+            expand_tilde("/abs/config.kdl"),
+            PathBuf::from("/abs/config.kdl")
+        );
+        assert_eq!(expand_tilde("rel/~/x"), PathBuf::from("rel/~/x"));
     }
 
     #[test]

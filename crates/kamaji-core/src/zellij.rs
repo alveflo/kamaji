@@ -93,6 +93,17 @@ pub fn create_session(name: &str, layout_path: &Path) -> Result<ExitStatus> {
 /// Runs from `cwd` and uses `output()` so zellij's stdout/stderr are captured
 /// rather than painted onto the live TUI (same rationale as `dump_screen`).
 pub fn create_session_background(name: &str, layout_path: &Path, cwd: &Path) -> Result<()> {
+    // Clear any pre-existing session by this name before creating it. zellij
+    // refuses `attach --create-background` with "Session already exists" when a
+    // session of that name is present — including a serialized/EXITED stub left
+    // over from a prior run (common on macOS, where session_serialization keeps
+    // resurrectable sessions around after a stop or reboot). Callers reach this
+    // only when kamaji has no live session recorded for the name, so any zellij
+    // session still holding it is stale and safe to reclaim; doing so makes the
+    // create idempotent instead of surfacing a 500 "internal error" to the user.
+    if list_sessions().is_some_and(|l| session_in_list(&l, name)) {
+        terminate_session(name);
+    }
     let mut cmd = command();
     cmd.current_dir(cwd);
     with_web_sharing(&mut cmd);

@@ -42,6 +42,7 @@ const body={{\
 default_agent:els['default_agent'].value,\
 theme:els['theme'].value,\
 worktree_base:els['worktree_base'].value||null,\
+zellij_config_path:els['zellij_config_path'].value||null,\
 base_branch:els['base_branch'].value,\
 zellij_bar:els['zellij_bar'].value,\
 agents:{{\
@@ -109,6 +110,12 @@ fetch('/config',{{method:'PUT',headers:{{'content-type':'application/json'}},bod
                                     option value=(b) selected[b == cfg.zellij_bar] { (b) }
                                 }
                             }
+                        }
+                        div class="field" {
+                            label { "Zellij config path" }
+                            input name="zellij_config_path" class="mono"
+                                  value=(cfg.zellij_config_path.clone().unwrap_or_default());
+                            div class="hint" { "Path to your zellij config.kdl. Leave blank to auto-detect. Set this if kamaji can't find it (e.g. on macOS). Applies after daemon restart." }
                         }
 
                         h3 class="config-section" { "Agents" }
@@ -262,6 +269,28 @@ mod tests {
         assert!(
             html.contains(r#"name="worktree_base""#) && html.contains(r#"value="/wt""#),
             "worktree_base:\n{html}"
+        );
+    }
+
+    #[test]
+    fn zellij_config_path_field_prefills_and_is_submitted() {
+        let c = Config {
+            zellij_config_path: Some("/home/u/.config/zellij/config.kdl".into()),
+            ..Default::default()
+        };
+        let html = config_form(&c).into_string();
+        // The input renders and is pre-filled (carries class="mono", so name and
+        // value are not adjacent — assert each independently).
+        assert!(
+            html.contains(r#"name="zellij_config_path""#)
+                && html.contains(r#"value="/home/u/.config/zellij/config.kdl""#),
+            "zellij_config_path prefilled:\n{html}"
+        );
+        // It must be part of the submit body, otherwise saving any setting would
+        // silently wipe a previously-configured path back to null.
+        assert!(
+            html.contains("zellij_config_path:els['zellij_config_path'].value||null"),
+            "zellij_config_path included in PUT body:\n{html}"
         );
     }
 
