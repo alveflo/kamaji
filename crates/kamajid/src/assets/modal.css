@@ -44,6 +44,19 @@ dialog.modal {
 }
 @keyframes modal-pop { from { opacity: 0; transform: translateY(12px) scale(.97); } }
 
+/* Most modals (settings / ticket / project) wrap their head/body/foot in a
+   <form>, so the form — not the body — is the dialog's flex child. It must
+   therefore be a bounded flex column too, or the body can't shrink and the
+   dialog just clips its overflow (hiding the footer). Confirm dialogs have no
+   form, so their head/body/foot are direct children and this rule is inert. */
+dialog.modal > form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ----------------------------------------------------------------------------
    Head / body / foot
    -------------------------------------------------------------------------- */

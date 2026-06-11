@@ -210,6 +210,15 @@ fn is_hop(name: &HeaderName) -> bool {
     )
 }
 
+/// Response headers that would stop the board from embedding the proxied page in
+/// its iframe. zellij web (≥0.44) sends `X-Frame-Options: deny`; a future version
+/// could instead block via a CSP `frame-ancestors` directive. The board and the
+/// proxy are both localhost and the embed is intentional, so strip these on the
+/// way back rather than letting the browser refuse the frame.
+fn blocks_framing(name: &HeaderName) -> bool {
+    matches!(name.as_str(), "x-frame-options" | "content-security-policy")
+}
+
 /// Replacement for zellij web's served `connection.js`.
 ///
 /// Why: a session created with `zellij … attach --create-background` (how kamaji
@@ -545,9 +554,10 @@ async fn http_proxy(
 
     let mut builder = Response::builder().status(status);
     for (k, v) in headers.iter() {
-        // Drop framing headers (axum re-derives them) and upstream Set-Cookie —
-        // the proxy owns auth, so the browser never needs the cookie.
-        if is_hop(k) || k == header::SET_COOKIE {
+        // Drop message-framing headers (axum re-derives them), iframe-blocking
+        // headers (so the board can embed this), and upstream Set-Cookie — the
+        // proxy owns auth, so the browser never needs the cookie.
+        if is_hop(k) || blocks_framing(k) || k == header::SET_COOKIE {
             continue;
         }
         builder = builder.header(k, v);
@@ -701,6 +711,19 @@ mod tests {
     use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
     use tokio_tungstenite::tungstenite::protocol::CloseFrame;
     use tokio_tungstenite::tungstenite::Message as TgMsg;
+
+    #[test]
+    fn frame_blocking_headers_are_stripped_but_others_kept() {
+        // zellij web (≥0.44) sends `X-Frame-Options: deny`, which would make the
+        // browser refuse to embed the proxied terminal in the board's iframe.
+        assert!(blocks_framing(&HeaderName::from_static("x-frame-options")));
+        assert!(blocks_framing(&HeaderName::from_static(
+            "content-security-policy"
+        )));
+        // Ordinary headers must still be forwarded.
+        assert!(!blocks_framing(&header::CONTENT_TYPE));
+        assert!(!blocks_framing(&header::CACHE_CONTROL));
+    }
 
     #[test]
     fn upstream_ws_scheme_is_derived_from_http() {
