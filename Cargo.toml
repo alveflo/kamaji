@@ -9,6 +9,6 @@ members = [
 # Shared package metadata. Each crate inherits these with `version.workspace =
 # true` / `edition.workspace = true` so the whole workspace versions in lockstep.
 [workspace.package]
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 license = "MIT"
