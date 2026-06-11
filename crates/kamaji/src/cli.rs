@@ -18,6 +18,7 @@ Usage:
   kamaji down
   kamaji logs
   kamaji status
+  kamaji stop
   kamaji doctor [--json] [--daemon <addr>]
   kamaji ticket create --prompt <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
   kamaji ticket create <prompt> [--title <title>] [--description <text>] [--agent <agent>] [--project <id-or-name>] [--background]
@@ -28,6 +29,7 @@ Agents: claude, codex, copilot
   down              stop the sandbox container (back to native)
   logs              follow the container's logs
   status            show the active mode (native vs container) + board URL
+  stop              stop the background daemon (a later run restarts it)
   doctor            print a diagnostics report (zellij/paths/daemon/logs)
 
   --background, -b  also start the ticket's agent in a detached zellij session
@@ -43,6 +45,8 @@ pub enum Command {
     Down,
     Logs,
     Status,
+    /// Stop the background daemon so a later `kamaji` run spawns a fresh one.
+    Stop,
     Doctor(DoctorOpts),
 }
 
@@ -146,6 +150,7 @@ where
         [cmd, rest @ ..] if cmd == "down" => parse_bare(rest, Command::Down, "down"),
         [cmd, rest @ ..] if cmd == "logs" => parse_bare(rest, Command::Logs, "logs"),
         [cmd, rest @ ..] if cmd == "status" => parse_bare(rest, Command::Status, "status"),
+        [cmd, rest @ ..] if cmd == "stop" => parse_bare(rest, Command::Stop, "stop"),
         [cmd, rest @ ..] if cmd == "doctor" => parse_doctor(rest),
         [other, ..] => bail!("unknown command: {other}\n\n{USAGE}"),
         [] => Ok(Command::Tui(DaemonOpts::default())),
@@ -886,6 +891,13 @@ mod tests {
         assert_eq!(parse(["down"]).unwrap(), Command::Down);
         assert_eq!(parse(["logs"]).unwrap(), Command::Logs);
         assert_eq!(parse(["status"]).unwrap(), Command::Status);
+        assert_eq!(parse(["stop"]).unwrap(), Command::Stop);
+    }
+
+    #[test]
+    fn stop_rejects_trailing_args_and_honors_help() {
+        assert!(parse(["stop", "x"]).is_err());
+        assert_eq!(parse(["stop", "--help"]).unwrap(), Command::Help);
     }
 
     #[test]
