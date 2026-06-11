@@ -52,6 +52,7 @@ dialog.modal {
   align-items: center;
   gap: 10px;
   padding: 18px 20px 12px;
+  flex-shrink: 0;
 }
 .modal-title { margin: 0; font-size: 19px; font-weight: 800; color: var(--ink); }
 .modal-idpill {
@@ -86,6 +87,12 @@ dialog.modal {
 
 .modal-body {
   padding: 4px 20px 6px;
+  /* The dialog is a flex column capped at the viewport height with
+     overflow:hidden. For the body to actually scroll (rather than overflow and
+     get clipped, pushing the footer off-screen) it must be the flexible region
+     AND be allowed to shrink below its content — hence min-height:0. */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -98,6 +105,7 @@ dialog.modal {
   gap: 10px;
   padding: 15px 20px 18px;
   justify-content: flex-end;
+  flex-shrink: 0;
 }
 .foot-spacer { flex: 1; }
 
