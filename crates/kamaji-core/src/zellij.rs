@@ -3,7 +3,7 @@
 //! run a generated layout.
 
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -17,12 +17,60 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// layout's tab into the ambient session and exits 0 *without* creating the
 /// named background session. Stripping the vars makes every invocation behave as
 /// a standalone client regardless of where the daemon happens to run.
+///
+/// On macOS it also pins `ZELLIJ_SOCKET_DIR` to a short directory (see
+/// [`socket_dir`]): the default sits under the long per-user `$TMPDIR`
+/// (`/var/folders/…/T/`), and that base plus the session name routinely exceeds
+/// the OS's 104-byte Unix-socket path limit — zellij then fails session creation
+/// with "the IPC socket path is too long" (surfaced to the user as the generic
+/// start error). Every kamaji zellij call — including the daemon's `zellij web`,
+/// which is also built from this `command()` — must share the same socket dir,
+/// which is exactly why this lives in the one shared builder.
 pub fn command() -> Command {
     let mut c = Command::new("zellij");
     c.env_remove("ZELLIJ")
         .env_remove("ZELLIJ_SESSION_NAME")
         .env_remove("ZELLIJ_PANE_ID");
+    if let Some(dir) = socket_dir() {
+        // zellij creates the per-version subdir itself, but make sure the base
+        // exists (best-effort) so the first call doesn't race on it.
+        let _ = std::fs::create_dir_all(&dir);
+        c.env("ZELLIJ_SOCKET_DIR", &dir);
+    }
     c
+}
+
+/// The directory kamaji points zellij's IPC socket at, or `None` to use zellij's
+/// default. Only overridden on macOS, where the 104-byte `sun_path` limit plus
+/// the long default `$TMPDIR` base makes kamaji's session names overflow the
+/// socket path. Linux (`sun_path` 108, short `/run/user/<uid>` runtime dir) and
+/// Windows keep zellij's default, so existing sessions there are untouched.
+#[cfg(target_os = "macos")]
+fn socket_dir() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    // Per-user dir so two accounts don't fight over one 0700 path. Derive the uid
+    // from HOME's owner to stay dependency-free (no libc); fall back to a shared
+    // name if HOME can't be resolved.
+    let uid = std::env::var_os("HOME")
+        .and_then(|h| std::fs::metadata(h).ok())
+        .map(|m| m.uid());
+    Some(macos_socket_dir(uid))
+}
+#[cfg(not(target_os = "macos"))]
+fn socket_dir() -> Option<PathBuf> {
+    None
+}
+
+/// Build the macOS short socket dir from an optional uid. Separated from the
+/// cfg-gated [`socket_dir`] so the path construction is testable on any platform.
+/// Only `socket_dir` (macOS) calls it in a non-test build, so it is dead code on
+/// other platforms outside the tests that exercise it.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_socket_dir(uid: Option<u32>) -> PathBuf {
+    match uid {
+        Some(uid) => PathBuf::from(format!("/tmp/kamaji-zellij-{uid}")),
+        None => PathBuf::from("/tmp/kamaji-zellij"),
+    }
 }
 
 /// Add `-c <config>` to a session-*creating* command so the new session opts
@@ -211,6 +259,36 @@ mod tests {
         for var in ["ZELLIJ", "ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID"] {
             assert!(removed.contains(&var.to_string()), "{var} not scrubbed");
         }
+    }
+
+    #[test]
+    fn macos_socket_dir_is_short_and_per_uid() {
+        assert_eq!(
+            macos_socket_dir(Some(501)),
+            std::path::PathBuf::from("/tmp/kamaji-zellij-501")
+        );
+        // No uid resolvable → a shared (still short) fallback name.
+        assert_eq!(
+            macos_socket_dir(None),
+            std::path::PathBuf::from("/tmp/kamaji-zellij")
+        );
+    }
+
+    /// The whole point: dir + "/<version>/" + the longest session name kamaji can
+    /// generate must stay under macOS's 104-byte `sun_path` limit. (A ticket name
+    /// is `kamaji-<id>-<slug>` with the slug capped at 40 chars.)
+    #[test]
+    fn macos_socket_path_stays_under_the_sun_path_limit() {
+        let dir = macos_socket_dir(Some(4_294_967_295)); // widest possible uid
+        let version = "0.44.1";
+        let worst_name = format!("kamaji-{}-{}", 999_999_999, "x".repeat(40));
+        let full = format!("{}/{}/{}", dir.display(), version, worst_name);
+        assert!(
+            full.len() < 104,
+            "socket path must fit macOS sun_path: {} = {} bytes",
+            full,
+            full.len()
+        );
     }
 
     #[test]
