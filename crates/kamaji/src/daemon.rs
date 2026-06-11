@@ -110,6 +110,34 @@ pub fn stop_running_daemon() {
     let _ = std::fs::remove_file(&addrfile);
 }
 
+/// Stop the running daemon for the `kamaji stop` CLI command, returning a
+/// human-readable summary line. Reads the pidfile, signals the recorded PID
+/// (SIGTERM for a clean shutdown), and clears the pidfile/addrfile so the next
+/// `kamaji` run spawns a fresh daemon. Best-effort, like [`stop_running_daemon`],
+/// but reports what it found so the user gets feedback.
+pub fn stop_daemon_command() -> String {
+    let Some((pidfile, addrfile)) = runtime_files() else {
+        return "could not determine the runtime dir; no daemon stopped".to_string();
+    };
+    stop_daemon_at(&pidfile, &addrfile)
+}
+
+/// Core of [`stop_daemon_command`], parameterized on the pidfile/addrfile paths
+/// so it is testable without touching the real runtime dir.
+fn stop_daemon_at(pidfile: &Path, addrfile: &Path) -> String {
+    let summary = match read_pid(pidfile) {
+        Some(pid) if pid_alive(pid) => {
+            kill_pid(pid);
+            format!("stopped kamajid (pid {pid})")
+        }
+        Some(pid) => format!("kamajid was not running (cleared stale pidfile for pid {pid})"),
+        None => "kamajid is not running".to_string(),
+    };
+    let _ = std::fs::remove_file(pidfile);
+    let _ = std::fs::remove_file(addrfile);
+    summary
+}
+
 /// Signal a daemon process to terminate. Best-effort; a missing process is fine.
 #[cfg(unix)]
 fn kill_pid(pid: i32) {
@@ -389,6 +417,31 @@ mod tests {
         assert!(got.is_none(), "a stale pidfile must not yield a client");
         assert!(!pidfile.exists(), "stale pidfile is removed");
         assert!(!addrfile.exists(), "stale addrfile is removed");
+    }
+
+    #[test]
+    fn stop_daemon_at_reports_and_clears_a_stale_pidfile() {
+        // A pidfile naming a dead PID: nothing to kill, but the files are cleared
+        // and the summary says it wasn't running.
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("kamajid.pid");
+        let addrfile = dir.path().join("kamajid.addr");
+        std::fs::write(&pidfile, "2147483647").unwrap(); // dead PID
+        std::fs::write(&addrfile, "127.0.0.1:8755").unwrap();
+
+        let msg = stop_daemon_at(&pidfile, &addrfile);
+        assert!(msg.contains("not running"), "{msg}");
+        assert!(!pidfile.exists(), "pidfile must be cleared");
+        assert!(!addrfile.exists(), "addrfile must be cleared");
+    }
+
+    #[test]
+    fn stop_daemon_at_reports_when_no_pidfile() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("kamajid.pid");
+        let addrfile = dir.path().join("kamajid.addr");
+        let msg = stop_daemon_at(&pidfile, &addrfile);
+        assert!(msg.contains("not running"), "{msg}");
     }
 
     #[test]

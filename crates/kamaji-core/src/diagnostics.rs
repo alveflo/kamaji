@@ -124,6 +124,32 @@ pub(crate) fn resolve_in_path(name: &str, path_var: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// True if `program` is launchable given `path_var`: a name containing a path
+/// separator is checked as a literal file; a bare name is resolved against
+/// `path_var`. Mirrors how a shell would decide whether `Command::new(program)`
+/// can exec. Split from the env lookup in [`program_on_path`] so it is testable
+/// without mutating the process `PATH`.
+pub(crate) fn program_on_path_in(program: &str, path_var: &str) -> bool {
+    if program.is_empty() {
+        return false;
+    }
+    // More than one path component means the program carries its own path (e.g.
+    // `/opt/bin/claude` or `./agent`); resolve it directly rather than via PATH.
+    if Path::new(program).components().count() > 1 {
+        return Path::new(program).is_file();
+    }
+    resolve_in_path(program, path_var).is_some()
+}
+
+/// True if `program` can be launched from the current process's `PATH` (or is a
+/// path to an existing file). Used to decide whether an agent binary is present
+/// before generating its zellij layout, so a missing agent falls back to a plain
+/// shell pane instead of failing the session start.
+pub fn program_on_path(program: &str) -> bool {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    program_on_path_in(program, &path_var)
+}
+
 /// Run `<bin> --version` and classify the result. The detail carries the
 /// version line and the resolved path; failure carries a PATH-oriented hint
 /// (the leading suspect for the macOS reports — a GUI-spawned daemon often has
@@ -194,8 +220,10 @@ pub(crate) fn check_dir_writable(label: &str, dir: Option<PathBuf>) -> Check {
 }
 
 /// Best-effort check that the user's zellij config file is readable, if present.
-fn check_zellij_config() -> Check {
-    match crate::zellij_config::config_file_path() {
+/// `override_path` is the configured `zellij_config_path`, if any, so doctor
+/// reports the path the daemon actually reads.
+fn check_zellij_config(override_path: Option<&str>) -> Check {
+    match crate::zellij_config::config_file_path_with(override_path) {
         Some(p) if p.is_file() => match std::fs::read(&p) {
             Ok(_) => Check::ok("zellij config readable", p.display().to_string()),
             Err(e) => Check::fail(
@@ -246,6 +274,12 @@ pub fn newest_log_file(dir: &Path) -> Option<PathBuf> {
 /// the daemon calls this, the result reflects the daemon's PATH/temp/env.
 pub fn gather_local() -> LocalReport {
     let temp = std::env::temp_dir();
+    // The configured zellij-config override, if kamaji's config loads, so the
+    // zellij-config check reports the file the daemon actually reads.
+    let zellij_cfg_override = crate::config::config_path()
+        .ok()
+        .and_then(|p| crate::config::load_from(&p).ok())
+        .and_then(|c| c.zellij_config_path);
     let checks = vec![
         check_binary("zellij"),
         check_binary("git"),
@@ -256,7 +290,7 @@ pub fn gather_local() -> LocalReport {
         check_dir_writable("data", crate::paths::data_dir()),
         check_dir_writable("cache", crate::paths::cache_dir()),
         check_dir_writable("runtime", crate::paths::runtime_dir()),
-        check_zellij_config(),
+        check_zellij_config(zellij_cfg_override.as_deref()),
     ];
     let env = filter_env_allowlist(std::env::vars());
     LocalReport { checks, env }
@@ -278,6 +312,29 @@ mod tests {
             Some(bin.as_path())
         );
         assert_eq!(super::resolve_in_path("nope", &path_val), None);
+    }
+
+    #[test]
+    fn program_on_path_in_resolves_bare_names_paths_and_misses() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("mytool");
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        let path_val = dir.path().to_string_lossy().to_string();
+
+        // A bare name present on PATH is launchable; one that is absent is not.
+        assert!(super::program_on_path_in("mytool", &path_val));
+        assert!(!super::program_on_path_in(
+            "definitely-not-on-path",
+            &path_val
+        ));
+        // An empty program name is never launchable.
+        assert!(!super::program_on_path_in("", &path_val));
+        // A program carrying its own path is checked directly, ignoring PATH.
+        assert!(super::program_on_path_in(&bin.to_string_lossy(), ""));
+        assert!(!super::program_on_path_in(
+            &dir.path().join("absent").to_string_lossy(),
+            &path_val
+        ));
     }
 
     #[test]

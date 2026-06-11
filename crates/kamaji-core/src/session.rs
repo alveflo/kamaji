@@ -78,32 +78,46 @@ fn prepare_with_argv(
     if !worktree.exists() {
         git::add_worktree(&root, &worktree, &name, &base)?;
     }
-    let instrumented =
-        config.auto_review.enabled && matches!(ticket.agent, Agent::Claude | Agent::Codex);
-    let argv = if instrumented {
-        let marker = detect::marker_path(state_dir, &name);
-        let _ = std::fs::create_dir_all(state_dir);
-        let _ = std::fs::remove_file(&marker); // start "active": no marker
-        match ticket.agent {
-            // Claude takes per-invocation hooks via --settings.
-            Agent::Claude => detect::inject_claude_settings(argv, &marker.to_string_lossy()),
-            // Codex has no per-invocation hook flag; install its global
-            // hooks.json (idempotent). The hook derives the same marker path
-            // from $ZELLIJ_SESSION_NAME, so argv is unchanged.
-            Agent::Codex => {
-                detect::install_codex_hooks(state_dir)?;
-                argv
-            }
-            _ => argv,
-        }
-    } else {
-        argv
-    };
     let bar = zellij_config::resolve_bar_style(
         &config.zellij_bar,
-        zellij_config::detect_default_layout().as_deref(),
+        zellij_config::detect_default_layout(config.zellij_config_path.as_deref()).as_deref(),
     );
-    let kdl = layout::render_layout(&worktree.to_string_lossy(), &argv, bar)?;
+    // If the agent binary isn't on PATH, zellij would fail to spawn the pane and
+    // the whole start would error out. Instead, open a plain shell pane in the
+    // worktree so the session still comes up — the user can launch the agent (or
+    // install it) themselves. No instrumentation without an agent to instrument.
+    let (kdl, instrumented) = if crate::diagnostics::program_on_path(&argv[0]) {
+        let instrumented =
+            config.auto_review.enabled && matches!(ticket.agent, Agent::Claude | Agent::Codex);
+        let argv = if instrumented {
+            let marker = detect::marker_path(state_dir, &name);
+            let _ = std::fs::create_dir_all(state_dir);
+            let _ = std::fs::remove_file(&marker); // start "active": no marker
+            match ticket.agent {
+                // Claude takes per-invocation hooks via --settings.
+                Agent::Claude => detect::inject_claude_settings(argv, &marker.to_string_lossy()),
+                // Codex has no per-invocation hook flag; install its global
+                // hooks.json (idempotent). The hook derives the same marker path
+                // from $ZELLIJ_SESSION_NAME, so argv is unchanged.
+                Agent::Codex => {
+                    detect::install_codex_hooks(state_dir)?;
+                    argv
+                }
+                _ => argv,
+            }
+        } else {
+            argv
+        };
+        (
+            layout::render_layout(&worktree.to_string_lossy(), &argv, bar)?,
+            instrumented,
+        )
+    } else {
+        (
+            layout::render_shell_layout(&worktree.to_string_lossy(), bar),
+            false,
+        )
+    };
     let layout_path = layout_file(&name, &kdl)?;
     Ok(Prepared {
         name,
@@ -136,7 +150,7 @@ pub fn prepare_main_session(project: &Project, config: &Config) -> Result<MainPr
     let name = slug::main_session_name(project.id);
     let bar = zellij_config::resolve_bar_style(
         &config.zellij_bar,
-        zellij_config::detect_default_layout().as_deref(),
+        zellij_config::detect_default_layout(config.zellij_config_path.as_deref()).as_deref(),
     );
     let kdl = layout::render_shell_layout(&project.root_dir.to_string_lossy(), bar);
     let layout_path = layout_file(&name, &kdl)?;
@@ -408,6 +422,78 @@ mod tests {
 
         assert!(err.contains("config error: agent command must not be empty"));
         assert!(err.contains("no_prompt"));
+    }
+
+    /// When the configured agent binary isn't on PATH, the session must still
+    /// come up: the layout falls back to a plain shell pane (no `command=`) so
+    /// zellij doesn't fail the start, and the ticket is not marked instrumented.
+    #[test]
+    fn prepare_session_falls_back_to_shell_when_agent_binary_is_missing() {
+        // A real git repo so the worktree can be created.
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        let run = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.email", "t@t.t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(root.join("README.md"), "hi").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
+
+        let wt_base = tempfile::tempdir().unwrap();
+        let mut config = Config {
+            worktree_base: Some(wt_base.path().to_string_lossy().into_owned()),
+            ..Config::default()
+        };
+        // A binary that is certainly not on PATH.
+        let missing = "kamaji-no-such-agent-binary-xyz".to_string();
+        config.agents.claude.no_prompt = vec![missing.clone()];
+        config.agents.claude.with_prompt = vec![missing, "{prompt}".to_string()];
+
+        let project = Project {
+            id: 1,
+            name: "proj".into(),
+            root_dir: root.to_path_buf(),
+            default_agent: None,
+            created_at: String::new(),
+        };
+        let ticket = Ticket {
+            id: 1,
+            project_id: 1,
+            title: "ticket".into(),
+            description: String::new(),
+            initial_prompt: None,
+            agent: Agent::Claude,
+            status: Status::Todo,
+            session_name: None,
+            worktree_path: None,
+            branch: None,
+            auto_reviewed: false,
+            instrumented: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let prepared = prepare_session(&project, &config, state_dir.path(), &ticket).unwrap();
+        let kdl = std::fs::read_to_string(&prepared.layout_path).unwrap();
+        assert!(
+            !kdl.contains("command="),
+            "a missing agent must fall back to a plain shell pane:\n{kdl}"
+        );
+        assert!(
+            !prepared.instrumented,
+            "no agent launched => not instrumented"
+        );
     }
 
     fn project(id: i64, root: PathBuf, default_agent: Option<Agent>) -> Project {

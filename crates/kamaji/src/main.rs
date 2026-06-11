@@ -89,6 +89,10 @@ fn main() -> Result<()> {
         cli::Command::Down => container::down(),
         cli::Command::Logs => container::logs(),
         cli::Command::Status => container::status(),
+        cli::Command::Stop => {
+            println!("{}", daemon::stop_daemon_command());
+            Ok(())
+        }
         cli::Command::Doctor(opts) => {
             let report = doctor::collect(opts.forced_addr.as_deref());
             if opts.json {
